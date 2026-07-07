@@ -2,12 +2,12 @@
   lib,
   buildGoModule,
   fetchFromGitHub,
-  version ? "0.1.1",
+  version ? "0.1.2",
   source ? fetchFromGitHub {
     owner = "melqtx";
     repo = "tork";
     tag = "v${version}";
-    hash = "sha256-gkm7aesS21oXyOfO1KmZrRZqqx4XTlYEIcIcCKjkRlc=";
+    hash = "sha256-Od4AGZfsuTcfdbHtGxTjfFU+EXO7/a+Ymx/Axg0CTC8=";
   },
 }:
 

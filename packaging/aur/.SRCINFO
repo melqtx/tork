@@ -1,0 +1,14 @@
+pkgbase = tork
+	pkgdesc = Terminal torrent search and download client
+	pkgver = 0.1.2
+	pkgrel = 1
+	url = https://github.com/melqtx/tork
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	makedepends = go
+	depends = glibc
+	source = tork-0.1.2.tar.gz::https://github.com/melqtx/tork/archive/refs/tags/v0.1.2.tar.gz
+	sha256sums = 350337c073c721952f2ae078aa8ea4a1e3060e0261dfd1d9b30da401d0b9c27f
+
+pkgname = tork
