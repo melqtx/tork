@@ -7,16 +7,49 @@ progress.
 
 ## Install
 
+### Arch Linux
+
+Install from the AUR:
+
+```sh
+yay -S tork
+# or
+paru -S tork
+```
+
+Manual AUR install:
+
+```sh
+git clone https://aur.archlinux.org/tork.git
+cd tork
+makepkg -si
+```
+
+### Nix
+
+From a clone:
+
+```sh
+nix-build -E 'with import <nixpkgs> {}; callPackage ./packaging/nix/package.nix {}'
+./result/bin/tork
+```
+
+### Go
+
 ```sh
 go install github.com/melqtx/tork/cmd/tork@latest
-# or from a clone:
+```
+
+### From Source
+
+```sh
 go build -o tork ./cmd/tork && ./tork
 ```
 
 Requires Go 1.26+. Config lives in `~/.tork/`; downloads go to your OS Downloads
 folder (`~/Downloads/tork`) by default - override with `tork -d DIR` or
-`download_dir` in `config.yaml`. Packaging templates (Homebrew, AUR, Nix) are in
-`packaging/`.
+`download_dir` in `config.yaml`. Packaging files for Homebrew, AUR, and Nix are
+in `packaging/`.
 
 ## Usage
 
