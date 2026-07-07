@@ -38,6 +38,13 @@ func TestKnabenIgnoresLegacyAPIBase(t *testing.T) {
 	}
 }
 
+func TestKnabenIgnoresDeadEUBase(t *testing.T) {
+	k := NewKnaben(nil, "https://knaben.eu")
+	if k.base != knabenWeb {
+		t.Errorf("base = %q, want %q", k.base, knabenWeb)
+	}
+}
+
 func TestKnabenBuildsSearchPath(t *testing.T) {
 	// confirms the URL shape /search/<escaped>/0/1/seeders
 	q := url.PathEscape("fight club")

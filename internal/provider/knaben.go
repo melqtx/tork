@@ -11,14 +11,15 @@ import (
 	"github.com/PuerkitoBio/goquery"
 )
 
-// Knaben scrapes knaben.eu's web search. Knaben is a metasearch that
+// Knaben scrapes Knaben's web search. Knaben is a metasearch that
 // aggregates many indexers (The Pirate Bay, 1337x, Nyaa, YTS, EZTV, …) so a
 // single query covers every content type - it is tork's universal source.
 //
-// NOTE: knaben.eu also exposes a JSON API at api.knaben.eu/v1, but that
-// endpoint ignores the query and only returns a "latest torrents" feed, so we
-// scrape the HTML search page (which filters correctly) instead.
-const knabenWeb = "https://knaben.eu"
+// NOTE: Knaben also exposes a JSON API at api.knaben.* but that endpoint
+// ignores the query and only returns a "latest torrents" feed, so we scrape the
+// HTML search page (which filters correctly) instead. The .eu domain is dead;
+// .org is the live host.
+const knabenWeb = "https://knaben.org"
 
 type Knaben struct {
 	client *http.Client
@@ -30,8 +31,9 @@ func NewKnaben(client *http.Client, base string) *Knaben {
 		client = DefaultClient
 	}
 	base = strings.TrimRight(strings.TrimSpace(base), "/")
-	// tolerate stale configs that still point at the dead JSON API host
-	if base == "" || strings.Contains(base, "api.knaben") {
+	// tolerate stale configs: the api.* host only serves a latest feed, and the
+	// knaben.eu mirror is dead - fall back to the live web host in both cases.
+	if base == "" || strings.Contains(base, "api.knaben") || strings.Contains(base, "knaben.eu") {
 		base = knabenWeb
 	}
 	return &Knaben{client: client, base: base}

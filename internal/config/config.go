@@ -77,7 +77,7 @@ func Default(dir string) *Config {
 		Ranking:               rank.DefaultWeights(),
 		Autopilot:             AutopilotConfig{MaxDownloads: 10, MinSeeders: 5},
 		Providers: map[string]ProviderConfig{
-			"knaben": {Enabled: true, Type: "knaben", Mirror: "https://knaben.eu"},
+			"knaben": {Enabled: true, Type: "knaben", Mirror: "https://knaben.org"},
 			"yts":    {Enabled: true, Type: "yts", Mirror: "https://yts.mx"},
 			"nyaa":   {Enabled: true, Type: "nyaa", Mirror: "https://nyaa.si"},
 			// apibay.org is frequently slow/unreachable; Knaben already
