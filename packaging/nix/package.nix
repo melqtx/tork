@@ -12,10 +12,10 @@ buildGoModule rec {
     owner = "melqtx";
     repo = "tork";
     tag = "v${version}";
-    hash = "sha256-REPLACE_WITH_SOURCE_HASH";
+    hash = "sha256-IV/bACY4YU69cudyZHuCt5jvJ6etHYXlXUtpnZc7JCw=";
   };
 
-  vendorHash = "sha256-REPLACE_WITH_VENDOR_HASH";
+  vendorHash = "sha256-Vk3lmPUDvuhOzha8GlH0anRLgVhhyFjz9y328T2gycs=";
 
   subPackages = [ "cmd/tork" ];
 
