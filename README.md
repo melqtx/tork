@@ -31,7 +31,7 @@ Config lives in `~/.tork/`; downloads land in `~/Downloads/tork` (change with
 - **downloads** `s` seed, `p` pause, `x` remove
 - `tab` cycle, `esc` back, `^c` quit
 
-## Autopilot
+## Autopilot (WIP)
 
 Describe what you want and let the cat fetch it:
 
