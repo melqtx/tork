@@ -2,18 +2,20 @@
   lib,
   buildGoModule,
   fetchFromGitHub,
-  version ? "0.1.0",
-  src ? fetchFromGitHub {
+  version ? "0.1.1",
+  source ? fetchFromGitHub {
     owner = "melqtx";
     repo = "tork";
     tag = "v${version}";
-    hash = "sha256-IV/bACY4YU69cudyZHuCt5jvJ6etHYXlXUtpnZc7JCw=";
+    hash = "sha256-gkm7aesS21oXyOfO1KmZrRZqqx4XTlYEIcIcCKjkRlc=";
   },
 }:
 
 buildGoModule rec {
   pname = "tork";
-  inherit version src;
+  inherit version;
+
+  src = source;
 
   vendorHash = "sha256-Vk3lmPUDvuhOzha8GlH0anRLgVhhyFjz9y328T2gycs=";
 

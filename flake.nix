@@ -23,7 +23,7 @@
           pkgs = pkgsFor system;
           tork = pkgs.callPackage ./packaging/nix/package.nix {
             inherit version;
-            src = self;
+            source = self;
           };
         in
         {
