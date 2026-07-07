@@ -24,8 +24,9 @@ type magnetResolvedMsg struct {
 
 type torrentAddedMsg struct {
 	hash   metainfo.Hash
-	magnet string
+	magnet string // resume key: magnet URI, or https URL for direct downloads
 	name   string
+	sha256 string // expected digest for direct downloads
 	err    error
 }
 
@@ -33,6 +34,8 @@ type previewReadyMsg struct {
 	hash   metainfo.Hash
 	magnet string
 	name   string
+	from   screen
+	owned  bool
 	err    error
 }
 
@@ -69,8 +72,8 @@ func guard(msg *tea.Msg, onPanic func(any) tea.Msg) {
 	}
 }
 
-func tickCmd() tea.Cmd {
-	return tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg { return tickMsg(t) })
+func tickCmd(d time.Duration) tea.Cmd {
+	return tea.Tick(d, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
 func clearErrCmd() tea.Cmd {

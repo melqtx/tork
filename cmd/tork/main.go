@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -110,6 +111,7 @@ func runAutopilot(args []string) error {
 	if err != nil {
 		return err
 	}
+	legacyDownloadDir := cfg.DownloadDir
 	if *dlDir != "" {
 		if err := cfg.OverrideDownloadDir(*dlDir); err != nil {
 			return err
@@ -124,7 +126,7 @@ func runAutopilot(args []string) error {
 	if err != nil {
 		return err
 	}
-	resumeAll(eng, st)
+	resumeAll(eng, st, cfg, legacyDownloadDir)
 
 	providers := enabledProviders(cfg)
 	agg := aggregator.New(providers, cfg.SearchTimeout(), 2)
@@ -166,6 +168,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	legacyDownloadDir := cfg.DownloadDir
 	if *dlDir != "" {
 		if err := cfg.OverrideDownloadDir(*dlDir); err != nil {
 			return err
@@ -182,7 +185,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	resumeAll(eng, st)
+	resumeAll(eng, st, cfg, legacyDownloadDir)
 
 	agg := aggregator.New(enabledProviders(cfg), cfg.SearchTimeout(), 2)
 
@@ -193,15 +196,83 @@ func run() error {
 	return st.Save(cfg.StatePath())
 }
 
-// resumeAll re-adds persisted magnets; bolt piece completion makes this a
-// verification pass, not a re-download.
-func resumeAll(eng *engine.Engine, st *state.State) {
-	for _, e := range st.Entries {
-		if e.Paused {
+// resumeAll re-adds persisted downloads; bolt piece completion (torrents) and
+// .part files (direct downloads) make this a verification pass, not a
+// re-download.
+func resumeAll(eng *engine.Engine, st *state.State, cfg *config.Config, legacyDownloadDir string) {
+	for i := range st.Entries {
+		e := &st.Entries[i]
+		normalizeEntryPaths(e, legacyDownloadDir)
+		if e.Paused || e.NeedsRelink {
 			continue
 		}
-		eng.Add(e.Magnet, e.Excluded) // best-effort; failures surface in UI
+		seed := e.SeedEnabled(cfg.SeedAfterComplete)
+		if e.Done {
+			if !entryDataPresent(*e) {
+				continue
+			}
+			if !seed {
+				continue
+			}
+		}
+		opts := engine.AddOptions{DownloadDir: e.DownloadDir, Excluded: e.Excluded, Seed: &seed}
+		if strings.HasPrefix(e.Magnet, "http://") || strings.HasPrefix(e.Magnet, "https://") {
+			eng.AddDirectWithOptions(e.Magnet, e.Name, e.SHA256, opts) // best-effort; failures surface in UI
+			continue
+		}
+		eng.AddWithOptions(e.Magnet, opts) // best-effort; failures surface in UI
 	}
+}
+
+func normalizeEntryPaths(e *state.Entry, legacyDir string) {
+	if e.DownloadDir == "" {
+		inferLegacyEntryPath(e, legacyDir)
+		return
+	}
+	if abs, err := filepath.Abs(e.DownloadDir); err == nil {
+		e.DownloadDir = abs
+	}
+	if e.DataPath == "" && e.Name != "" && e.Name != "?" {
+		e.DataPath = filepath.Join(e.DownloadDir, e.Name)
+	}
+}
+
+func inferLegacyEntryPath(e *state.Entry, legacyDir string) {
+	if e.Name == "" || e.Name == "?" || legacyDir == "" {
+		e.NeedsRelink = true
+		e.Paused = true
+		return
+	}
+	if abs, err := filepath.Abs(legacyDir); err == nil {
+		legacyDir = abs
+	}
+	candidate := filepath.Join(legacyDir, e.Name)
+	if pathOrPartExists(candidate) {
+		e.DownloadDir = legacyDir
+		e.DataPath = candidate
+		e.NeedsRelink = false
+		return
+	}
+	e.DataPath = candidate
+	e.NeedsRelink = true
+	e.Paused = true
+}
+
+func entryDataPresent(e state.Entry) bool {
+	if e.DataPath == "" {
+		return false
+	}
+	return pathOrPartExists(e.DataPath)
+}
+
+func pathOrPartExists(path string) bool {
+	if _, err := os.Stat(path); err == nil {
+		return true
+	}
+	if _, err := os.Stat(path + ".part"); err == nil {
+		return true
+	}
+	return false
 }
 
 func enabledProviders(cfg *config.Config) []provider.Provider {

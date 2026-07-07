@@ -19,8 +19,22 @@ func TestLoadMissingFile(t *testing.T) {
 
 func TestRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
+	now := time.Now().UTC()
+	done := now.Add(time.Minute)
 	s := &State{}
-	s.Upsert(Entry{Magnet: "magnet:?xt=urn:btih:abc", Name: "test", AddedAt: time.Now().UTC()})
+	s.Upsert(Entry{
+		Magnet:         "magnet:?xt=urn:btih:abc",
+		Name:           "test",
+		AddedAt:        now,
+		Done:           true,
+		DownloadDir:    "/downloads",
+		DataPath:       "/downloads/test",
+		NeedsRelink:    true,
+		Seed:           Bool(false),
+		BytesCompleted: 42,
+		Length:         42,
+		CompletedAt:    &done,
+	})
 	if err := s.Save(path); err != nil {
 		t.Fatal(err)
 	}
@@ -30,6 +44,22 @@ func TestRoundTrip(t *testing.T) {
 	}
 	if len(got.Entries) != 1 || got.Entries[0].Name != "test" {
 		t.Errorf("round trip mismatch: %+v", got.Entries)
+	}
+	e := got.Entries[0]
+	if e.DownloadDir != "/downloads" || e.DataPath != "/downloads/test" || !e.NeedsRelink || e.Seed == nil || *e.Seed {
+		t.Errorf("new fields did not round trip: %+v", e)
+	}
+	if e.BytesCompleted != 42 || e.Length != 42 || e.CompletedAt == nil {
+		t.Errorf("completion fields did not round trip: %+v", e)
+	}
+}
+
+func TestSeedEnabledDefault(t *testing.T) {
+	if !(Entry{}).SeedEnabled(true) {
+		t.Fatal("missing seed field should use default true")
+	}
+	if (Entry{Seed: Bool(false)}).SeedEnabled(true) {
+		t.Fatal("explicit false seed should be honored")
 	}
 }
 

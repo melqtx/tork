@@ -28,7 +28,7 @@ Config lives in `~/.tork/`; downloads land in `~/Downloads/tork` (change with
 - **home** type to search, `↑↓` pick a destination, `enter` go
 - **isos** `↑↓` browse, `enter` grab the latest official image
 - **results** `enter` preview/get, `D` grab now, `/` filter, `o` sort, `v` graph
-- **downloads** `s` seed, `p` pause, `x` remove
+- **downloads** `p` pause/resume, `s` seed, `v` verify, `m` move, `r` relink, `x` remove, `d` delete data
 - `tab` cycle, `esc` back, `^c` quit
 
 ## Autopilot (WIP)

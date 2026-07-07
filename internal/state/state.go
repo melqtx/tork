@@ -11,12 +11,22 @@ import (
 )
 
 type Entry struct {
-	Magnet   string    `json:"magnet"`
-	Name     string    `json:"name"`
-	AddedAt  time.Time `json:"added_at"`
-	Paused   bool      `json:"paused"`
-	Done     bool      `json:"done"`
-	Excluded []int     `json:"excluded,omitempty"`
+	// Magnet is the resume key: a magnet URI for torrents, or the https URL
+	// for ISO-shelf images downloaded directly (distros without torrents).
+	Magnet         string     `json:"magnet"`
+	Name           string     `json:"name"`
+	SHA256         string     `json:"sha256,omitempty"` // expected digest for direct downloads
+	AddedAt        time.Time  `json:"added_at"`
+	Paused         bool       `json:"paused"`
+	Done           bool       `json:"done"`
+	DownloadDir    string     `json:"download_dir,omitempty"`
+	DataPath       string     `json:"data_path,omitempty"`
+	NeedsRelink    bool       `json:"needs_relink,omitempty"`
+	Seed           *bool      `json:"seed,omitempty"`
+	BytesCompleted int64      `json:"bytes_completed,omitempty"`
+	Length         int64      `json:"length,omitempty"`
+	CompletedAt    *time.Time `json:"completed_at,omitempty"`
+	Excluded       []int      `json:"excluded,omitempty"`
 }
 
 type State struct {
@@ -87,4 +97,13 @@ func (s *State) Find(magnet string) *Entry {
 		}
 	}
 	return nil
+}
+
+func Bool(v bool) *bool { return &v }
+
+func (e Entry) SeedEnabled(defaultSeed bool) bool {
+	if e.Seed == nil {
+		return defaultSeed
+	}
+	return *e.Seed
 }

@@ -92,16 +92,34 @@ func (d Deps) Execute(ctx context.Context, raw string, dryRun bool, maxOverride 
 			fmt.Fprintf(d.Out, "  ✗ %s: %s\n", trunc(p.Result.Title, 50), shortReason(err))
 			continue
 		}
-		if _, err := d.Eng.Add(magnet, nil); err != nil {
+		seed := d.Cfg.SeedAfterComplete
+		h, err := d.Eng.AddWithOptions(magnet, engine.AddOptions{DownloadDir: d.Cfg.DownloadDir, Seed: &seed})
+		if err != nil {
 			fmt.Fprintf(d.Out, "  ✗ %s: %s\n", trunc(p.Result.Title, 50), shortReason(err))
 			continue
 		}
-		d.State.Upsert(state.Entry{Magnet: magnet, Name: p.Result.Title, AddedAt: time.Now().UTC()})
+		entry := state.Entry{
+			Magnet:      magnet,
+			Name:        p.Result.Title,
+			AddedAt:     time.Now().UTC(),
+			DownloadDir: d.Cfg.DownloadDir,
+			Seed:        state.Bool(seed),
+		}
+		if snap, ok := d.Eng.Snapshot(h); ok {
+			if snap.Name != "" && snap.Name != "?" {
+				entry.Name = snap.Name
+			}
+			entry.DownloadDir = snap.DownloadDir
+			entry.DataPath = snap.DataPath
+			entry.Seed = state.Bool(snap.Seed)
+			entry.BytesCompleted = snap.BytesCompleted
+			entry.Length = snap.Length
+		}
+		d.State.Upsert(entry)
 		fmt.Fprintf(d.Out, "  ✓ %s\n", trunc(p.Result.Title, 60))
 		queued = append(queued, p)
 	}
-	d.State.Save(d.Cfg.StatePath())
-	return queued, nil
+	return queued, d.State.Save(d.Cfg.StatePath())
 }
 
 // gather runs the aggregator to completion, printing per-provider status.

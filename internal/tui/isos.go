@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -16,19 +15,88 @@ import (
 // BitTorrent. It is browsed inline while the search field stays focused.
 type isosModel struct {
 	distros   []isos.Distro
-	cursor    int
-	offset    int    // scroll offset into distros
-	resolving bool   // a download is being resolved
-	active    string // name of the distro currently being resolved
+	rows      []shelfRow // catalog flattened with category dividers
+	win       listWindow // cursor over rows (skips dividers)
+	resolving bool       // a download is being resolved
+	active    string     // name of the distro currently being resolved
+}
+
+// shelfRow is one line in the shelf: a category divider (header != "") or a
+// distro (distro >= 0, an index into isosModel.distros).
+type shelfRow struct {
+	header string
+	distro int
 }
 
 func newISOsModel() isosModel {
-	return isosModel{distros: isos.Catalog()}
+	distros := isos.Catalog()
+	m := isosModel{distros: distros, rows: buildShelfRows(distros)}
+	m.win.cursor = m.nearestDistro(0, 1) // first selectable row
+	return m
 }
 
-// isoScreenRows is how many shelf rows fit on the dedicated ISOs screen.
+// buildShelfRows flattens the catalog into rows, inserting a divider whenever
+// the category changes (the catalog is already grouped by category).
+func buildShelfRows(distros []isos.Distro) []shelfRow {
+	var rows []shelfRow
+	last := ""
+	for i, d := range distros {
+		if cat := isos.CategoryOf(d); cat != last {
+			rows = append(rows, shelfRow{header: cat, distro: -1})
+			last = cat
+		}
+		rows = append(rows, shelfRow{distro: i})
+	}
+	return rows
+}
+
+// nearestDistro returns the first selectable row at or after `from` going in
+// `dir` (+1/-1), or -1 if none.
+func (m *isosModel) nearestDistro(from, dir int) int {
+	for i := from; i >= 0 && i < len(m.rows); i += dir {
+		if m.rows[i].distro >= 0 {
+			return i
+		}
+	}
+	return -1
+}
+
+// selectRow moves the cursor by delta, skipping dividers (bouncing off edges).
+func (m *isosModel) selectRow(delta, visible int) {
+	total := len(m.rows)
+	if total == 0 {
+		return
+	}
+	dir := 1
+	if delta < 0 {
+		dir = -1
+	}
+	target := max(0, min(total-1, m.win.cursor+delta))
+	sel := m.nearestDistro(target, dir)
+	if sel < 0 {
+		sel = m.nearestDistro(target, -dir)
+	}
+	if sel >= 0 {
+		m.win.cursor = sel
+		m.win.clamp(total, visible)
+	}
+}
+
+// selected returns the distro under the cursor, if any.
+func (m *isosModel) selected() (isos.Distro, bool) {
+	if m.win.cursor < 0 || m.win.cursor >= len(m.rows) {
+		return isos.Distro{}, false
+	}
+	if di := m.rows[m.win.cursor].distro; di >= 0 {
+		return m.distros[di], true
+	}
+	return isos.Distro{}, false
+}
+
+// isoScreenRows is how many shelf rows fit on the dedicated ISOs screen
+// (intro + blank above, "more" affordance below).
 func (a *App) isoScreenRows() int {
-	return max(3, a.bodyHeight()-2)
+	return max(3, a.bodyHeight()-3)
 }
 
 func (a *App) updateISOs(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -45,22 +113,28 @@ func (a *App) updateISOs(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.screen = screenSearch
 		return a, a.search.input.Focus()
 	case "up", "k":
-		m.move(-1, rows)
+		m.selectRow(-1, rows)
 	case "down", "j":
-		m.move(1, rows)
+		m.selectRow(1, rows)
 	case "pgup":
-		m.move(-rows, rows)
+		m.selectRow(-rows, rows)
 	case "pgdown":
-		m.move(rows, rows)
+		m.selectRow(rows, rows)
 	case "g", "home":
-		m.move(-len(m.distros), rows)
+		if s := m.nearestDistro(0, 1); s >= 0 {
+			m.win.cursor = s
+			m.win.clamp(len(m.rows), rows)
+		}
 	case "G", "end":
-		m.move(len(m.distros), rows)
+		if s := m.nearestDistro(len(m.rows)-1, -1); s >= 0 {
+			m.win.cursor = s
+			m.win.clamp(len(m.rows), rows)
+		}
 	case "enter":
-		if m.resolving || len(m.distros) == 0 {
+		d, ok := m.selected()
+		if m.resolving || !ok {
 			return a, nil
 		}
-		d := m.distros[m.cursor]
 		m.resolving = true
 		m.active = d.Name
 		return a, a.downloadISOCmd(d)
@@ -84,20 +158,6 @@ func (a *App) viewISOs() string {
 	return a.chrome("linux isos", body, help)
 }
 
-// move shifts the cursor by delta, keeping it inside a window of visible rows.
-func (m *isosModel) move(delta, visible int) {
-	if len(m.distros) == 0 {
-		return
-	}
-	m.cursor = max(0, min(len(m.distros)-1, m.cursor+delta))
-	if m.cursor < m.offset {
-		m.offset = m.cursor
-	}
-	if m.cursor >= m.offset+visible {
-		m.offset = m.cursor - visible + 1
-	}
-}
-
 // downloadISOCmd resolves the distro's current official torrent and hands it to
 // the engine. It reuses torrentAddedMsg, so a resolved image flows into the
 // same download/state path as any other add.
@@ -113,6 +173,10 @@ func (a *App) downloadISOCmd(d isos.Distro) tea.Cmd {
 		if err != nil {
 			return torrentAddedMsg{name: d.Name, err: err}
 		}
+		if t.DirectURL != "" { // no torrent published: plain-https download
+			h, aerr := a.eng.AddDirect(t.DirectURL, t.Title, t.SHA256)
+			return torrentAddedMsg{hash: h, magnet: t.DirectURL, name: t.Title, sha256: t.SHA256, err: aerr}
+		}
 		if t.Magnet != "" {
 			h, aerr := a.eng.Add(t.Magnet, nil)
 			return torrentAddedMsg{hash: h, magnet: t.Magnet, name: t.Title, err: aerr}
@@ -125,44 +189,26 @@ func (a *App) downloadISOCmd(d isos.Distro) tea.Cmd {
 	}
 }
 
-// renderISOShelf draws the (scrolling) distro list for the home screen, in a
-// window of rows lines and highlighting the cursor.
+// renderISOShelf draws the (scrolling) shelf for the ISOs screen: category
+// dividers interleaved with distro rows, windowed and cursor-highlighted.
 func (a *App) renderISOShelf(width, rows int) string {
 	m := &a.isos
-	if rows < 1 {
-		rows = 1
-	}
-	// keep the cursor within the visible window
-	if m.cursor < m.offset {
-		m.offset = m.cursor
-	}
-	if m.cursor >= m.offset+rows {
-		m.offset = m.cursor - rows + 1
-	}
-	m.offset = max(0, min(m.offset, max(0, len(m.distros)-rows)))
-	end := min(len(m.distros), m.offset+rows)
+	lay := newISOsLayout(width)
+	list := renderWindow(&m.win, len(m.rows), rows, width, func(i int, selected bool) string {
+		row := m.rows[i]
+		if row.distro < 0 {
+			return styleFaint.Render("── ") + styleDim.Render(row.header)
+		}
+		d := m.distros[row.distro]
+		return styleBrand.Render(padRight(d.Name, lay.nameW)) +
+			styleFaint.Render(padRight(d.Edition, lay.edW)) +
+			styleDim.Render(truncate(d.Blurb, lay.blurbW))
+	})
 
-	nameW, edW := 15, 26
-	var b strings.Builder
-	for i := m.offset; i < end; i++ {
-		d := m.distros[i]
-		tag := "  "
-		if d.Server {
-			tag = styleFaint.Render("⌂ ")
-		}
-		name := styleBrand.Render(padRight(d.Name, nameW))
-		ed := styleFaint.Render(padRight(d.Edition, edW))
-		line := " " + tag + name + ed + styleDim.Render(d.Blurb)
-		if i == m.cursor {
-			bar := styleSelBar.Render("▍")
-			line = styleSelected.Render(padRight(bar+tag+name+ed+styleDim.Render(d.Blurb), width))
-		}
-		b.WriteString(line + "\n")
-	}
 	// a small "more below/above" affordance so scrolling is discoverable
-	hidden := len(m.distros) - (end - m.offset)
-	if hidden > 0 {
-		b.WriteString(styleFaint.Render(fmt.Sprintf("  … %d more (↑↓)", hidden)))
+	start, end := m.win.clamp(len(m.rows), rows)
+	if hidden := len(m.rows) - (end - start); hidden > 0 {
+		list += "\n" + styleFaint.Render(fmt.Sprintf("  … %d more (↑↓)", hidden))
 	}
-	return strings.TrimRight(b.String(), "\n")
+	return list
 }

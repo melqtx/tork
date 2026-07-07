@@ -31,3 +31,22 @@ func TestSafeDataPath(t *testing.T) {
 		}
 	}
 }
+
+func TestSafePathWithin(t *testing.T) {
+	dir := filepath.FromSlash("/home/u/Downloads/tork")
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{filepath.Join(dir, "ubuntu.iso"), true},
+		{filepath.Join(dir, "pack"), true},
+		{dir, false},
+		{filepath.Dir(dir), false},
+		{filepath.FromSlash("/etc/passwd"), false},
+	}
+	for _, c := range cases {
+		if got := safePathWithin(dir, c.path); got != c.want {
+			t.Errorf("safePathWithin(%q) = %v, want %v", c.path, got, c.want)
+		}
+	}
+}

@@ -3,11 +3,16 @@ package tui
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"path"
+	"regexp"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/melqtx/tork/internal/provider"
 )
 
 // homeDest is a destination on the front-page menu.
@@ -28,7 +33,7 @@ type searchModel struct {
 
 func newSearchModel() searchModel {
 	ti := textinput.New()
-	ti.Placeholder = "search movies, shows, anime, software…"
+	ti.Placeholder = "search movies, shows, anime, software… or paste a magnet link"
 	ti.CharLimit = 200
 	ti.Width = 50
 	ti.Prompt = "❯ "
@@ -37,6 +42,54 @@ func newSearchModel() searchModel {
 	ti.PlaceholderStyle = styleFaint
 	ti.Cursor.Style = styleBrand
 	return searchModel{input: ti}
+}
+
+type magnetInputKind int
+
+const (
+	magnetInputMagnet magnetInputKind = iota
+	magnetInputInfoHash
+	magnetInputTorrentURL
+)
+
+var (
+	reHexInfoHash    = regexp.MustCompile(`(?i)^[0-9a-f]{40}$`)
+	reBase32InfoHash = regexp.MustCompile(`(?i)^[a-z2-7]{32}$`)
+)
+
+func detectMagnetInput(query string) (target, name string, kind magnetInputKind, ok bool) {
+	query = strings.TrimSpace(query)
+	lower := strings.ToLower(query)
+	if strings.HasPrefix(lower, "magnet:?") {
+		return query, magnetDisplayName(query), magnetInputMagnet, true
+	}
+	if reHexInfoHash.MatchString(query) || reBase32InfoHash.MatchString(query) {
+		return provider.BuildMagnet(query, "", provider.DefaultTrackers), "", magnetInputInfoHash, true
+	}
+	u, err := url.Parse(query)
+	if err == nil && (u.Scheme == "http" || u.Scheme == "https") && strings.HasSuffix(strings.ToLower(u.Path), ".torrent") {
+		return query, torrentURLName(u), magnetInputTorrentURL, true
+	}
+	return "", "", 0, false
+}
+
+func magnetDisplayName(mag string) string {
+	u, err := url.Parse(mag)
+	if err != nil {
+		return ""
+	}
+	return u.Query().Get("dn")
+}
+
+func torrentURLName(u *url.URL) string {
+	name := path.Base(u.Path)
+	if dec, err := url.PathUnescape(name); err == nil {
+		name = dec
+	}
+	if name == "." || name == "/" {
+		return ""
+	}
+	return name
 }
 
 func (a *App) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -52,6 +105,12 @@ func (a *App) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch key.String() {
 	case "enter":
 		if query := strings.TrimSpace(a.search.input.Value()); query != "" {
+			if target, name, kind, ok := detectMagnetInput(query); ok {
+				if kind == magnetInputTorrentURL {
+					return a, a.launchTorrentURLPreviewCmd(target, name)
+				}
+				return a, a.launchCmd(target, name, true)
+			}
 			return a, a.startSearch(query)
 		}
 		a.screen = homeMenu[a.search.menu].screen
@@ -128,13 +187,10 @@ func (a *App) viewSearch() string {
 		a.homeMenuView(),
 	)
 
-	// footer status bar pinned to the bottom
-	left := hints(hint("enter", "open"), hint("↑↓", "menu"), hint("tab", "browse"), hint("^c", "quit"))
-	if a.errText != "" {
-		left = styleErr.Render(a.errText)
-	}
+	// footer status bar pinned to the bottom, sharing chrome's help/error logic
+	left := hints(hint("enter", "open"), hint("↑↓", "menu"), hint("tab", "screens"), hint("^c", "quit"))
 	right := styleFaint.Render(cozyGreeting())
-	bar := " " + left + strings.Repeat(" ", max(1, tw-lipgloss.Width(left)-lipgloss.Width(right)-2)) + right + " "
+	bar := " " + a.footerLine(tw-2, left, right) + " "
 	footer := styleRule.Render(strings.Repeat("─", tw)) + "\n" + bar
 
 	top := lipgloss.Place(tw, max(1, th-2), lipgloss.Center, lipgloss.Center, hero)
@@ -157,12 +213,12 @@ func (a *App) homeMenuView() string {
 }
 
 func (a *App) downloadsSummary() string {
-	switch n := len(a.downloads.snaps); n {
+	switch n := len(a.downloadItems()); n {
 	case 0:
 		return "nothing downloading yet"
 	case 1:
-		return "1 in progress"
+		return "1 saved download"
 	default:
-		return fmt.Sprintf("%d in progress", n)
+		return fmt.Sprintf("%d saved downloads", n)
 	}
 }

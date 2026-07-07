@@ -2,10 +2,14 @@ package tui
 
 import (
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
+	"github.com/melqtx/tork/internal/provider"
 	"github.com/melqtx/tork/internal/rank"
 )
 
@@ -57,8 +61,8 @@ func (r *resultsModel) rebuildGroups() {
 		}
 		r.groups[gi].rowIdx = append(r.groups[gi].rowIdx, idx)
 	}
-	if n := len(r.navItems()); r.gcursor >= n {
-		r.gcursor = max(0, n-1)
+	if n := len(r.navItems()); r.gwin.cursor >= n {
+		r.gwin.cursor = max(0, n-1)
 	}
 }
 
@@ -83,26 +87,31 @@ func (r *resultsModel) navItems() []navItem {
 func (a *App) updateGraphKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	r := &a.results
 	items := r.navItems()
+	rows := a.listRows()
 	switch msg.String() {
 	case "up", "k":
-		r.gcursor = max(0, r.gcursor-1)
+		r.gwin.move(-1, len(items), rows)
 	case "down", "j":
-		r.gcursor = min(len(items)-1, r.gcursor+1)
+		r.gwin.move(1, len(items), rows)
+	case "pgup":
+		r.gwin.move(-rows, len(items), rows)
+	case "pgdown":
+		r.gwin.move(rows, len(items), rows)
 	case "g", "home":
-		r.gcursor = 0
+		r.gwin.home()
 	case "G", "end":
-		r.gcursor = max(0, len(items)-1)
+		r.gwin.end(len(items), rows)
 	case "left", "h":
-		if it, ok := currentItem(items, r.gcursor); ok && len(r.groups[it.group].rowIdx) > 1 {
+		if it, ok := currentItem(items, r.gwin.cursor); ok && len(r.groups[it.group].rowIdx) > 1 {
 			r.groups[it.group].collapsed = true
 			r.clampGCursor()
 		}
 	case "right", "l":
-		if it, ok := currentItem(items, r.gcursor); ok {
+		if it, ok := currentItem(items, r.gwin.cursor); ok {
 			r.groups[it.group].collapsed = false
 		}
 	case "enter":
-		it, ok := currentItem(items, r.gcursor)
+		it, ok := currentItem(items, r.gwin.cursor)
 		if !ok {
 			return a, nil
 		}
@@ -125,89 +134,230 @@ func currentItem(items []navItem, cursor int) (navItem, bool) {
 }
 
 func (r *resultsModel) clampGCursor() {
-	if n := len(r.navItems()); r.gcursor >= n {
-		r.gcursor = max(0, n-1)
+	if n := len(r.navItems()); r.gwin.cursor >= n {
+		r.gwin.cursor = max(0, n-1)
 	}
 }
 
 func (a *App) viewGraph(width, h int) string {
 	r := &a.results
 	items := r.navItems()
-
-	// window the flattened items around the cursor
-	offset := 0
-	if r.gcursor >= h {
-		offset = r.gcursor - h + 1
-	}
-	offset = max(0, min(offset, max(0, len(items)-h)))
-	end := min(len(items), offset+h)
-
-	var b strings.Builder
-	for i := offset; i < end; i++ {
+	return renderWindow(&r.gwin, len(items), h, width, func(i int, selected bool) string {
 		it := items[i]
 		g := &r.groups[it.group]
-		var line string
 		switch {
 		case len(g.rowIdx) == 1:
-			line = r.graphFlatLeaf(g.rowIdx[0], width)
+			return r.graphFlatLeaf(g.rowIdx[0], width)
 		case it.leaf == -1:
-			line = r.graphHeader(g)
+			return r.graphHeader(g, width)
 		default:
-			last := it.leaf == len(g.rowIdx)-1
-			line = r.graphLeaf(g.rowIdx[it.leaf], last)
+			return r.graphLeaf(g, it.leaf, width)
 		}
-		if i == r.gcursor {
-			line = styleSelected.Render(padRight(line, width))
-		}
-		b.WriteString(line + "\n")
-	}
-	for i := end - offset; i < h; i++ {
-		b.WriteString("\n")
-	}
-	return b.String()
+	})
 }
 
-func (r *resultsModel) graphHeader(g *group) string {
+func (r *resultsModel) graphHeader(g *group, width int) string {
 	arrow := "▾"
 	if g.collapsed {
 		arrow = "▸"
 	}
-	return fmt.Sprintf(" %s %s %s",
+	meta := styleDim.Render(fmt.Sprintf("· %d sources", len(g.rowIdx)))
+	titleW := max(12, width-lipglossWidth(meta)-4)
+	return fmt.Sprintf("%s %s %s",
 		styleTitle.Render(arrow),
-		truncate(g.label, 60),
-		styleDim.Render(fmt.Sprintf("· %d sources", len(g.rowIdx))),
+		truncate(g.label, titleW),
+		meta,
 	)
 }
 
-func (r *resultsModel) graphLeaf(idx int, last bool) string {
+func (r *resultsModel) graphLeaf(g *group, leaf, width int) string {
 	branch := "├─"
-	if last {
+	if leaf == len(g.rowIdx)-1 {
 		branch = "└─"
 	}
-	row := r.rows[idx]
-	trusted := ""
-	if row.res.Trusted {
-		trusted = " " + styleOK.Render("✓trusted")
+	lay := newGraphLayout(width)
+	row := r.rows[g.rowIdx[leaf]]
+	bar := seederBar(row.res.Seeders, groupMaxSeeders(r, g), lay.barW)
+	if bar != "" {
+		bar += " "
 	}
-	return fmt.Sprintf("   %s %s %-7s %10s  %s%s",
+	return fmt.Sprintf("  %s %s %s %s%s %s  %s",
 		styleDim.Render(branch),
 		healthDot(row.res.Seeders),
-		providerTag(row.res.Provider),
-		truncate(row.res.Size, 10),
-		styleSeeders.Render(fmt.Sprintf("S%d", row.res.Seeders)),
-		trusted,
+		padRight(providerTag(row.res.Provider), lay.provW),
+		bar,
+		padRight(styleSeeders.Render(fmt.Sprintf("S%d", row.res.Seeders)), lay.seedW),
+		fmt.Sprintf("%*s", lay.sizeW, truncate(row.res.Size, lay.sizeW)),
+		leafMarkers(row.res, leaf == 0),
 	)
 }
 
-// graphFlatLeaf renders a single-source group as a dense one-liner.
+// leafMarkers is the trailing status glyphs: a gold star for the best source,
+// a check for a trusted upload, and a faint "resolve" only when there's no
+// ready magnet (the common magnet-ready case needs no label).
+func leafMarkers(res provider.Result, best bool) string {
+	var m []string
+	if best {
+		m = append(m, styleBest.Render("★"))
+	}
+	if res.Trusted {
+		m = append(m, styleOK.Render("✓"))
+	}
+	if res.Magnet == "" {
+		m = append(m, styleFaint.Render("resolve"))
+	}
+	return strings.Join(m, " ")
+}
+
+// graphFlatLeaf renders a single-source group as a dense one-liner: the title
+// flexes, then the same provider/seeders/size columns as a leaf row.
 func (r *resultsModel) graphFlatLeaf(idx, width int) string {
+	lay := newGraphLayout(width)
 	row := r.rows[idx]
-	title := truncate(row.res.Title, max(20, width-34))
-	return fmt.Sprintf(" %s %s %-7s %10s  %s",
+	bar := seederBar(row.res.Seeders, row.res.Seeders, lay.barW)
+	if bar != "" {
+		bar += " "
+	}
+	return fmt.Sprintf("%s %s %s %s%s %s  %s",
 		healthDot(row.res.Seeders),
-		title,
-		providerTag(row.res.Provider),
-		truncate(row.res.Size, 10),
-		styleSeeders.Render(fmt.Sprintf("S%d", row.res.Seeders)),
+		padRight(truncate(row.res.Title, lay.titleW), lay.titleW),
+		padRight(providerTag(row.res.Provider), lay.provW),
+		bar,
+		padRight(styleSeeders.Render(fmt.Sprintf("S%d", row.res.Seeders)), lay.seedW),
+		fmt.Sprintf("%*s", lay.sizeW, truncate(row.res.Size, lay.sizeW)),
+		leafMarkers(row.res, false),
 	)
+}
+
+func (a *App) graphDetail(width int) string {
+	r := &a.results
+	items := r.navItems()
+	lines := []string{rule(width)}
+	it, ok := currentItem(items, r.gwin.cursor)
+	if !ok || it.group >= len(r.groups) {
+		lines = append(lines, styleDim.Render("no source selected"), "", "", "")
+		return strings.Join(lines, "\n")
+	}
+	g := &r.groups[it.group]
+	if it.leaf == -1 {
+		median, spread := groupSizeSpread(r.rows, g.rowIdx)
+		lines = append(lines,
+			styleFg.Render(truncate(g.label, width)),
+			styleDim.Render(fmt.Sprintf("%d sources · %d total seeders", len(g.rowIdx), groupTotalSeeders(r, g))),
+			formatSizeSpread(median, spread),
+			"",
+		)
+		return strings.Join(lines, "\n")
+	}
+	row := r.rows[g.rowIdx[it.leaf]]
+	median, spread := groupSizeSpread(r.rows, g.rowIdx)
+	magnet := styleOK.Render("magnet ready")
+	if row.res.Magnet == "" {
+		magnet = styleFaint.Render("needs resolve")
+	}
+	trusted := styleFaint.Render("unverified")
+	if row.res.Trusted {
+		trusted = styleOK.Render("✓trusted")
+	}
+	lines = append(lines,
+		styleFg.Render(truncate(row.res.Title, width)),
+		fmt.Sprintf("%s  %s  %s", providerTag(row.res.Provider), trusted, magnet),
+		fmt.Sprintf("%s %d   %s %d", styleSeeders.Render("S"), row.res.Seeders, styleLeechers.Render("L"), row.res.Leechers),
+		formatSizeSpread(median, spread),
+	)
+	return strings.Join(lines, "\n")
+}
+
+func groupTotalSeeders(r *resultsModel, g *group) int {
+	total := 0
+	for _, idx := range g.rowIdx {
+		total += r.rows[idx].res.Seeders
+	}
+	return total
+}
+
+func graphBarCells(width int) int {
+	switch {
+	case width < 72:
+		return 0
+	case width < 88:
+		return 8
+	default:
+		return 12
+	}
+}
+
+func seederBar(seeders, maxSeeders, cells int) string {
+	if cells < 3 {
+		return ""
+	}
+	if maxSeeders <= 0 || seeders <= 0 {
+		return styleFaint.Render(strings.Repeat("░", cells))
+	}
+	filled := int(math.Round(float64(cells) * math.Log2(float64(1+seeders)) / math.Log2(float64(1+maxSeeders))))
+	filled = max(1, min(cells, filled))
+	return seederBarStyle(seeders).Render(strings.Repeat("▓", filled)) +
+		styleFaint.Render(strings.Repeat("░", cells-filled))
+}
+
+func seederBarStyle(seeders int) lipgloss.Style {
+	switch {
+	case seeders >= 50:
+		return styleHealthGood
+	case seeders >= 5:
+		return styleHealthMid
+	default:
+		return styleHealthBad
+	}
+}
+
+func groupMaxSeeders(r *resultsModel, g *group) int {
+	maxSeeders := 0
+	for _, idx := range g.rowIdx {
+		maxSeeders = max(maxSeeders, r.rows[idx].res.Seeders)
+	}
+	return maxSeeders
+}
+
+func groupSizeSpread(rows []scoredRow, idxs []int) (median int64, maxDevPct float64) {
+	var sizes []int64
+	for _, idx := range idxs {
+		if idx >= 0 && idx < len(rows) && rows[idx].res.SizeBytes > 0 {
+			sizes = append(sizes, rows[idx].res.SizeBytes)
+		}
+	}
+	if len(sizes) == 0 {
+		return 0, 0
+	}
+	sort.Slice(sizes, func(i, j int) bool { return sizes[i] < sizes[j] })
+	if len(sizes)%2 == 0 {
+		median = (sizes[len(sizes)/2-1] + sizes[len(sizes)/2]) / 2
+	} else {
+		median = sizes[len(sizes)/2]
+	}
+	if median <= 0 {
+		return median, 0
+	}
+	for _, s := range sizes {
+		dev := math.Abs(float64(s-median)) / float64(median) * 100
+		if dev > maxDevPct {
+			maxDevPct = dev
+		}
+	}
+	return median, maxDevPct
+}
+
+func formatSizeSpread(median int64, spread float64) string {
+	if median == 0 {
+		return styleFaint.Render("size unknown")
+	}
+	if spread <= 5 {
+		return styleOK.Render("sizes agree") + styleFaint.Render(" · median ") + styleDim.Render(humanBytes(median))
+	}
+	return styleHealthMid.Render(fmt.Sprintf("size varies ±%.0f%%", spread)) +
+		styleFaint.Render(" · median ") + styleDim.Render(humanBytes(median))
+}
+
+func lipglossWidth(s string) int {
+	return lipgloss.Width(s)
 }

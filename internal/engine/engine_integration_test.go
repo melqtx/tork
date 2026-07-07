@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -133,6 +134,33 @@ func TestEngineDownloadsFromLocalSeeder(t *testing.T) {
 	}
 }
 
+func TestAddWithOptionsRecordsDownloadDir(t *testing.T) {
+	t.Setenv("XDG_DOWNLOAD_DIR", filepath.Join(t.TempDir(), "Downloads"))
+	cfg, err := config.LoadFrom(filepath.Join(t.TempDir(), ".tork"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Close()
+
+	dir := t.TempDir()
+	magnet := "magnet:?xt=urn:btih:" + strings.Repeat("a", 40)
+	h, err := eng.AddWithOptions(magnet, AddOptions{DownloadDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, ok := eng.Snapshot(h)
+	if !ok {
+		t.Fatal("snapshot missing")
+	}
+	if snap.DownloadDir != dir {
+		t.Fatalf("DownloadDir = %q, want %q", snap.DownloadDir, dir)
+	}
+}
+
 // TestPreviewAndExcludeFiles builds a 3-file torrent, previews it (metadata
 // only, no download), then downloads while excluding the largest file. The
 // excluded file must not land on disk and the progress length must equal the
@@ -202,9 +230,12 @@ func TestPreviewAndExcludeFiles(t *testing.T) {
 	defer eng.Close()
 
 	magnet := fmt.Sprintf("magnet:?xt=urn:btih:%s&x.pe=127.0.0.1:%d", mi.HashInfoBytes().HexString(), port)
-	h, err := eng.AddForPreview(magnet)
+	h, owned, err := eng.AddForPreview(magnet)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !owned {
+		t.Fatal("first preview add should own the metadata-only torrent")
 	}
 
 	// wait for metadata; nothing should download while previewing

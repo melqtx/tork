@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/sahilm/fuzzy"
 
 	"github.com/melqtx/tork/internal/aggregator"
@@ -46,8 +48,7 @@ type resultsModel struct {
 	seen      map[string]bool // dedupe across providers/retries
 	visible   []int           // indices into rows after fuzzy filter
 	matched   map[int][]int   // row index -> matched rune positions in title
-	cursor    int             // index into visible (flat mode)
-	offset    int             // scroll offset
+	win       listWindow      // cursor over visible (flat mode)
 	filtering bool
 	filterIn  textinput.Model
 	status    map[string]aggregator.StatusEvent
@@ -58,7 +59,7 @@ type resultsModel struct {
 
 	grouped bool // source-graph view toggle (see graphview.go)
 	groups  []group
-	gcursor int // cursor over the flattened grouped view
+	gwin    listWindow // cursor over the flattened grouped view
 
 	resultCh <-chan provider.Result
 	statusCh <-chan aggregator.StatusEvent
@@ -107,7 +108,25 @@ func (a *App) updateResults(msg tea.Msg) (tea.Model, tea.Cmd) {
 	r := &a.results
 	switch msg := msg.(type) {
 	case resultMsg:
-		r.insert(msg.r)
+		// Drain whatever else is already buffered on the channel and refresh the
+		// view once, so a burst of providers doesn't trigger a full re-sort +
+		// re-filter + re-group per result.
+		r.insertRow(msg.r)
+		for drained := false; !drained; {
+			select {
+			case res, ok := <-r.resultCh:
+				if !ok {
+					r.openResults = false
+					r.searching = r.openStatus
+					r.refreshFilter()
+					return a, nil
+				}
+				r.insertRow(res)
+			default:
+				drained = true
+			}
+		}
+		r.refreshFilter()
 		return a, waitForResult(r.resultCh)
 
 	case statusMsg:
@@ -160,7 +179,7 @@ func (a *App) updateResultsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "v":
 		r.grouped = !r.grouped
 		if r.grouped {
-			r.gcursor = 0
+			r.gwin.home()
 			r.rebuildGroups()
 		}
 		return a, nil
@@ -171,24 +190,22 @@ func (a *App) updateResultsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "up", "k":
-		r.move(-1)
+		r.win.move(-1, len(r.visible), a.listRows())
 	case "down", "j":
-		r.move(1)
+		r.win.move(1, len(r.visible), a.listRows())
 	case "pgup":
-		r.move(-a.listRows())
+		r.win.move(-a.listRows(), len(r.visible), a.listRows())
 	case "pgdown":
-		r.move(a.listRows())
+		r.win.move(a.listRows(), len(r.visible), a.listRows())
 	case "g", "home":
-		r.cursor = 0
-		r.clampScroll(a.listRows())
+		r.win.home()
 	case "G", "end":
-		r.cursor = max(0, len(r.visible)-1)
-		r.clampScroll(a.listRows())
+		r.win.end(len(r.visible), a.listRows())
 	case "enter":
 		return a, a.selectResult()
 	case "D":
-		if r.cursor >= 0 && r.cursor < len(r.visible) {
-			return a, a.downloadResultDirect(r.rows[r.visible[r.cursor]].res)
+		if r.win.cursor >= 0 && r.win.cursor < len(r.visible) {
+			return a, a.downloadResultDirect(r.rows[r.visible[r.win.cursor]].res)
 		}
 	}
 	return a, nil
@@ -217,10 +234,10 @@ func (a *App) updateResultsFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // selectResult downloads the row under the flat-view cursor.
 func (a *App) selectResult() tea.Cmd {
 	r := &a.results
-	if r.cursor < 0 || r.cursor >= len(r.visible) {
+	if r.win.cursor < 0 || r.win.cursor >= len(r.visible) {
 		return nil
 	}
-	return a.downloadResult(r.rows[r.visible[r.cursor]].res)
+	return a.downloadResult(r.rows[r.visible[r.win.cursor]].res)
 }
 
 // downloadResult acts on a row: opens the preview sandbox when configured,
@@ -261,16 +278,33 @@ func (a *App) actOnResult(res provider.Result, preview bool) tea.Cmd {
 
 // launchCmd either enters the preview screen or downloads immediately.
 func (a *App) launchCmd(magnet, name string, preview bool) tea.Cmd {
+	from := a.screen
 	if preview {
 		return func() (msg tea.Msg) {
 			defer guard(&msg, func(r any) tea.Msg {
-				return previewReadyMsg{magnet: magnet, name: name, err: fmt.Errorf("add panicked: %v", r)}
+				return previewReadyMsg{magnet: magnet, name: name, from: from, err: fmt.Errorf("add panicked: %v", r)}
 			})
-			h, err := a.eng.AddForPreview(magnet)
-			return previewReadyMsg{hash: h, magnet: magnet, name: name, err: err}
+			h, owned, err := a.eng.AddForPreview(magnet)
+			return previewReadyMsg{hash: h, magnet: magnet, name: name, from: from, owned: owned, err: err}
 		}
 	}
 	return a.addTorrentCmd(magnet, name)
+}
+
+func (a *App) launchTorrentURLPreviewCmd(rawURL, name string) tea.Cmd {
+	from := a.screen
+	return func() (msg tea.Msg) {
+		defer guard(&msg, func(r any) tea.Msg {
+			return previewReadyMsg{magnet: rawURL, name: name, from: from, err: fmt.Errorf("add panicked: %v", r)}
+		})
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		h, metaName, magnet, owned, err := a.eng.AddTorrentURLForPreview(ctx, rawURL)
+		if name == "" {
+			name = metaName
+		}
+		return previewReadyMsg{hash: h, magnet: magnet, name: name, from: from, owned: owned, err: err}
+	}
 }
 
 func (a *App) findResolver(name string) provider.MagnetResolver {
@@ -294,8 +328,11 @@ func (a *App) addTorrentCmd(magnet, name string) tea.Cmd {
 	}
 }
 
-// insert adds a result keeping rows sorted by the active mode, skipping dupes.
-func (r *resultsModel) insert(res provider.Result) {
+// insertRow adds a result keeping rows sorted by the active mode, skipping
+// dupes. It does NOT refresh the view - callers batch a refresh after draining
+// a burst of streamed results, so the O(n) re-filter/re-group runs once per
+// Update rather than once per result.
+func (r *resultsModel) insertRow(res provider.Result) {
 	if r.seen[res.Key()] {
 		return
 	}
@@ -307,7 +344,6 @@ func (r *resultsModel) insert(res provider.Result) {
 	r.rows = append(r.rows, scoredRow{})
 	copy(r.rows[pos+1:], r.rows[pos:])
 	r.rows[pos] = row
-	r.refreshFilter()
 }
 
 // resort re-orders all rows after a sort-mode change and rebuilds the view.
@@ -337,35 +373,17 @@ func (r *resultsModel) refreshFilter() {
 			r.matched[m.Index] = m.MatchedIndexes
 		}
 	}
-	if r.cursor >= len(r.visible) {
-		r.cursor = max(0, len(r.visible)-1)
+	if r.win.cursor >= len(r.visible) {
+		r.win.cursor = max(0, len(r.visible)-1)
 	}
 	if r.grouped {
 		r.rebuildGroups()
 	}
 }
 
-func (r *resultsModel) move(delta int) {
-	r.cursor = max(0, min(len(r.visible)-1, r.cursor+delta))
-}
-
 // listRows is the number of visible result rows (body minus status + columns).
 func (a *App) listRows() int {
 	return max(1, a.bodyHeight()-2)
-}
-
-// clampScroll keeps the cursor within the visible window of h rows.
-func (r *resultsModel) clampScroll(h int) {
-	if h < 1 {
-		h = 1
-	}
-	if r.cursor < r.offset {
-		r.offset = r.cursor
-	}
-	if r.cursor >= r.offset+h {
-		r.offset = r.cursor - h + 1
-	}
-	r.offset = max(0, min(r.offset, max(0, len(r.visible)-h)))
 }
 
 func (a *App) viewResults() string {
@@ -377,39 +395,39 @@ func (a *App) viewResults() string {
 	b.WriteString(r.statusLine(a.agg) + "\n")
 
 	if r.grouped {
-		b.WriteString(a.viewGraph(width, listH))
+		graphH := listH
+		if a.bodyHeight() >= 16 {
+			graphH = max(1, listH-5)
+		}
+		b.WriteString(a.viewGraph(width, graphH))
+		if a.bodyHeight() >= 16 {
+			b.WriteString("\n")
+			b.WriteString(a.graphDetail(width))
+		}
+		b.WriteString("\n")
 	} else {
-		// title (flex) · dot(2) · size 11 · S 5 · L 5 · res 5 · prov
-		titleW := max(20, width-40)
-		b.WriteString(styleFaint.Render(fmt.Sprintf("   %-*s %11s %5s %5s %5s  %s", titleW, "title", "size", "S", "L", "res", "prov")) + "\n")
+		lay := newResultsLayout(width)
+		b.WriteString(styleFaint.Render(fmt.Sprintf("   %-*s %*s %*s %*s %*s  %s",
+			lay.titleW, "title", lay.sizeW, "size", lay.seedW, "S", lay.leechW, "L", lay.resW, "res", "prov")) + "\n")
 
-		r.clampScroll(listH)
-		end := min(len(r.visible), r.offset+listH)
-		for vi := r.offset; vi < end; vi++ {
+		b.WriteString(renderWindow(&r.win, len(r.visible), listH, width, func(vi int, selected bool) string {
 			idx := r.visible[vi]
 			row := r.rows[idx]
-			dead := row.res.Seeders <= 0
-			resTag := row.tags.Resolution.String()
-			line := fmt.Sprintf(" %s %s %11s %s %s %5s  %s",
+			line := fmt.Sprintf("%s %s %*s %s %s %s  %s",
 				healthDot(row.res.Seeders),
-				r.renderTitle(idx, titleW),
-				truncate(row.res.Size, 11),
-				styleSeeders.Render(fmt.Sprintf("%5d", row.res.Seeders)),
-				styleLeechers.Render(fmt.Sprintf("%5d", row.res.Leechers)),
-				styleFaint.Render(fmt.Sprintf("%5s", resTag)),
+				r.renderTitle(idx, lay.titleW),
+				lay.sizeW, truncate(row.res.Size, lay.sizeW),
+				styleSeeders.Render(fmt.Sprintf("%*d", lay.seedW, row.res.Seeders)),
+				styleLeechers.Render(fmt.Sprintf("%*d", lay.leechW, row.res.Leechers)),
+				styleFaint.Render(fmt.Sprintf("%*s", lay.resW, row.tags.Resolution.String())),
 				providerTag(row.res.Provider),
 			)
-			switch {
-			case vi == r.cursor:
-				line = styleSelected.Render(padRight(line, width))
-			case dead:
+			if !selected && row.res.Seeders <= 0 {
 				line = styleDim.Render(line)
 			}
-			b.WriteString(line + "\n")
-		}
-		for i := end - r.offset; i < listH; i++ {
-			b.WriteString("\n")
-		}
+			return line
+		}))
+		b.WriteString("\n")
 	}
 
 	var help string
@@ -419,7 +437,7 @@ func (a *App) viewResults() string {
 	case r.resolving:
 		help = styleDim.Render("resolving magnet…")
 	case r.grouped:
-		help = hints(hint("↑↓", "move"), hint("enter", "open"), hint("←→", "fold"), hint("v", "flat"), hint("/", "filter"), hint("esc", "back"))
+		help = hints(hint("↑↓", "move"), hint("enter", "get"), hint("←→", "expand/collapse"), styleBest.Render("★")+" "+styleKeyLb.Render("best"), hint("v", "flat"), hint("/", "filter"), hint("esc", "back"))
 	default:
 		help = hints(hint("↑↓", "move"), hint("enter", "get"), hint("/", "filter"), hint("o", r.sort.String()), hint("v", "graph"), hint("esc", "back"))
 	}
@@ -434,7 +452,7 @@ func (a *App) viewResults() string {
 // renderTitle pads/truncates and highlights fuzzy-matched runes.
 func (r *resultsModel) renderTitle(idx, width int) string {
 	title := truncate(r.rows[idx].res.Title, width)
-	pad := width - len([]rune(title))
+	pad := max(0, width-lipgloss.Width(title))
 	positions := r.matched[idx]
 	if len(positions) == 0 {
 		return title + strings.Repeat(" ", pad)

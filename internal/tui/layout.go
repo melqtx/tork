@@ -97,14 +97,24 @@ func (a *App) headerBar(context string) string {
 	return padRight(left, w) + "\n" + rule(w)
 }
 
-// footerBar is a rule plus a help/status line (errors take over when present).
-func (a *App) footerBar(help string) string {
-	w := a.contentWidth()
+// footerLine renders one status row: help text (an error, when present, takes
+// over) padded to width, with an optional right-aligned tail.
+func (a *App) footerLine(width int, help, right string) string {
 	line := help
 	if a.errText != "" {
 		line = styleErr.Render(a.errText)
 	}
-	return rule(w) + "\n" + padRight(line, w)
+	if right == "" {
+		return padRight(line, width)
+	}
+	gap := width - lipgloss.Width(line) - lipgloss.Width(right)
+	return line + strings.Repeat(" ", max(1, gap)) + right
+}
+
+// footerBar is a rule plus a help/status line (errors take over when present).
+func (a *App) footerBar(help string) string {
+	w := a.contentWidth()
+	return rule(w) + "\n" + a.footerLine(w, help, "")
 }
 
 // chrome composes a full screen: centered column, header on top, body filling
@@ -113,6 +123,70 @@ func (a *App) chrome(context, body, help string) string {
 	body = padLines(body, a.bodyHeight())
 	col := a.headerBar(context) + "\n" + body + "\n" + a.footerBar(help)
 	return a.center(col)
+}
+
+// flexW returns the width left for a flexible column after the fixed columns
+// (and separators) are taken out, floored so narrow terminals never produce
+// unusable columns.
+func flexW(total, floor int, fixed ...int) int {
+	w := total
+	for _, f := range fixed {
+		w -= f
+	}
+	return max(floor, w)
+}
+
+// Per-view column layouts: the fixed widths are named once so header and row
+// rendering can't drift apart, with one flexible column absorbing the rest.
+
+// resultsLayout: gutter dot title · size · S · L · res · provider.
+type resultsLayout struct {
+	titleW, sizeW, seedW, leechW, resW int
+}
+
+func newResultsLayout(width int) resultsLayout {
+	l := resultsLayout{sizeW: 11, seedW: 5, leechW: 5, resW: 5}
+	l.titleW = flexW(width, 20, 40)
+	return l
+}
+
+// previewLayout: gutter box icon name · risk · bar · size.
+type previewLayout struct {
+	nameW, barW, sizeW int
+}
+
+func newPreviewLayout(width int) previewLayout {
+	l := previewLayout{barW: 8, sizeW: 10}
+	l.nameW = flexW(width, 16, 1+2+2+2+l.barW+1+l.sizeW)
+	return l
+}
+
+// graphLayout: gutter branch dot provider S<n> size markers, with the flat
+// (single-source) title flexing into the space before the provider column.
+type graphLayout struct {
+	provW, seedW, sizeW, barW, titleW int
+}
+
+func newGraphLayout(width int) graphLayout {
+	l := graphLayout{provW: 10, seedW: 6, sizeW: 10, barW: graphBarCells(width)}
+	// leaf gutter: 2 lead + branch(2) + 1 + dot(1) + 1 = 7 before provider.
+	barGap := 0
+	if l.barW > 0 {
+		barGap = l.barW + 1
+	}
+	l.titleW = flexW(width, 20, 7+l.provW+1+barGap+l.seedW+1+l.sizeW+1)
+	return l
+}
+
+// isosLayout: gutter tag name · edition · blurb.
+type isosLayout struct {
+	nameW, edW, blurbW int
+}
+
+func newISOsLayout(width int) isosLayout {
+	l := isosLayout{nameW: 15, edW: 26}
+	l.blurbW = flexW(width, 10, 1+2+l.nameW+l.edW)
+	return l
 }
 
 // hint renders one "key label" pair; hints joins several.

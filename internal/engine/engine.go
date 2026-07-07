@@ -30,6 +30,7 @@ const (
 	StateSeeding
 	StateDone
 	StatePaused
+	StateMissing
 )
 
 func (s TorrentState) String() string {
@@ -46,6 +47,8 @@ func (s TorrentState) String() string {
 		return "done"
 	case StatePaused:
 		return "paused"
+	case StateMissing:
+		return "missing data"
 	}
 	return "unknown"
 }
@@ -61,6 +64,9 @@ type Snapshot struct {
 	Hash           metainfo.Hash
 	Name           string
 	Magnet         string
+	DownloadDir    string
+	DataPath       string
+	Seed           bool
 	BytesCompleted int64
 	Length         int64 // 0 until metadata arrives
 	SpeedBps       float64
@@ -68,6 +74,7 @@ type Snapshot struct {
 	PeersActive    int
 	PeersTotal     int
 	State          TorrentState
+	Note           string // short human status (direct downloads: failure reason)
 }
 
 func (s Snapshot) Progress() float64 {
@@ -77,12 +84,21 @@ func (s Snapshot) Progress() float64 {
 	return float64(s.BytesCompleted) / float64(s.Length)
 }
 
+type AddOptions struct {
+	DownloadDir string
+	Excluded    []int
+	Seed        *bool
+	Preview     bool
+}
+
 type item struct {
 	t             *torrent.Torrent // nil while paused
 	magnet        string
 	name          string // last known name, survives pause
-	length        int64  // last known length
-	done          int64  // last known completed bytes
+	downloadDir   string
+	dataPath      string
+	length        int64 // last known length
+	done          int64 // last known completed bytes
 	paused        bool
 	preview       bool // fetched metadata only; awaiting StartDownload
 	seeding       bool
@@ -94,9 +110,12 @@ type item struct {
 type Engine struct {
 	client  *torrent.Client
 	cfg     *config.Config
+	pc      storage.PieceCompletion
 	mu      sync.Mutex
 	items   map[metainfo.Hash]*item
-	pcClose func() // bolt piece-completion closer
+	direct  map[metainfo.Hash]*directItem // plain-HTTPS downloads (see direct.go)
+	dwg     sync.WaitGroup                // running direct-download goroutines
+	pcClose func()                        // bolt piece-completion closer
 }
 
 func New(cfg *config.Config) (*Engine, error) {
@@ -140,9 +159,30 @@ func New(cfg *config.Config) (*Engine, error) {
 	return &Engine{
 		client:  client,
 		cfg:     cfg,
+		pc:      pc,
 		items:   make(map[metainfo.Hash]*item),
+		direct:  make(map[metainfo.Hash]*directItem),
 		pcClose: func() { pc.Close() },
 	}, nil
+}
+
+func (e *Engine) normalizeOptions(opts AddOptions) AddOptions {
+	if opts.DownloadDir == "" {
+		opts.DownloadDir = e.cfg.DownloadDir
+	}
+	if abs, err := filepath.Abs(opts.DownloadDir); err == nil {
+		opts.DownloadDir = abs
+	}
+	if opts.Seed == nil {
+		seed := e.cfg.SeedAfterComplete
+		opts.Seed = &seed
+	}
+	opts.Excluded = append([]int(nil), opts.Excluded...)
+	return opts
+}
+
+func (e *Engine) storageForDir(dir string) storage.ClientImpl {
+	return storage.NewFileWithCompletion(dir, e.pc)
 }
 
 // Add starts downloading a magnet, skipping the given file indices (nil =
@@ -150,9 +190,34 @@ func New(cfg *config.Config) (*Engine, error) {
 // immediately and downloading begins once info arrives. Adding an existing
 // torrent is a no-op returning its hash.
 func (e *Engine) Add(magnet string, excluded []int) (metainfo.Hash, error) {
-	t, err := e.client.AddMagnet(magnet)
+	return e.AddWithOptions(magnet, AddOptions{Excluded: excluded})
+}
+
+func (e *Engine) AddWithOptions(magnet string, opts AddOptions) (metainfo.Hash, error) {
+	h, _, err := e.addMagnetWithOptions(magnet, opts)
+	return h, err
+}
+
+func (e *Engine) addMagnetWithOptions(magnet string, opts AddOptions) (metainfo.Hash, bool, error) {
+	opts = e.normalizeOptions(opts)
+	spec, err := torrent.TorrentSpecFromMagnetUri(magnet)
 	if err != nil {
-		return metainfo.Hash{}, err
+		return metainfo.Hash{}, false, err
+	}
+	if opts.Preview && !spec.InfoHash.IsZero() {
+		h := metainfo.Hash(spec.InfoHash)
+		e.mu.Lock()
+		if _, ok := e.items[h]; ok {
+			e.mu.Unlock()
+			return h, false, nil
+		}
+		e.mu.Unlock()
+	}
+	spec.Storage = e.storageForDir(opts.DownloadDir)
+
+	t, _, err := e.client.AddTorrentSpec(spec)
+	if err != nil {
+		return metainfo.Hash{}, false, err
 	}
 	h := t.InfoHash()
 
@@ -161,17 +226,26 @@ func (e *Engine) Add(magnet string, excluded []int) (metainfo.Hash, error) {
 		if existing.paused { // re-adding a paused torrent resumes it
 			existing.t = t
 			existing.paused = false
-			existing.preview = false
+			existing.preview = opts.Preview
+			existing.downloadDir = opts.DownloadDir
+			existing.seeding = *opts.Seed
 			e.startWhenReady(t, h)
 		}
 		e.mu.Unlock()
-		return h, nil
+		return h, false, nil
 	}
-	e.items[h] = &item{t: t, magnet: magnet, seeding: e.cfg.SeedAfterComplete, excluded: excluded}
+	e.items[h] = &item{
+		t:           t,
+		magnet:      magnet,
+		downloadDir: opts.DownloadDir,
+		seeding:     *opts.Seed,
+		excluded:    opts.Excluded,
+		preview:     opts.Preview,
+	}
 	e.mu.Unlock()
 
 	e.startWhenReady(t, h)
-	return h, nil
+	return h, true, nil
 }
 
 // torrentClient fetches .torrent files; a plain timeout is enough since these
@@ -188,6 +262,11 @@ const maxTorrentBytes = 16 << 20
 // resume, and seeding all work unchanged - everything downstream keys off the
 // magnet string.
 func (e *Engine) AddTorrentURL(ctx context.Context, url string) (h metainfo.Hash, name, magnet string, err error) {
+	return e.AddTorrentURLWithOptions(ctx, url, AddOptions{})
+}
+
+func (e *Engine) AddTorrentURLWithOptions(ctx context.Context, url string, opts AddOptions) (h metainfo.Hash, name, magnet string, err error) {
+	opts = e.normalizeOptions(opts)
 	mi, err := fetchMetaInfo(ctx, url)
 	if err != nil {
 		return metainfo.Hash{}, "", "", fmt.Errorf("fetch torrent: %w", err)
@@ -197,7 +276,9 @@ func (e *Engine) AddTorrentURL(ctx context.Context, url string) (h metainfo.Hash
 		return metainfo.Hash{}, "", "", fmt.Errorf("read torrent: %w", err)
 	}
 
-	t, err := e.client.AddTorrent(mi)
+	spec := torrent.TorrentSpecFromMetaInfo(mi)
+	spec.Storage = e.storageForDir(opts.DownloadDir)
+	t, _, err := e.client.AddTorrentSpec(spec)
 	if err != nil {
 		return metainfo.Hash{}, "", "", err
 	}
@@ -210,18 +291,84 @@ func (e *Engine) AddTorrentURL(ctx context.Context, url string) (h metainfo.Hash
 		if existing.paused { // re-adding a paused torrent resumes it
 			existing.t = t
 			existing.paused = false
-			existing.preview = false
+			existing.preview = opts.Preview
+			existing.downloadDir = opts.DownloadDir
+			existing.seeding = *opts.Seed
 			e.startWhenReady(t, h)
 		}
 		magnet = existing.magnet
 		e.mu.Unlock()
 		return h, name, magnet, nil
 	}
-	e.items[h] = &item{t: t, magnet: magnet, name: name, seeding: e.cfg.SeedAfterComplete}
+	e.items[h] = &item{
+		t:           t,
+		magnet:      magnet,
+		name:        name,
+		downloadDir: opts.DownloadDir,
+		seeding:     *opts.Seed,
+		excluded:    opts.Excluded,
+		preview:     opts.Preview,
+	}
 	e.mu.Unlock()
 
 	e.startWhenReady(t, h)
 	return h, name, magnet, nil
+}
+
+// AddTorrentURLForPreview fetches a .torrent file and registers it in preview
+// mode. It returns owned=false when the torrent was already tracked, so callers
+// know cancel must not remove it.
+func (e *Engine) AddTorrentURLForPreview(ctx context.Context, url string) (h metainfo.Hash, name, magnet string, owned bool, err error) {
+	return e.addTorrentURLForPreviewWithOptions(ctx, url, AddOptions{Preview: true})
+}
+
+func (e *Engine) addTorrentURLForPreviewWithOptions(ctx context.Context, url string, opts AddOptions) (h metainfo.Hash, name, magnet string, owned bool, err error) {
+	opts.Preview = true
+	opts = e.normalizeOptions(opts)
+	mi, err := fetchMetaInfo(ctx, url)
+	if err != nil {
+		return metainfo.Hash{}, "", "", false, fmt.Errorf("fetch torrent: %w", err)
+	}
+	info, err := mi.UnmarshalInfo()
+	if err != nil {
+		return metainfo.Hash{}, "", "", false, fmt.Errorf("read torrent: %w", err)
+	}
+	h = mi.HashInfoBytes()
+	name = info.Name
+	magnet = mi.Magnet(&h, &info).String()
+
+	e.mu.Lock()
+	if existing, ok := e.items[h]; ok {
+		if existing.magnet != "" {
+			magnet = existing.magnet
+		}
+		e.mu.Unlock()
+		return h, name, magnet, false, nil
+	}
+	e.mu.Unlock()
+
+	spec := torrent.TorrentSpecFromMetaInfo(mi)
+	spec.Storage = e.storageForDir(opts.DownloadDir)
+	t, _, err := e.client.AddTorrentSpec(spec)
+	if err != nil {
+		return metainfo.Hash{}, "", "", false, err
+	}
+	h = t.InfoHash()
+
+	e.mu.Lock()
+	e.items[h] = &item{
+		t:           t,
+		magnet:      magnet,
+		name:        name,
+		downloadDir: opts.DownloadDir,
+		seeding:     *opts.Seed,
+		excluded:    opts.Excluded,
+		preview:     true,
+	}
+	e.mu.Unlock()
+
+	e.startWhenReady(t, h)
+	return h, name, magnet, true, nil
 }
 
 func fetchMetaInfo(ctx context.Context, url string) (*metainfo.MetaInfo, error) {
@@ -240,26 +387,11 @@ func fetchMetaInfo(ctx context.Context, url string) (*metainfo.MetaInfo, error) 
 	return metainfo.Load(io.LimitReader(resp.Body, maxTorrentBytes))
 }
 
-// AddForPreview fetches metadata only: the torrent is registered but no data
-// is downloaded until StartDownload is called. If already tracked, it is a
-// no-op returning the hash.
-func (e *Engine) AddForPreview(magnet string) (metainfo.Hash, error) {
-	t, err := e.client.AddMagnet(magnet)
-	if err != nil {
-		return metainfo.Hash{}, err
-	}
-	h := t.InfoHash()
-
-	e.mu.Lock()
-	if _, ok := e.items[h]; ok {
-		e.mu.Unlock()
-		return h, nil
-	}
-	e.items[h] = &item{t: t, magnet: magnet, seeding: e.cfg.SeedAfterComplete, preview: true}
-	e.mu.Unlock()
-
-	e.startWhenReady(t, h) // no-ops until preview is cleared
-	return h, nil
+// AddForPreview fetches metadata only: the torrent is registered but no data is
+// downloaded until StartDownload is called. If already tracked, it is a no-op
+// returning owned=false so callers do not remove it on preview cancel.
+func (e *Engine) AddForPreview(magnet string) (metainfo.Hash, bool, error) {
+	return e.addMagnetWithOptions(magnet, AddOptions{Preview: true})
 }
 
 func (e *Engine) startWhenReady(t *torrent.Torrent, h metainfo.Hash) {
@@ -276,6 +408,8 @@ func (e *Engine) startWhenReady(t *torrent.Torrent, h metainfo.Hash) {
 		if !ok || it.preview {
 			return // dropped, or waiting on StartDownload
 		}
+		it.name = displayName(it)
+		it.dataPath = torrentDataPath(it)
 		e.applyExclusions(t, it, it.excluded)
 	}()
 }
@@ -331,14 +465,20 @@ func (e *Engine) StartDownload(h metainfo.Hash, excluded []int) {
 	}
 	it.preview = false
 	it.excluded = excluded
+	it.name = displayName(it)
+	it.dataPath = torrentDataPath(it)
 	e.applyExclusions(it.t, it, excluded)
 }
 
 // Pause drops the torrent from the client but keeps its entry; piece
-// completion makes resuming cheap.
+// completion makes resuming cheap. A direct download keeps its .part file.
 func (e *Engine) Pause(h metainfo.Hash) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if d, ok := e.direct[h]; ok {
+		pauseDirectLocked(d)
+		return
+	}
 	it, ok := e.items[h]
 	if !ok || it.paused || it.t == nil {
 		return
@@ -352,9 +492,17 @@ func (e *Engine) Pause(h metainfo.Hash) {
 	it.samples = ring{}
 }
 
-// Resume re-adds a paused torrent.
+// Resume re-adds a paused torrent, or restarts a paused direct download from
+// its .part file.
 func (e *Engine) Resume(h metainfo.Hash) error {
 	e.mu.Lock()
+	if d, ok := e.direct[h]; ok {
+		if d.state == StatePaused {
+			e.startDirectLocked(d)
+		}
+		e.mu.Unlock()
+		return nil
+	}
 	it, ok := e.items[h]
 	if !ok || !it.paused {
 		e.mu.Unlock()
@@ -362,12 +510,15 @@ func (e *Engine) Resume(h metainfo.Hash) error {
 	}
 	magnet := it.magnet
 	excluded := it.excluded
+	downloadDir := it.downloadDir
+	seed := it.seeding
 	e.mu.Unlock()
-	_, err := e.Add(magnet, excluded)
+	_, err := e.AddWithOptions(magnet, AddOptions{DownloadDir: downloadDir, Excluded: excluded, Seed: &seed})
 	return err
 }
 
 // SetSeeding toggles uploading for a torrent by capping its connections.
+// Direct downloads have nothing to seed; the toggle is inert for them.
 func (e *Engine) SetSeeding(h metainfo.Hash, on bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -393,6 +544,10 @@ func (e *Engine) SetSeeding(h metainfo.Hash, on bool) {
 // Remove drops the torrent and forgets it; optionally deletes downloaded data.
 func (e *Engine) Remove(h metainfo.Hash, deleteData bool) error {
 	e.mu.Lock()
+	if d, ok := e.direct[h]; ok {
+		e.mu.Unlock()
+		return e.removeDirect(h, d, deleteData)
+	}
 	it, ok := e.items[h]
 	if !ok {
 		e.mu.Unlock()
@@ -400,10 +555,13 @@ func (e *Engine) Remove(h metainfo.Hash, deleteData bool) error {
 	}
 	var dataPath string
 	if deleteData {
-		if name := displayName(it); name != "" && name != "?" {
-			if p, ok := safeDataPath(e.cfg.DownloadDir, name); ok {
-				dataPath = p
-			}
+		dataPath = it.dataPath
+		if dataPath == "" {
+			dataPath = torrentDataPath(it)
+		}
+		if dataPath == "" || !safePathWithin(it.downloadDir, dataPath) {
+			e.mu.Unlock()
+			return fmt.Errorf("delete data refused: unknown or unsafe path")
 		}
 	}
 	if it.t != nil {
@@ -423,8 +581,15 @@ func (e *Engine) Remove(h metainfo.Hash, deleteData bool) error {
 // name like "../../x" would let delete-data RemoveAll a path outside the
 // download directory (and "." would target the whole directory).
 func safeDataPath(dir, name string) (string, bool) {
-	joined := filepath.Join(dir, name)
-	rel, err := filepath.Rel(dir, joined)
+	if dir == "" || strings.TrimSpace(name) == "" {
+		return "", false
+	}
+	base, err := filepath.Abs(dir)
+	if err != nil {
+		return "", false
+	}
+	joined := filepath.Join(base, name)
+	rel, err := filepath.Rel(base, joined)
 	if err != nil || rel == "." || rel == ".." ||
 		strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
 		return "", false
@@ -432,12 +597,33 @@ func safeDataPath(dir, name string) (string, bool) {
 	return joined, true
 }
 
-// Magnet returns the original magnet URI for a tracked torrent.
+func safePathWithin(dir, path string) bool {
+	if dir == "" || path == "" {
+		return false
+	}
+	base, err := filepath.Abs(dir)
+	if err != nil {
+		return false
+	}
+	target, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(base, target)
+	return err == nil && rel != "." && rel != ".." &&
+		!strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && !filepath.IsAbs(rel)
+}
+
+// Magnet returns the resume key for a tracked download: the magnet URI for a
+// torrent, or the https URL for a direct download.
 func (e *Engine) Magnet(h metainfo.Hash) string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if it, ok := e.items[h]; ok {
 		return it.magnet
+	}
+	if d, ok := e.direct[h]; ok {
+		return d.url
 	}
 	return ""
 }
@@ -448,15 +634,38 @@ func (e *Engine) Snapshots() []Snapshot {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	now := time.Now()
-	out := make([]Snapshot, 0, len(e.items))
+	out := make([]Snapshot, 0, len(e.items)+len(e.direct))
 	for h, it := range e.items {
 		out = append(out, e.snapshot(h, it, now))
+	}
+	for h, d := range e.direct {
+		out = append(out, e.directSnapshot(h, d, now))
 	}
 	return out
 }
 
+func (e *Engine) Snapshot(h metainfo.Hash) (Snapshot, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	now := time.Now()
+	if it, ok := e.items[h]; ok {
+		return e.snapshot(h, it, now), true
+	}
+	if d, ok := e.direct[h]; ok {
+		return e.directSnapshot(h, d, now), true
+	}
+	return Snapshot{}, false
+}
+
 func (e *Engine) snapshot(h metainfo.Hash, it *item, now time.Time) Snapshot {
-	s := Snapshot{Hash: h, Magnet: it.magnet, Name: displayName(it)}
+	name := displayName(it)
+	if name != "?" {
+		it.name = name
+		if it.dataPath == "" {
+			it.dataPath = torrentDataPath(it)
+		}
+	}
+	s := Snapshot{Hash: h, Magnet: it.magnet, Name: name, DownloadDir: it.downloadDir, DataPath: it.dataPath, Seed: it.seeding}
 
 	if it.paused || it.t == nil {
 		s.State = StatePaused
@@ -496,8 +705,19 @@ func (e *Engine) snapshot(h metainfo.Hash, it *item, now time.Time) Snapshot {
 	return s
 }
 
-// Close shuts the client down gracefully, flushing piece completion.
+// Close shuts the client down gracefully, flushing piece completion and
+// stopping direct downloads (their .part files resume on next start).
 func (e *Engine) Close() {
+	e.mu.Lock()
+	for _, d := range e.direct {
+		if d.cancel != nil {
+			d.cancel()
+			d.cancel = nil
+		}
+	}
+	e.mu.Unlock()
+	e.dwg.Wait()
+
 	e.client.Close()
 	<-e.client.Closed()
 	e.pcClose()
@@ -513,6 +733,17 @@ func displayName(it *item) string {
 		return it.name
 	}
 	return "?"
+}
+
+func torrentDataPath(it *item) string {
+	name := displayName(it)
+	if name == "" || name == "?" {
+		return ""
+	}
+	if p, ok := safeDataPath(it.downloadDir, name); ok {
+		return p
+	}
+	return ""
 }
 
 func torrentLength(t *torrent.Torrent) int64 {

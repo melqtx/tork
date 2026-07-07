@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // Palette - a restrained, cozy dark theme: one soft green accent, layered
@@ -43,6 +44,7 @@ var (
 	styleErr      = lipgloss.NewStyle().Foreground(colRose).Bold(true)
 	styleOK       = lipgloss.NewStyle().Foreground(colGreen)
 	styleMatch    = lipgloss.NewStyle().Foreground(colBrand).Bold(true)
+	styleBest     = lipgloss.NewStyle().Foreground(colAmber).Bold(true) // ★ best source - gold, distinct from the green
 	styleStateTag = lipgloss.NewStyle().Foreground(colBlue)
 	styleHelp     = lipgloss.NewStyle().Foreground(colFaint)
 
@@ -160,16 +162,17 @@ func fmtETA(d time.Duration) string {
 	return fmt.Sprintf("%ds", s)
 }
 
+// truncate shortens s to at most w display cells (ANSI- and wide-rune-aware),
+// ending with an ellipsis when anything was cut.
 func truncate(s string, w int) string {
 	if w <= 0 {
 		return ""
 	}
-	r := []rune(s)
-	if len(r) <= w {
+	if lipgloss.Width(s) <= w {
 		return s
 	}
-	if w <= 1 {
-		return string(r[:w])
+	if w == 1 {
+		return ansi.Truncate(s, 1, "")
 	}
-	return string(r[:w-1]) + "…"
+	return ansi.Truncate(s, w, "…")
 }
