@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:nyaa="https://nyaa.si/xmlns/nyaa">
+  <channel>
+    <title>Nyaa - "frieren" - Torrent File RSS</title>
+    <link>https://nyaa.si/</link>
+    <item>
+      <title>[SubsPlease] Sousou no Frieren - 28 (1080p) [ABCD1234].mkv</title>
+      <link>https://nyaa.si/download/1780000.torrent</link>
+      <guid isPermaLink="true">https://nyaa.si/view/1780000</guid>
+      <pubDate>Fri, 22 Mar 2024 17:31:22 -0000</pubDate>
+      <nyaa:seeders>1345</nyaa:seeders>
+      <nyaa:leechers>89</nyaa:leechers>
+      <nyaa:downloads>20431</nyaa:downloads>
+      <nyaa:infoHash>0123456789abcdef0123456789abcdef01234567</nyaa:infoHash>
+      <nyaa:categoryId>1_2</nyaa:categoryId>
+      <nyaa:category>Anime - English-translated</nyaa:category>
+      <nyaa:size>1.4 GiB</nyaa:size>
+      <nyaa:comments>3</nyaa:comments>
+      <nyaa:trusted>Yes</nyaa:trusted>
+      <nyaa:remake>No</nyaa:remake>
+    </item>
+    <item>
+      <title>[Erai-raws] Sousou no Frieren - 28 [720p][Multiple Subtitle]</title>
+      <link>https://nyaa.si/download/1779998.torrent</link>
+      <guid isPermaLink="true">https://nyaa.si/view/1779998</guid>
+      <pubDate>Fri, 22 Mar 2024 17:02:01 -0000</pubDate>
+      <nyaa:seeders>402</nyaa:seeders>
+      <nyaa:leechers>21</nyaa:leechers>
+      <nyaa:downloads>8890</nyaa:downloads>
+      <nyaa:infoHash>fedcba9876543210fedcba9876543210fedcba98</nyaa:infoHash>
+      <nyaa:categoryId>1_2</nyaa:categoryId>
+      <nyaa:category>Anime - English-translated</nyaa:category>
+      <nyaa:size>731.5 MiB</nyaa:size>
+      <nyaa:comments>0</nyaa:comments>
+      <nyaa:trusted>No</nyaa:trusted>
+      <nyaa:remake>No</nyaa:remake>
+    </item>
+  </channel>
+</rss>

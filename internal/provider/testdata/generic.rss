@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:torznab="http://torznab.com/schemas/2015/feed">
+  <channel>
+    <item>
+      <title>Ubuntu 24.04 Desktop amd64</title>
+      <link>magnet:?xt=urn:btih:abcdefabcdefabcdefabcdefabcdefabcdefabcd&amp;dn=Ubuntu</link>
+      <torznab:attr name="seeders" value="88" />
+      <torznab:attr name="leechers" value="7" />
+      <torznab:attr name="size" value="3221225472" />
+      <torznab:attr name="trusted" value="true" />
+    </item>
+    <item>
+      <title>Debian 13 netinst</title>
+      <enclosure url="magnet:?xt=urn:btih:1234512345123451234512345123451234512345&amp;dn=Debian" length="734003200" />
+      <torznab:attr name="seeders" value="21" />
+      <torznab:attr name="peers" value="3" />
+    </item>
+  </channel>
+</rss>

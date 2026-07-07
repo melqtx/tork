@@ -1,0 +1,27 @@
+# compiled binary
+/tork
+
+# backups tork writes when it recovers corrupt state
+*.bak
+*.corrupt
+
+# local editor / OS cruft
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# scratch
+/tmp/
+dist/
+
+# local Go build cache (never commit)
+.gocache/
+
+# downloaded media / test artifacts (never commit these)
+*.iso
+*.torrent
+*.mkv
+*.mp4
+*.avi
+downloads/

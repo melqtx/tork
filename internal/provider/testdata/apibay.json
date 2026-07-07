@@ -1,0 +1,33 @@
+[
+  {
+    "id": "100",
+    "name": "Ubuntu 24.04 LTS Desktop amd64",
+    "info_hash": "ABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD",
+    "seeders": "512",
+    "leechers": "18",
+    "num_files": "1",
+    "size": "5905580032",
+    "added": "1713916800",
+    "category": "207"
+  },
+  {
+    "id": "101",
+    "name": "Ubuntu 24.04 Music Pack",
+    "info_hash": "1111111111111111111111111111111111111111",
+    "seeders": "99",
+    "leechers": "4",
+    "num_files": "10",
+    "size": "1000",
+    "added": "1713916800",
+    "category": "101"
+  },
+  {
+    "id": "0",
+    "name": "bad row",
+    "info_hash": "0000000000000000000000000000000000000000",
+    "seeders": "999",
+    "leechers": "1",
+    "size": "1",
+    "category": "207"
+  }
+]

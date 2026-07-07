@@ -1,0 +1,35 @@
+{
+  "status": "ok",
+  "status_message": "Query was successful",
+  "data": {
+    "movie_count": 1,
+    "limit": 50,
+    "page_number": 1,
+    "movies": [
+      {
+        "id": 1234,
+        "title": "Inception",
+        "title_long": "Inception (2010)",
+        "year": 2010,
+        "torrents": [
+          {
+            "hash": "AABBCCDDEEFF00112233445566778899AABBCCDD",
+            "quality": "1080p",
+            "size": "2.4 GB",
+            "size_bytes": 2576980378,
+            "seeds": 512,
+            "peers": 43
+          },
+          {
+            "hash": "1122334455667788990011223344556677889900",
+            "quality": "720p",
+            "size": "1.1 GB",
+            "size_bytes": 1181116006,
+            "seeds": 201,
+            "peers": 12
+          }
+        ]
+      }
+    ]
+  }
+}
