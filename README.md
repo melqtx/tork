@@ -5,6 +5,8 @@ official Linux ISOs. Searches Knaben (metasearch), YTS, Nyaa, and any
 RSS/Torznab feed; streams and ranks results; downloads over BitTorrent with live
 progress.
 
+![tork home screen](docs/screenshot.png)
+
 ## Install
 
 ### Arch Linux
@@ -27,10 +29,23 @@ makepkg -si
 
 ### Nix
 
+With flakes:
+
+```sh
+nix run github:melqtx/tork
+```
+
+Install to your profile:
+
+```sh
+nix profile install github:melqtx/tork
+```
+
 From a clone:
 
 ```sh
-nix-build -E 'with import <nixpkgs> {}; callPackage ./packaging/nix/package.nix {}'
+nix run .
+nix build .
 ./result/bin/tork
 ```
 

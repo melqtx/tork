@@ -1,28 +1,81 @@
 # Packaging tork
 
-This directory holds packaging templates for the first public release.
+This directory keeps package recipes for downstream installs.
 
-## Release Prerequisites
+Current release: `v0.1.0`
 
-1. Push the repo to `https://github.com/melqtx/tork`.
-2. Create a stable tag, for example `v0.1.0`.
-3. Make sure this works from outside the repo:
+## Files
+
+- `aur/PKGBUILD` is the Arch AUR recipe. The `tork` package is live on AUR.
+- `homebrew/tork.rb` is ready for a future `melqtx/homebrew-tap` repo.
+- `nix/package.nix` is the reusable Nix package expression.
+- `../flake.nix` wraps the Nix package so users can run `nix run github:melqtx/tork`.
+
+## Release Flow
+
+When cutting a new release:
+
+1. Update the version in:
+   - `packaging/aur/PKGBUILD`
+   - `packaging/homebrew/tork.rb`
+   - `packaging/nix/package.nix`
+   - `flake.nix`
+2. Tag and publish the release:
 
    ```sh
-   go install github.com/melqtx/tork/cmd/tork@v0.1.0
-   tork --version
+   git tag -a v0.1.1 main -m "v0.1.1"
+   git push origin v0.1.1
+   gh release create v0.1.1 --verify-tag --title "v0.1.1" --generate-notes
    ```
 
-4. Generate the release tarball SHA256:
+3. Get the GitHub source tarball hash:
 
    ```sh
-   curl -L https://github.com/melqtx/tork/archive/refs/tags/v0.1.0.tar.gz -o tork-0.1.0.tar.gz
-   shasum -a 256 tork-0.1.0.tar.gz
+   curl -L https://github.com/melqtx/tork/archive/refs/tags/v0.1.1.tar.gz -o /tmp/tork-0.1.1.tar.gz
+   shasum -a 256 /tmp/tork-0.1.1.tar.gz
    ```
+
+4. Put that hash in:
+   - `packaging/aur/PKGBUILD`
+   - `packaging/homebrew/tork.rb`
+
+5. Refresh the Nix hashes with fake hashes first, then let Nix print the real values:
+
+   ```sh
+   nix-build -E 'with import <nixpkgs> {}; callPackage ./packaging/nix/package.nix {}'
+   ```
+
+6. Verify the flake:
+
+   ```sh
+   nix flake check
+   nix run . -- --version
+   ```
+
+## Arch AUR
+
+The AUR repo is `ssh://aur@aur.archlinux.org/tork.git`.
+
+Update it from this repo root on an Arch machine:
+
+```sh
+git clone ssh://aur@aur.archlinux.org/tork.git /tmp/tork-aur
+cp packaging/aur/PKGBUILD /tmp/tork-aur/PKGBUILD
+cd /tmp/tork-aur
+makepkg -Csr
+makepkg --printsrcinfo > .SRCINFO
+git add PKGBUILD .SRCINFO
+git commit -m "update tork"
+git push origin master
+```
+
+Only `PKGBUILD` and `.SRCINFO` belong in the AUR repo.
 
 ## Homebrew
 
-Start with a personal tap before trying `homebrew-core`:
+The formula is ready, but the tap repo is not published yet.
+
+When you make the tap:
 
 ```sh
 brew tap-new melqtx/tap
@@ -30,31 +83,30 @@ cp packaging/homebrew/tork.rb "$(brew --repository melqtx/tap)/Formula/tork.rb"
 brew install --build-from-source melqtx/tap/tork
 brew test melqtx/tap/tork
 brew audit --strict --online melqtx/tap/tork
+gh repo create melqtx/homebrew-tap --public --source "$(brew --repository melqtx/tap)" --push
 ```
 
-Replace `REPLACE_WITH_RELEASE_TARBALL_SHA256` first.
-
-## Arch AUR
-
-Copy `packaging/aur/PKGBUILD` into a separate AUR checkout:
+Then users can install with:
 
 ```sh
-makepkg -si
-makepkg --printsrcinfo > .SRCINFO
+brew install melqtx/tap/tork
 ```
 
-Replace `REPLACE_WITH_RELEASE_TARBALL_SHA256` first. Commit both `PKGBUILD`
-and `.SRCINFO` to the AUR package repository.
+## Nix
 
-## Nix / NUR
+The flake is the easiest path:
 
-Use `packaging/nix/package.nix` as the package expression for NUR or an overlay.
-For the two hashes, Nix usually tells you the expected hash when you first
-build with a fake one:
+```sh
+nix run github:melqtx/tork
+nix profile install github:melqtx/tork
+```
+
+The package expression also works without flakes:
 
 ```sh
 nix-build -E 'with import <nixpkgs> {}; callPackage ./packaging/nix/package.nix {}'
 ```
 
-Replace `sha256-REPLACE_WITH_SOURCE_HASH` and `sha256-REPLACE_WITH_VENDOR_HASH`
-with the values Nix reports.
+For NUR later, create a separate `nur-packages` repo with a top-level
+`default.nix` that exposes `tork = pkgs.callPackage ./pkgs/tork {};`, then open
+a PR to `nix-community/NUR` adding that repo to `repos.json`.
