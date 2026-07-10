@@ -15,6 +15,7 @@ Fedora, Arch, NixOS, Proxmox, and more) resolved live and grabbed with one key.
 ## Install
 
 ```sh
+brew tap melqtx/tap && brew install tork             # macOS (Homebrew)
 yay -S tork                                          # Arch (AUR)
 nix run github:melqtx/tork                           # Nix
 go install github.com/melqtx/tork/cmd/tork@latest    # Go 1.26+
