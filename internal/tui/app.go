@@ -10,6 +10,7 @@ import (
 	"github.com/melqtx/tork/internal/aggregator"
 	"github.com/melqtx/tork/internal/config"
 	"github.com/melqtx/tork/internal/engine"
+	"github.com/melqtx/tork/internal/health"
 	"github.com/melqtx/tork/internal/state"
 )
 
@@ -21,13 +22,15 @@ const (
 	screenResults
 	screenPreview
 	screenDownloads
+	screenHealth
 )
 
 type App struct {
-	cfg *config.Config
-	eng *engine.Engine
-	agg *aggregator.Aggregator
-	st  *state.State
+	cfg    *config.Config
+	eng    *engine.Engine
+	agg    *aggregator.Aggregator
+	st     *state.State
+	health *health.Store
 
 	screen screen
 	width  int
@@ -38,17 +41,19 @@ type App struct {
 	results   resultsModel
 	preview   previewModel
 	downloads downloadsModel
+	compass   compassModel
 
 	errText      string
 	lastTickSave time.Time // throttles progress-only state.json writes on the tick
 }
 
-func New(cfg *config.Config, eng *engine.Engine, agg *aggregator.Aggregator, st *state.State) *App {
+func New(cfg *config.Config, eng *engine.Engine, agg *aggregator.Aggregator, st *state.State, hs *health.Store) *App {
 	return &App{
 		cfg:       cfg,
 		eng:       eng,
 		agg:       agg,
 		st:        st,
+		health:    hs,
 		search:    newSearchModel(),
 		isos:      newISOsModel(),
 		results:   newResultsModel(cfg.Ranking),
@@ -89,6 +94,12 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.cycleScreen()
 				return a, nil
 			}
+		case "H":
+			// The health screen is reachable from anywhere a capital letter is
+			// not being typed, and is deliberately outside the tab cycle.
+			if a.health != nil && !a.typing() && a.screen != screenPreview && a.screen != screenHealth {
+				return a, a.openHealth()
+			}
 		}
 
 	case tickMsg:
@@ -112,6 +123,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case clearErrMsg:
 		a.errText = ""
 		return a, nil
+
+	case healthDoneMsg:
+		return a, a.onHealthDone(msg)
 	}
 
 	switch a.screen {
@@ -123,6 +137,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.updateResults(msg)
 	case screenPreview:
 		return a.updatePreview(msg)
+	case screenHealth:
+		return a.updateHealth(msg)
 	default:
 		return a.updateDownloads(msg)
 	}
@@ -138,6 +154,8 @@ func (a *App) View() string {
 		return a.viewResults()
 	case screenPreview:
 		return a.viewPreview()
+	case screenHealth:
+		return a.viewHealth()
 	default:
 		return a.viewDownloads()
 	}
@@ -191,7 +209,9 @@ func (a *App) onPreviewReady(msg previewReadyMsg) tea.Cmd {
 // typing reports whether a text input currently owns the keyboard, so global
 // single-letter shortcuts must stay inert.
 func (a *App) typing() bool {
-	return a.screen == screenSearch || (a.screen == screenResults && a.results.filtering)
+	return a.screen == screenSearch ||
+		(a.screen == screenResults && a.results.filtering) ||
+		a.downloads.prompt.action != pathActionNone
 }
 
 func (a *App) cycleScreen() {

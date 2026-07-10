@@ -612,7 +612,7 @@ func (a *App) viewDownloads() string {
 		b.WriteString("\n" + rule(width) + "\n" + detail)
 	}
 
-	help := hints(hint("↑↓", "move"), hint("p", "pause"), hint("s", "seed"), hint("v", "verify"), hint("m", "move"), hint("r", "relink"), hint("x", "remove"), hint("d", "delete"), hint("esc", "search"))
+	help := hints(hint("↑↓", "move"), hint("p", "pause"), hint("s", "seed"), hint("v", "verify"), hint("m", "move"), hint("r", "relink"), hint("x", "remove"), hint("d", "delete"), hint("H", "health"), hint("esc", "search"))
 	if d.confirmRemove != nil {
 		verb := "remove from list"
 		if d.confirmRemove.deleteData {

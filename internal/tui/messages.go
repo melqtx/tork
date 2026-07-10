@@ -42,6 +42,10 @@ type previewReadyMsg struct {
 type tickMsg time.Time
 type clearErrMsg struct{}
 
+// healthDoneMsg reports a manual health re-check finishing; the store already
+// holds the new snapshot, so only the error travels.
+type healthDoneMsg struct{ err error }
+
 // waitForResult pumps one item off the search results channel into the tea
 // loop, then re-arms itself from Update - the idiomatic streaming pattern.
 func waitForResult(ch <-chan provider.Result) tea.Cmd {

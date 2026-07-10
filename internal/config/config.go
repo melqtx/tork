@@ -36,6 +36,23 @@ type AutopilotConfig struct {
 	MinSeeders   int `yaml:"min_seeders"`
 }
 
+// HealthConfig tunes the opportunistic health check that runs on launch when
+// the last recorded check is older than the interval.
+type HealthConfig struct {
+	Enabled       bool `yaml:"enabled"`
+	IntervalHours int  `yaml:"interval_hours"`
+}
+
+// Interval is the gap between automatic health checks. A missing or nonsensical
+// interval_hours falls back to the daily default rather than turning every
+// launch into a provider probe.
+func (h HealthConfig) Interval() time.Duration {
+	if h.IntervalHours < 1 {
+		return 24 * time.Hour
+	}
+	return time.Duration(h.IntervalHours) * time.Hour
+}
+
 type Config struct {
 	DownloadDir           string                    `yaml:"download_dir"`
 	SeedAfterComplete     bool                      `yaml:"seed_after_complete"`
@@ -46,6 +63,7 @@ type Config struct {
 	HideNSFW              bool                      `yaml:"hide_nsfw"`
 	Ranking               rank.Weights              `yaml:"ranking"`
 	Autopilot             AutopilotConfig           `yaml:"autopilot"`
+	Health                HealthConfig              `yaml:"health"`
 	Providers             map[string]ProviderConfig `yaml:"providers"`
 
 	dir string // ~/.tork, resolved at load time
@@ -62,9 +80,16 @@ func (c *Config) OverrideDownloadDir(dir string) error {
 	return os.MkdirAll(c.DownloadDir, 0o755)
 }
 
+// SetDownloadDir points downloads at dir without creating it, so a read-only
+// caller (doctor) can inspect a directory rather than conjure it into being.
+func (c *Config) SetDownloadDir(dir string) {
+	c.DownloadDir = expandHome(dir)
+}
+
 func (c *Config) Dir() string                { return c.dir }
 func (c *Config) StatePath() string          { return filepath.Join(c.dir, "state.json") }
 func (c *Config) ConfigPath() string         { return filepath.Join(c.dir, "config.yaml") }
+func (c *Config) HealthPath() string         { return filepath.Join(c.dir, "health.json") }
 func (c *Config) PieceCompletionDir() string { return c.dir }
 
 func Default(dir string) *Config {
@@ -78,6 +103,7 @@ func Default(dir string) *Config {
 		HideNSFW:              true,
 		Ranking:               rank.DefaultWeights(),
 		Autopilot:             AutopilotConfig{MaxDownloads: 10, MinSeeders: 5},
+		Health:                HealthConfig{Enabled: false, IntervalHours: 24},
 		Providers: map[string]ProviderConfig{
 			"knaben": {Enabled: true, Type: "knaben", Mirror: "https://knaben.org"},
 			"yts":    {Enabled: true, Type: "yts", Mirror: "https://yts.mx"},
@@ -101,6 +127,17 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("resolve home dir: %w", err)
 	}
 	return LoadFrom(filepath.Join(home, ".tork"))
+}
+
+// LoadReadOnly reads the user's configuration without creating, repairing, or
+// otherwise touching any files or directories. Diagnostics use this path so a
+// check can never change the machine it is inspecting.
+func LoadReadOnly() (*Config, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("resolve home dir: %w", err)
+	}
+	return LoadReadOnlyFrom(filepath.Join(home, ".tork"))
 }
 
 // defaultDownloadDir resolves the OS "Downloads" folder, so torrents land
@@ -158,6 +195,29 @@ func LoadFrom(dir string) (*Config, error) {
 	if err := os.MkdirAll(cfg.DownloadDir, 0o755); err != nil {
 		return nil, err
 	}
+	return cfg, nil
+}
+
+// LoadReadOnlyFrom is LoadReadOnly with an explicit base directory for tests.
+// A missing config gets in-memory defaults; malformed or unreadable config is
+// reported to the caller instead of being backed up and replaced.
+func LoadReadOnlyFrom(dir string) (*Config, error) {
+	cfg := Default(dir)
+	defaults := Default(dir)
+	path := cfg.ConfigPath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return cfg, nil
+		}
+		return nil, err
+	}
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	cfg.dir = dir
+	mergeProviderDefaults(cfg, defaults)
+	cfg.DownloadDir = expandHome(cfg.DownloadDir)
 	return cfg, nil
 }
 

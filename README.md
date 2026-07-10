@@ -24,6 +24,25 @@ go install github.com/melqtx/tork/cmd/tork@latest    # Go 1.26+
 Config lives in `~/.tork/`; downloads land in `~/Downloads/tork` (change with
 `tork -d DIR`).
 
+## Health checks
+
+`tork doctor` is read-only by default and checks config, disk, state, and
+provider reachability. Add `--engine` for an opt-in listener check or `--record`
+to save provider results in `~/.tork/health.json`. Health history contains local
+provider timings plus torrent names and swarm counts; it is never uploaded.
+
+Automatic checks are off by default. Enable a daily background check with:
+
+```yaml
+health:
+  enabled: true
+  interval_hours: 24
+```
+
+The check sends the generic `1080p` canary query to enabled providers. Press
+`H` in tork to view the saved source and swarm history, or `r` there to record
+a manual check.
+
 ## Keys
 
 - **home** type to search, `↑↓` pick a destination, `enter` go

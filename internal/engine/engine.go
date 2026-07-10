@@ -73,6 +73,7 @@ type Snapshot struct {
 	ETA            time.Duration // 0 when unknown or done
 	PeersActive    int
 	PeersTotal     int
+	Seeders        int // peers we are connected to that hold the complete torrent
 	State          TorrentState
 	Note           string // short human status (direct downloads: failure reason)
 }
@@ -685,6 +686,7 @@ func (e *Engine) snapshot(h metainfo.Hash, it *item, now time.Time) Snapshot {
 	stats := t.Stats()
 	s.PeersActive = stats.ActivePeers
 	s.PeersTotal = stats.TotalPeers
+	s.Seeders = stats.ConnectedSeeders
 
 	it.samples.push(sample{at: now, bytes: s.BytesCompleted})
 	s.SpeedBps = it.samples.speedBps()
@@ -718,6 +720,10 @@ func (e *Engine) snapshot(h metainfo.Hash, it *item, now time.Time) Snapshot {
 	}
 	return s
 }
+
+// ListenPort is the port the torrent client actually bound, which differs from
+// cfg.ListenPort whenever that is 0 (pick any free port).
+func (e *Engine) ListenPort() int { return e.client.LocalPort() }
 
 // Close shuts the client down gracefully, flushing piece completion and
 // stopping direct downloads (their .part files resume on next start).

@@ -34,6 +34,58 @@ func TestLoadFromWritesDefaultsOnFirstRun(t *testing.T) {
 	if cfg.Providers["eztv"].Enabled || cfg.Providers["x1337"].Enabled {
 		t.Error("html scraper providers should be opt-in by default")
 	}
+	if cfg.Health.Enabled || cfg.Health.IntervalHours != 24 {
+		t.Errorf("health defaults = %+v, want disabled daily checks", cfg.Health)
+	}
+}
+
+func TestLoadReadOnlyDoesNotCreateFiles(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".tork")
+	cfg, err := LoadReadOnlyFrom(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Health.Enabled {
+		t.Fatal("read-only defaults must leave automatic health checks disabled")
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("read-only load created %s: %v", dir, err)
+	}
+}
+
+func TestLoadReadOnlyPreservesHealthOptIn(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".tork")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("health:\n  enabled: true\n  interval_hours: 12\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadReadOnlyFrom(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Health.Enabled || cfg.Health.IntervalHours != 12 {
+		t.Errorf("health opt-in = %+v, want enabled every 12h", cfg.Health)
+	}
+}
+
+func TestLoadReadOnlyMergesProviderDefaults(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".tork")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("providers:\n  yts: {enabled: false}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadReadOnlyFrom(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Providers["yts"].Enabled || !cfg.Providers["knaben"].Enabled {
+		t.Errorf("read-only provider defaults = %+v", cfg.Providers)
+	}
 }
 
 func TestLoadFromReadsExistingFile(t *testing.T) {

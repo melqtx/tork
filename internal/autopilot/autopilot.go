@@ -17,9 +17,9 @@ import (
 	"github.com/melqtx/tork/internal/state"
 )
 
-// shortReason turns a raw provider/network error into a calm, human phrase
+// ShortReason turns a raw provider/network error into a calm, human phrase
 // instead of dumping a full Go error (URLs, "dial tcp", etc.) on the user.
-func shortReason(err error) string {
+func ShortReason(err error) string {
 	if err == nil {
 		return "failed"
 	}
@@ -35,6 +35,9 @@ func shortReason(err error) string {
 		return "unreachable"
 	case strings.Contains(s, "unexpected status"):
 		return "bad response"
+	case strings.Contains(s, "eof"), strings.Contains(s, "connection reset"):
+		// The server hung up mid-response - common when a site throttles us.
+		return "no response"
 	}
 	if r := []rune(err.Error()); len(r) > 44 {
 		return string(r[:44]) + "…"
@@ -89,13 +92,13 @@ func (d Deps) Execute(ctx context.Context, raw string, dryRun bool, maxOverride 
 	for _, p := range picks {
 		magnet, err := d.resolve(ctx, p.Result)
 		if err != nil {
-			fmt.Fprintf(d.Out, "  ✗ %s: %s\n", trunc(p.Result.Title, 50), shortReason(err))
+			fmt.Fprintf(d.Out, "  ✗ %s: %s\n", trunc(p.Result.Title, 50), ShortReason(err))
 			continue
 		}
 		seed := d.Cfg.SeedAfterComplete
 		h, err := d.Eng.AddWithOptions(magnet, engine.AddOptions{DownloadDir: d.Cfg.DownloadDir, Seed: &seed})
 		if err != nil {
-			fmt.Fprintf(d.Out, "  ✗ %s: %s\n", trunc(p.Result.Title, 50), shortReason(err))
+			fmt.Fprintf(d.Out, "  ✗ %s: %s\n", trunc(p.Result.Title, 50), ShortReason(err))
 			continue
 		}
 		entry := state.Entry{
@@ -147,7 +150,7 @@ func (d Deps) gather(ctx context.Context, query string) []provider.Result {
 					fmt.Fprintf(d.Out, "  %-10s · no matches\n", ev.Provider)
 				}
 			case aggregator.StateFailed:
-				fmt.Fprintf(d.Out, "  %-10s ✗ %s\n", ev.Provider, shortReason(ev.Err))
+				fmt.Fprintf(d.Out, "  %-10s ✗ %s\n", ev.Provider, ShortReason(ev.Err))
 			}
 		}
 	}
