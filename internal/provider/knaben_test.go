@@ -9,12 +9,20 @@ import (
 func TestKnabenSearch(t *testing.T) {
 	srv := serveFixture(t, "knaben.html")
 	results := collect(t, NewKnaben(srv.Client(), srv.URL), "fight club")
-	if len(results) != 3 {
-		t.Fatalf("got %d results, want 3: %+v", len(results), results)
+	// the provider emits every row (including the XXX one); filtering is the
+	// aggregator's job, so all four come through here.
+	if len(results) != 4 {
+		t.Fatalf("got %d results, want 4: %+v", len(results), results)
 	}
 	r := results[0]
 	if r.Provider != "knaben" {
 		t.Errorf("Provider = %q", r.Provider)
+	}
+	if r.Category != "Movies" {
+		t.Errorf("Category = %q, want Movies (from the first browse anchor)", r.Category)
+	}
+	if xxx := results[3]; xxx.Category != "XXX" {
+		t.Errorf("last row Category = %q, want XXX", xxx.Category)
 	}
 	if r.Title != "Fight Club (1999) 1080p BrRip x264 - YIFY" {
 		t.Errorf("Title = %q (should come from the magnet anchor's title attr, not the tooltip)", r.Title)

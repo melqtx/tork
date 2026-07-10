@@ -114,6 +114,7 @@ func (x *X1337) parseSearchPage(ctx context.Context, doc *goquery.Document, mirr
 			Leechers:  leeches,
 			DetailURL: mirror + href,
 			Provider:  x.Name(),
+			Category:  iconCategory(row),
 		}
 		if err := emit(ctx, out, r); err != nil {
 			emitErr = err
@@ -143,6 +144,23 @@ func (x *X1337) ResolveMagnet(ctx context.Context, r Result) (string, error) {
 		return "", errors.New("1337x: no magnet link on detail page")
 	}
 	return magnet, nil
+}
+
+// iconCategory reads 1337x's per-row category from the name cell's icon class
+// (the site tags each row with e.g. "flaticon-movie" or "flaticon-xxx"); the
+// suffix is returned as the category so adult rows are caught even though 1337x
+// exposes no other category field. Best-effort: empty when the icon is absent.
+func iconCategory(row *goquery.Selection) string {
+	cls, ok := row.Find("td.coll-1 a.icon i").First().Attr("class")
+	if !ok {
+		return ""
+	}
+	for _, c := range strings.Fields(cls) {
+		if suffix, found := strings.CutPrefix(c, "flaticon-"); found {
+			return suffix
+		}
+	}
+	return ""
 }
 
 func isCloudflareChallenge(doc *goquery.Document) bool {

@@ -75,6 +75,14 @@ func padRight(s string, w int) string {
 	return s
 }
 
+// padLeft right-aligns s (which may contain ANSI) within visible width w.
+func padLeft(s string, w int) string {
+	if gap := w - lipgloss.Width(s); gap > 0 {
+		return strings.Repeat(" ", gap) + s
+	}
+	return s
+}
+
 // padLines forces s to exactly n lines (truncating or padding with blanks).
 func padLines(s string, n int) string {
 	lines := strings.Split(s, "\n")
@@ -161,21 +169,45 @@ func newPreviewLayout(width int) previewLayout {
 	return l
 }
 
-// graphLayout: gutter branch dot provider S<n> size markers, with the flat
-// (single-source) title flexing into the space before the provider column.
+// graphLayout is one shared column grid for every graph row: an arrow/guide,
+// a flexing title, then fixed decision columns. Headers, expanded leaves, and
+// single-source rows all render through cols() so their columns line up.
+//
+//	 arrow  title…            src  best  provider     seed  meter  size
+//	▾ interstellar · 1080p    ×4        [yts]         S208  ▮▮▮▯▯  2.1 GiB
 type graphLayout struct {
-	provW, seedW, sizeW, barW, titleW int
+	titleW, srcW, bestW, provW, seedW, meterW, sizeW int
 }
 
 func newGraphLayout(width int) graphLayout {
-	l := graphLayout{provW: 10, seedW: 6, sizeW: 10, barW: graphBarCells(width)}
-	// leaf gutter: 2 lead + branch(2) + 1 + dot(1) + 1 = 7 before provider.
-	barGap := 0
-	if l.barW > 0 {
-		barGap = l.barW + 1
+	// provW holds a bracketed tag [tpb-movies] (10 + 2 brackets).
+	l := graphLayout{srcW: 3, bestW: 4, provW: 12, seedW: 6, sizeW: 9}
+	l.meterW = graphBarCells(width) // 5, or 0 on narrow terminals
+	// Each row is drawn after renderWindow's 1-col selection gutter, so reserve
+	// it here: gutter ' ' arrow ' ' title ' ' cols; cols joins cells with spaces.
+	fixed := 1 + 1 + 1 + 1 + l.srcW + 1 + l.bestW + 1 + l.provW + 1 + l.seedW + 1 + l.sizeW
+	if l.meterW > 0 {
+		fixed += l.meterW + 1
 	}
-	l.titleW = flexW(width, 20, 7+l.provW+1+barGap+l.seedW+1+l.sizeW+1)
+	l.titleW = flexW(width, 20, fixed)
 	return l
+}
+
+// cols pads the fixed decision columns into one aligned block. Empty strings
+// render as blank cells so headers and flat rows still line up with the
+// expanded leaves that fill every column.
+func (l graphLayout) cols(src, best, prov, seed, meter, size string) string {
+	cells := []string{
+		padRight(src, l.srcW),
+		padRight(best, l.bestW),
+		padRight(prov, l.provW),
+		padRight(seed, l.seedW),
+	}
+	if l.meterW > 0 {
+		cells = append(cells, padRight(meter, l.meterW))
+	}
+	cells = append(cells, padLeft(size, l.sizeW))
+	return strings.Join(cells, " ")
 }
 
 // isosLayout: gutter tag name · edition · blurb.

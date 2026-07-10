@@ -115,6 +115,7 @@ func (y *YTS) emitResults(ctx context.Context, resp *http.Response, out chan<- R
 				Leechers:  t.Peers,
 				Magnet:    BuildMagnet(t.Hash, title, DefaultTrackers),
 				Provider:  y.Name(),
+				Trusted:   true, // YTS serves only its own verified encodes
 			}
 			if err := emit(ctx, out, r); err != nil {
 				return err

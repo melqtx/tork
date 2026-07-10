@@ -77,13 +77,15 @@ func printHelp() {
 	fmt.Print(`tork - terminal torrent search and download
 
 Usage:
-  tork [-d DIR]
-  tork autopilot [--dry-run] [--headless] [-n N] [-d DIR] "query"
+  tork [--evil] [-d DIR]
+  tork autopilot [--dry-run] [--headless] [--evil] [-n N] [-d DIR] "query"
   tork --version
 
 Flags:
   -d, --download-dir DIR   where to save downloads (default: your OS
                            Downloads folder, ~/Downloads/tork)
+      --evil               evil mode: downloads never seed after they finish
+                           (applies to new downloads this session only)
 
 The interactive UI stores config and state under ~/.tork and downloads into
 your OS Downloads folder by default.
@@ -99,6 +101,7 @@ func runAutopilot(args []string) error {
 	headless := fs.Bool("headless", false, "no TUI; print progress until complete")
 	dlDir := fs.String("download-dir", "", "download directory (default: your OS Downloads/tork)")
 	fs.StringVar(dlDir, "d", "", "shorthand for --download-dir")
+	evil := fs.Bool("evil", false, "evil mode: never seed after downloads complete")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -128,8 +131,15 @@ func runAutopilot(args []string) error {
 	}
 	resumeAll(eng, st, cfg, legacyDownloadDir)
 
+	// See run(): evil mode only changes the default for downloads queued this
+	// session, leaving the client-wide seed default and resumed torrents alone.
+	if *evil {
+		cfg.SeedAfterComplete = false
+	}
+
 	providers := enabledProviders(cfg)
-	agg := aggregator.New(providers, cfg.SearchTimeout(), 2)
+	agg := aggregator.New(providers, cfg.SearchTimeout(), 2).
+		WithFilter(provider.ContentFilter{HideNSFW: cfg.HideNSFW})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -160,6 +170,7 @@ func run() error {
 	fs := flag.NewFlagSet("tork", flag.ContinueOnError)
 	dlDir := fs.String("download-dir", "", "download directory (default: your OS Downloads/tork)")
 	fs.StringVar(dlDir, "d", "", "shorthand for --download-dir")
+	evil := fs.Bool("evil", false, "evil mode: never seed after downloads complete")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
 	}
@@ -187,7 +198,16 @@ func run() error {
 	}
 	resumeAll(eng, st, cfg, legacyDownloadDir)
 
-	agg := aggregator.New(enabledProviders(cfg), cfg.SearchTimeout(), 2)
+	// Evil mode applies only to new downloads made this session. Set it after
+	// engine.New (which has already captured the client-wide seed default) and
+	// after resumeAll (which restores each persisted torrent's own seed choice),
+	// so existing seeds keep seeding and only fresh downloads default to no-seed.
+	if *evil {
+		cfg.SeedAfterComplete = false
+	}
+
+	agg := aggregator.New(enabledProviders(cfg), cfg.SearchTimeout(), 2).
+		WithFilter(provider.ContentFilter{HideNSFW: cfg.HideNSFW})
 
 	p := tea.NewProgram(tui.New(cfg, eng, agg, st), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {

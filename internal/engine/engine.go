@@ -102,6 +102,7 @@ type item struct {
 	paused        bool
 	preview       bool // fetched metadata only; awaiting StartDownload
 	seeding       bool
+	noSeedApplied bool  // connections already capped for a completed non-seeding item
 	excluded      []int // file indices not to download
 	selectedBytes int64 // sum of non-excluded file lengths (0 until applied)
 	samples       ring
@@ -229,6 +230,7 @@ func (e *Engine) addMagnetWithOptions(magnet string, opts AddOptions) (metainfo.
 			existing.preview = opts.Preview
 			existing.downloadDir = opts.DownloadDir
 			existing.seeding = *opts.Seed
+			existing.noSeedApplied = false
 			e.startWhenReady(t, h)
 		}
 		e.mu.Unlock()
@@ -294,6 +296,7 @@ func (e *Engine) AddTorrentURLWithOptions(ctx context.Context, url string, opts 
 			existing.preview = opts.Preview
 			existing.downloadDir = opts.DownloadDir
 			existing.seeding = *opts.Seed
+			existing.noSeedApplied = false
 			e.startWhenReady(t, h)
 		}
 		magnet = existing.magnet
@@ -536,8 +539,10 @@ func (e *Engine) SetSeeding(h metainfo.Hash, on bool) {
 			max = 50
 		}
 		it.t.SetMaxEstablishedConns(max)
+		it.noSeedApplied = false
 	} else {
 		it.t.SetMaxEstablishedConns(0)
+		it.noSeedApplied = true
 	}
 }
 
@@ -694,6 +699,15 @@ func (e *Engine) snapshot(h metainfo.Hash, it *item, now time.Time) Snapshot {
 			s.State = StateSeeding
 		} else {
 			s.State = StateDone
+			// A non-seeding item must actually stop uploading once complete.
+			// The client-wide Seed default keeps a finished torrent seeding, so
+			// drop its connections here the first time we observe completion.
+			// Idempotent via noSeedApplied; SetSeeding manages the flag when the
+			// user toggles seeding back on.
+			if !it.noSeedApplied && it.t != nil {
+				it.t.SetMaxEstablishedConns(0)
+				it.noSeedApplied = true
+			}
 		}
 	default:
 		s.State = StateDownloading

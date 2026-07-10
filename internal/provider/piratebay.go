@@ -67,6 +67,8 @@ type apibayItem struct {
 	Size     string `json:"size"`
 	Added    string `json:"added"`
 	Category string `json:"category"`
+	Status   string `json:"status"` // vip / trusted / member / ""
+	Username string `json:"username"`
 }
 
 func (p *PirateBay) Search(ctx context.Context, query string, out chan<- Result) error {
@@ -141,7 +143,18 @@ func (p *PirateBay) resultFromItem(it apibayItem) (Result, bool) {
 		Leechers:  atoiDefault(it.Leechers),
 		Magnet:    BuildMagnet(hash, title, DefaultTrackers),
 		Provider:  p.name,
+		Trusted:   isTrustedTPBStatus(it.Status),
 	}, true
+}
+
+// isTrustedTPBStatus reports whether apibay's uploader status marks a release
+// as vetted: VIP and Trusted are the site's own verified-uploader badges.
+func isTrustedTPBStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "vip", "trusted":
+		return true
+	}
+	return false
 }
 
 func atoiDefault(s string) int {

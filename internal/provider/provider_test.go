@@ -59,6 +59,9 @@ func TestYTSSearch(t *testing.T) {
 	if r.Provider != "yts" {
 		t.Errorf("Provider = %q", r.Provider)
 	}
+	if !r.Trusted {
+		t.Errorf("YTS results should always be Trusted: %+v", r)
+	}
 }
 
 func TestNyaaSearch(t *testing.T) {
@@ -91,8 +94,8 @@ func TestNyaaSearch(t *testing.T) {
 func TestRSSSearch(t *testing.T) {
 	srv := serveFixture(t, "generic.rss")
 	results := collect(t, NewRSS(srv.Client(), "feed", srv.URL+"/?q={query}"), "ubuntu iso")
-	if len(results) != 2 {
-		t.Fatalf("got %d results, want 2", len(results))
+	if len(results) != 3 {
+		t.Fatalf("got %d results, want 3", len(results))
 	}
 	r := results[0]
 	if r.Title != "Ubuntu 24.04 Desktop amd64" {
@@ -109,6 +112,54 @@ func TestRSSSearch(t *testing.T) {
 	}
 	if results[1].SizeBytes != 734003200 || results[1].Leechers != 3 {
 		t.Errorf("enclosure/peers parse wrong: %+v", results[1])
+	}
+	// torznab category 6xxx maps to XXX even when a non-adult id precedes it
+	if got := results[2].Category; got != "XXX" {
+		t.Errorf("adult torznab category = %q, want XXX", got)
+	}
+}
+
+func TestRSSCategoryScansAllCategoryShapesForAdult(t *testing.T) {
+	cases := []struct {
+		name string
+		item rssItem
+		attr rssAttrs
+		want string
+	}{
+		{
+			name: "adult numeric after label",
+			attr: rssAttrs{
+				{Name: "category", Value: "Movies"},
+				{Name: "category", Value: "6010"},
+			},
+			want: "XXX",
+		},
+		{
+			name: "plain adult numeric category",
+			item: rssItem{Category: "6010"},
+			want: "XXX",
+		},
+		{
+			name: "adult label after label",
+			attr: rssAttrs{
+				{Name: "category", Value: "Movies"},
+				{Name: "category", Value: "XXX"},
+			},
+			want: "XXX",
+		},
+		{
+			name: "first harmless label",
+			attr: rssAttrs{
+				{Name: "category", Value: "Movies"},
+				{Name: "category", Value: "2000"},
+			},
+			want: "Movies",
+		},
+	}
+	for _, tc := range cases {
+		if got := rssCategory(tc.item, tc.attr); got != tc.want {
+			t.Errorf("%s: rssCategory = %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }
 
@@ -127,6 +178,9 @@ func TestPirateBayAPISearch(t *testing.T) {
 	}
 	if !strings.HasPrefix(r.Magnet, "magnet:?xt=urn:btih:abcdefabcdef") {
 		t.Errorf("Magnet = %q", r.Magnet)
+	}
+	if !r.Trusted {
+		t.Errorf("row with status=vip should be Trusted: %+v", r)
 	}
 }
 
@@ -175,6 +229,9 @@ func TestX1337SearchAndResolve(t *testing.T) {
 	}
 	if r.Seeders != 981 || r.Leechers != 37 || r.Size != "5.7 GB" {
 		t.Errorf("stats wrong: %+v", r)
+	}
+	if r.Category != "hd" { // parsed from the row's flaticon-hd icon class
+		t.Errorf("Category = %q, want hd (from the row icon class)", r.Category)
 	}
 
 	magnet, err := p.ResolveMagnet(context.Background(), r)

@@ -15,5 +15,12 @@
       <torznab:attr name="seeders" value="21" />
       <torznab:attr name="peers" value="3" />
     </item>
+    <item>
+      <title>Some Adult Pack 2024 1080p</title>
+      <link>magnet:?xt=urn:btih:9999999999999999999999999999999999999999&amp;dn=x</link>
+      <torznab:attr name="seeders" value="5" />
+      <torznab:attr name="category" value="2000" />
+      <torznab:attr name="category" value="6010" />
+    </item>
   </channel>
 </rss>

@@ -36,6 +36,7 @@ type rssItem struct {
 	Title      string         `xml:"title"`
 	Link       string         `xml:"link"`
 	GUID       string         `xml:"guid"`
+	Category   string         `xml:"category"`
 	Enclosures []rssEnclosure `xml:"enclosure"`
 	Attrs      []rssAttr      `xml:"attr"`
 }
@@ -122,7 +123,36 @@ func (r *RSS) resultFromItem(it rssItem) (Result, bool) {
 		Magnet:    magnet,
 		Provider:  r.name,
 		Trusted:   attrs.bool("trusted", "verified"),
+		Category:  rssCategory(it, attrs),
 	}, true
+}
+
+// rssCategory resolves a listing's category from Torznab attrs or a plain RSS
+// <category>. Newznab/Torznab category IDs put all adult content in the
+// 6000-6999 range, which we normalize to "XXX" so the shared content filter
+// catches it; otherwise any non-numeric label is passed through as-is.
+func rssCategory(it rssItem, attrs rssAttrs) string {
+	values := attrs.all("category", "cat")
+	if cat := strings.TrimSpace(it.Category); cat != "" {
+		values = append(values, cat)
+	}
+	var label string
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if n, err := strconv.Atoi(v); err == nil {
+			if n >= 6000 && n < 7000 {
+				return "XXX"
+			}
+			continue // a numeric non-adult category carries no useful label
+		}
+		if adultCategories[strings.ToLower(v)] {
+			return "XXX"
+		}
+		if v != "" && label == "" {
+			label = v
+		}
+	}
+	return label
 }
 
 func firstMagnet(it rssItem) string {
@@ -163,6 +193,18 @@ func (a rssAttrs) first(names ...string) string {
 		}
 	}
 	return ""
+}
+
+func (a rssAttrs) all(names ...string) []string {
+	var out []string
+	for _, attr := range a {
+		for _, want := range names {
+			if strings.EqualFold(attr.Name, want) {
+				out = append(out, strings.TrimSpace(attr.Value))
+			}
+		}
+	}
+	return out
 }
 
 func (a rssAttrs) int(names ...string) int {

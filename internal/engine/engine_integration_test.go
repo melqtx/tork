@@ -298,6 +298,123 @@ func fileSize(fi os.FileInfo) int64 {
 	return fi.Size()
 }
 
+// TestNoSeedDropsConnectionsOnCompletion verifies that a download added with
+// Seed=false actually stops uploading once complete: the engine caps its peer
+// connections instead of leaving the torrent seeding on the client-wide default.
+// This is what makes `tork --evil` real rather than cosmetic.
+func TestNoSeedDropsConnectionsOnCompletion(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
+
+	seedDir := t.TempDir()
+	payload := make([]byte, 512<<10)
+	if _, err := rand.Read(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(seedDir, "payload.dat"), payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info := metainfo.Info{PieceLength: 32 << 10}
+	if err := info.BuildFromFilePath(filepath.Join(seedDir, "payload.dat")); err != nil {
+		t.Fatal(err)
+	}
+	infoBytes, err := bencode.Marshal(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mi := metainfo.MetaInfo{InfoBytes: infoBytes}
+
+	scc := torrent.NewDefaultClientConfig()
+	scc.DataDir = seedDir
+	scc.Seed = true
+	scc.NoDHT = true
+	scc.DisableTrackers = true
+	scc.ListenPort = 0
+	silent := analog.NewLogger("seeder")
+	silent.Handlers = []analog.Handler{analog.DiscardHandler}
+	scc.Logger = silent
+	seeder, err := torrent.NewClient(scc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer seeder.Close()
+	if _, err := seeder.AddTorrent(&mi); err != nil {
+		t.Fatal(err)
+	}
+
+	var seederPort int
+	for _, addr := range seeder.ListenAddrs() {
+		if tcp, ok := addr.(*net.TCPAddr); ok {
+			seederPort = tcp.Port
+			break
+		}
+	}
+	if seederPort == 0 {
+		t.Fatal("seeder has no TCP listen addr")
+	}
+
+	t.Setenv("XDG_DOWNLOAD_DIR", filepath.Join(t.TempDir(), "Downloads"))
+	cfg, err := config.LoadFrom(filepath.Join(t.TempDir(), ".tork"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Close()
+
+	magnet := fmt.Sprintf("magnet:?xt=urn:btih:%s&x.pe=127.0.0.1:%d",
+		mi.HashInfoBytes().HexString(), seederPort)
+	noSeed := false
+	h, err := eng.AddWithOptions(magnet, AddOptions{Seed: &noSeed})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snap := awaitComplete(t, eng, h, 60*time.Second)
+	if snap.State != StateDone {
+		t.Fatalf("state = %v, want StateDone (a non-seeding item must not seed)", snap.State)
+	}
+
+	// Completion caps the torrent's connections; poll until they actually drop.
+	deadline := time.After(10 * time.Second)
+	for {
+		s, ok := eng.Snapshot(h)
+		if ok && s.PeersActive == 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("connections not dropped after completion: PeersActive=%d", s.PeersActive)
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+
+	// Pausing drops the capped torrent handle. Resuming creates a fresh handle,
+	// so the cap must be applied again when completion is observed.
+	eng.Pause(h)
+	if err := eng.Resume(h); err != nil {
+		t.Fatal(err)
+	}
+	eng.mu.Lock()
+	resumed := eng.items[h]
+	if resumed == nil || resumed.t == nil {
+		eng.mu.Unlock()
+		t.Fatal("resume did not restore a torrent handle")
+	}
+	if resumed.noSeedApplied {
+		eng.mu.Unlock()
+		t.Fatal("resume kept noSeedApplied=true for a fresh torrent handle")
+	}
+	eng.mu.Unlock()
+	snap = awaitComplete(t, eng, h, 60*time.Second)
+	if snap.State != StateDone {
+		t.Fatalf("state after resume = %v, want StateDone", snap.State)
+	}
+}
+
 func awaitComplete(t *testing.T, eng *Engine, h metainfo.Hash, timeout time.Duration) Snapshot {
 	t.Helper()
 	deadline := time.After(timeout)

@@ -43,6 +43,7 @@ type Config struct {
 	ListenPort            int                       `yaml:"listen_port"`
 	SearchTimeoutSeconds  int                       `yaml:"search_timeout_seconds"`
 	PreviewBeforeDownload bool                      `yaml:"preview_before_download"`
+	HideNSFW              bool                      `yaml:"hide_nsfw"`
 	Ranking               rank.Weights              `yaml:"ranking"`
 	Autopilot             AutopilotConfig           `yaml:"autopilot"`
 	Providers             map[string]ProviderConfig `yaml:"providers"`
@@ -74,6 +75,7 @@ func Default(dir string) *Config {
 		ListenPort:            0,
 		SearchTimeoutSeconds:  15,
 		PreviewBeforeDownload: true,
+		HideNSFW:              true,
 		Ranking:               rank.DefaultWeights(),
 		Autopilot:             AutopilotConfig{MaxDownloads: 10, MinSeeders: 5},
 		Providers: map[string]ProviderConfig{

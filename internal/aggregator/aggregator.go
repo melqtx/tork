@@ -26,12 +26,14 @@ type StatusEvent struct {
 	State    ProviderState
 	Err      error // set when StateFailed
 	Count    int   // results emitted so far by this provider
+	Hidden   int   // results this provider dropped via the content filter
 }
 
 type Aggregator struct {
 	providers []provider.Provider
 	timeout   time.Duration // per attempt
 	retries   int
+	filter    provider.ContentFilter
 }
 
 func New(providers []provider.Provider, timeout time.Duration, retries int) *Aggregator {
@@ -39,6 +41,14 @@ func New(providers []provider.Provider, timeout time.Duration, retries int) *Agg
 		timeout = 15 * time.Second
 	}
 	return &Aggregator{providers: providers, timeout: timeout, retries: retries}
+}
+
+// WithFilter attaches a content filter applied to every result before it
+// reaches the stream, so the TUI and autopilot share one choke point. Returns
+// the aggregator for chaining.
+func (a *Aggregator) WithFilter(f provider.ContentFilter) *Aggregator {
+	a.filter = f
+	return a
 }
 
 func (a *Aggregator) Providers() []provider.Provider { return a.providers }
@@ -78,6 +88,8 @@ func (a *Aggregator) searchOne(ctx context.Context, p provider.Provider, query s
 	// pushes them onto the shared results channel. The count feeds the
 	// StateDone/StateFailed events shown in the UI.
 	count := 0
+	hidden := 0
+	allow := func(r provider.Result) bool { return a.filter.Allow(query, r) }
 	var err error
 	for attempt := 0; attempt <= a.retries; attempt++ {
 		proxy := make(chan provider.Result, 16)
@@ -85,6 +97,10 @@ func (a *Aggregator) searchOne(ctx context.Context, p provider.Provider, query s
 		go func() {
 			defer close(forwarded)
 			for r := range proxy {
+				if !allow(r) {
+					hidden++
+					continue
+				}
 				select {
 				case results <- r:
 					count++
@@ -101,7 +117,7 @@ func (a *Aggregator) searchOne(ctx context.Context, p provider.Provider, query s
 		<-forwarded
 
 		if err == nil {
-			sendStatus(StatusEvent{Provider: p.Name(), State: StateDone, Count: count})
+			sendStatus(StatusEvent{Provider: p.Name(), State: StateDone, Count: count, Hidden: hidden})
 			return
 		}
 		// parent cancelled: quit silently; blocked: retrying is pointless
@@ -121,7 +137,7 @@ func (a *Aggregator) searchOne(ctx context.Context, p provider.Provider, query s
 	if ctx.Err() != nil {
 		return // cancelled searches report nothing
 	}
-	sendStatus(StatusEvent{Provider: p.Name(), State: StateFailed, Err: err, Count: count})
+	sendStatus(StatusEvent{Provider: p.Name(), State: StateFailed, Err: err, Count: count, Hidden: hidden})
 }
 
 // safeSearch runs a provider search, converting any panic into an error so a

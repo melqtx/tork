@@ -22,6 +22,7 @@ type scoredRow struct {
 	res   provider.Result
 	tags  rank.Tags
 	score float64
+	noisy bool // display-only: dead/cam/off-topic/language-variant, dimmed in the list
 }
 
 type sortMode int
@@ -60,6 +61,7 @@ type resultsModel struct {
 	grouped bool // source-graph view toggle (see graphview.go)
 	groups  []group
 	gwin    listWindow // cursor over the flattened grouped view
+	bestIdx int        // r.rows index of the single best pick, or -1 (see recomputeBest)
 
 	resultCh <-chan provider.Result
 	statusCh <-chan aggregator.StatusEvent
@@ -79,6 +81,7 @@ func newResultsModel(w rank.Weights) resultsModel {
 		status:      make(map[string]aggregator.StatusEvent),
 		filterIn:    fi,
 		weights:     w,
+		bestIdx:     -1,
 		openResults: true,
 		openStatus:  true,
 	}
@@ -338,7 +341,7 @@ func (r *resultsModel) insertRow(res provider.Result) {
 	}
 	r.seen[res.Key()] = true
 	tags := rank.Parse(res.Title)
-	row := scoredRow{res: res, tags: tags, score: rank.Score(res, tags, r.weights)}
+	row := scoredRow{res: res, tags: tags, score: rank.Score(res, tags, r.weights), noisy: rank.Noisy(r.query, res.Title, tags, res.Seeders)}
 	// first position where the existing row is not better than the new one
 	pos := sort.Search(len(r.rows), func(i int) bool { return !r.betterThan(r.rows[i], row) })
 	r.rows = append(r.rows, scoredRow{})
@@ -376,8 +379,25 @@ func (r *resultsModel) refreshFilter() {
 	if r.win.cursor >= len(r.visible) {
 		r.win.cursor = max(0, len(r.visible)-1)
 	}
+	r.recomputeBest()
 	if r.grouped {
 		r.rebuildGroups()
+	}
+}
+
+// recomputeBest finds the single best pick among visible rows: the highest-
+// ranked non-noisy result. Because r.rows is sorted best-first, the smallest
+// visible non-noisy index wins. -1 when every visible row is noisy. This is the
+// only row that earns the gold "best" badge, so it stays meaningful.
+func (r *resultsModel) recomputeBest() {
+	r.bestIdx = -1
+	for _, idx := range r.visible {
+		if r.rows[idx].noisy {
+			continue
+		}
+		if r.bestIdx == -1 || idx < r.bestIdx {
+			r.bestIdx = idx
+		}
 	}
 }
 
@@ -395,12 +415,13 @@ func (a *App) viewResults() string {
 	b.WriteString(r.statusLine(a.agg) + "\n")
 
 	if r.grouped {
-		graphH := listH
-		if a.bodyHeight() >= 16 {
-			graphH = max(1, listH-5)
+		b.WriteString(a.graphColumns(width) + "\n")
+		graphH := max(1, listH-1) // column header takes one row
+		if a.bodyHeight() >= 14 {
+			graphH = max(1, listH-6)
 		}
 		b.WriteString(a.viewGraph(width, graphH))
-		if a.bodyHeight() >= 16 {
+		if a.bodyHeight() >= 14 {
 			b.WriteString("\n")
 			b.WriteString(a.graphDetail(width))
 		}
@@ -422,8 +443,8 @@ func (a *App) viewResults() string {
 				styleFaint.Render(fmt.Sprintf("%*s", lay.resW, row.tags.Resolution.String())),
 				providerTag(row.res.Provider),
 			)
-			if !selected && row.res.Seeders <= 0 {
-				line = styleDim.Render(line)
+			if !selected && row.noisy {
+				line = styleFaint.Render(line)
 			}
 			return line
 		}))
@@ -437,7 +458,7 @@ func (a *App) viewResults() string {
 	case r.resolving:
 		help = styleDim.Render("resolving magnet…")
 	case r.grouped:
-		help = hints(hint("↑↓", "move"), hint("enter", "get"), hint("←→", "expand/collapse"), styleBest.Render("★")+" "+styleKeyLb.Render("best"), hint("v", "flat"), hint("/", "filter"), hint("esc", "back"))
+		help = hints(hint("↑↓", "move"), hint("←→/space", "fold"), hint("enter", "get"), hint("D", "direct"), hint("o", r.sort.String()), hint("v", "flat"), hint("/", "filter"), hint("esc", "back"))
 	default:
 		help = hints(hint("↑↓", "move"), hint("enter", "get"), hint("/", "filter"), hint("o", r.sort.String()), hint("v", "graph"), hint("esc", "back"))
 	}
@@ -479,9 +500,11 @@ func (r *resultsModel) renderTitle(idx, width int) string {
 func (r *resultsModel) statusLine(agg *aggregator.Aggregator) string {
 	chips := make([]string, 0, len(agg.Providers()))
 	failed := 0
+	hidden := 0
 	for _, p := range agg.Providers() {
 		name := p.Name()
 		ev, ok := r.status[name]
+		hidden += ev.Hidden
 		var chip string
 		switch {
 		case !ok, ev.State == aggregator.StateSearching:
@@ -508,13 +531,22 @@ func (r *resultsModel) statusLine(agg *aggregator.Aggregator) string {
 		head = styleOK.Render(fmt.Sprintf("%d results", n))
 	case r.searching:
 		head = styleDim.Render("searching…")
+	case hidden > 0:
+		head = styleDim.Render("no visible results")
 	case failed > 0:
 		head = styleErr.Render("no results - sources unavailable, try again")
 	default:
 		head = styleDim.Render("no results")
 	}
 
-	line := head + styleDim.Render("   ") + strings.Join(chips, styleDim.Render(" · "))
+	line := head
+	if r.grouped && len(r.groups) > 0 {
+		line += styleFaint.Render(fmt.Sprintf("  · %d groups", len(r.groups)))
+	}
+	if hidden > 0 {
+		line += styleFaint.Render(fmt.Sprintf("  · %d hidden", hidden))
+	}
+	line += styleDim.Render("   ") + strings.Join(chips, styleDim.Render(" · "))
 	if r.searching {
 		line += styleDim.Render("  searching…")
 	}

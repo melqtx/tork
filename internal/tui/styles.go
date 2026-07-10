@@ -44,7 +44,7 @@ var (
 	styleErr      = lipgloss.NewStyle().Foreground(colRose).Bold(true)
 	styleOK       = lipgloss.NewStyle().Foreground(colGreen)
 	styleMatch    = lipgloss.NewStyle().Foreground(colBrand).Bold(true)
-	styleBest     = lipgloss.NewStyle().Foreground(colAmber).Bold(true) // ★ best source - gold, distinct from the green
+	styleBest     = lipgloss.NewStyle().Foreground(colAmber).Bold(true) // best source - gold, distinct from the green
 	styleStateTag = lipgloss.NewStyle().Foreground(colBlue)
 	styleHelp     = lipgloss.NewStyle().Foreground(colFaint)
 
@@ -86,6 +86,11 @@ func providerTag(name string) string {
 		return s.Render(name)
 	}
 	return lipgloss.NewStyle().Foreground(colMuted).Render(name)
+}
+
+// providerBracket renders a provider as a small tag: [knaben].
+func providerBracket(name string) string {
+	return styleFaint.Render("[") + providerTag(name) + styleFaint.Render("]")
 }
 
 // torkLogo is a clean, flat half-block wordmark - minimal and calm, in the

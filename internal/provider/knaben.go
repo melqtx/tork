@@ -77,6 +77,9 @@ func (k *Knaben) Search(ctx context.Context, query string, out chan<- Result) er
 			return true
 		}
 		size := strings.TrimSpace(tds.Eq(2).Text())
+		// the first cell links the source category (/browse/<id>/1); its first
+		// anchor is the top-level label ("Movies", "XXX", "Video", …).
+		category := strings.TrimSpace(tds.First().Find(`a[href^="/browse/"]`).First().Text())
 		r := Result{
 			Title:     title,
 			Size:      size,
@@ -85,6 +88,7 @@ func (k *Knaben) Search(ctx context.Context, query string, out chan<- Result) er
 			Leechers:  atoiDefault(tds.Eq(5).Text()),
 			Magnet:    magnet,
 			Provider:  k.Name(),
+			Category:  category,
 		}
 		if err := emit(ctx, out, r); err != nil {
 			emitErr = err

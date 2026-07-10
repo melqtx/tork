@@ -196,3 +196,53 @@ func TestPanickingProviderIsContained(t *testing.T) {
 		t.Errorf("panicking provider final event = %+v", ev)
 	}
 }
+
+// listProvider emits a fixed set of results, so tests can control titles and
+// categories fed to the content filter.
+type listProvider struct {
+	name string
+	out  []provider.Result
+}
+
+func (p *listProvider) Name() string { return p.name }
+
+func (p *listProvider) Search(ctx context.Context, _ string, out chan<- provider.Result) error {
+	for _, r := range p.out {
+		select {
+		case out <- r:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+func TestContentFilterHidesAdultAndReportsCount(t *testing.T) {
+	prov := &listProvider{name: "p", out: []provider.Result{
+		{Title: "Inception 2010", Provider: "p", Category: "Movies"},
+		{Title: "Model OnlyFans 2024", Provider: "p", Category: "XXX"},
+	}}
+	agg := New([]provider.Provider{prov}, time.Second, 0).
+		WithFilter(provider.ContentFilter{HideNSFW: true})
+	rs, evs := drain(agg.Search(context.Background(), "inception"))
+
+	if len(rs) != 1 || rs[0].Title != "Inception 2010" {
+		t.Fatalf("filtered results = %+v, want only the clean one", rs)
+	}
+	ev, ok := finalEvent(evs, "p")
+	if !ok || ev.Count != 1 || ev.Hidden != 1 {
+		t.Fatalf("final event = %+v, want Count=1 Hidden=1", ev)
+	}
+}
+
+func TestContentFilterBypassedOnAdultQuery(t *testing.T) {
+	prov := &listProvider{name: "p", out: []provider.Result{
+		{Title: "Model OnlyFans 2024", Provider: "p", Category: "XXX"},
+	}}
+	agg := New([]provider.Provider{prov}, time.Second, 0).
+		WithFilter(provider.ContentFilter{HideNSFW: true})
+	rs, _ := drain(agg.Search(context.Background(), "onlyfans"))
+	if len(rs) != 1 {
+		t.Fatalf("adult query should return everything, got %d", len(rs))
+	}
+}
