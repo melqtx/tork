@@ -13,6 +13,7 @@ type Resolution int
 const (
 	ResUnknown Resolution = iota
 	Res480
+	Res576
 	Res720
 	Res1080
 	Res2160
@@ -22,6 +23,8 @@ func (r Resolution) String() string {
 	switch r {
 	case Res480:
 		return "480p"
+	case Res576:
+		return "576p"
 	case Res720:
 		return "720p"
 	case Res1080:
@@ -71,6 +74,8 @@ type Tags struct {
 	Resolution Resolution
 	Source     Source
 	Codec      string // "x265", "x264", "av1", ""
+	HDR        bool   // HDR / HDR10 / HDR10+
+	DV         bool   // Dolby Vision
 	Season     int    // 0 = none
 	Episode    int    // 0 = none
 	SeasonEnd  int    // >0 only for ranges like S01-S05
@@ -86,7 +91,11 @@ var (
 	reRes2160 = regexp.MustCompile(`(?i)\b(2160p|4k|uhd)\b`)
 	reRes1080 = regexp.MustCompile(`(?i)\b1080p\b`)
 	reRes720  = regexp.MustCompile(`(?i)\b720p\b`)
+	reRes576  = regexp.MustCompile(`(?i)\b576p\b`)
 	reRes480  = regexp.MustCompile(`(?i)\b480p\b`)
+
+	reHDR = regexp.MustCompile(`(?i)\bhdr(10)?(p|plus|\+)?\b`)
+	reDV  = regexp.MustCompile(`(?i)\b(dv|dovi|dolby[ ._]?vision)\b`)
 
 	reRemux  = regexp.MustCompile(`(?i)\bremux\b`)
 	reBluRay = regexp.MustCompile(`(?i)\b(blu-?ray|bdrip|brrip|bdmv)\b`)
@@ -114,9 +123,14 @@ func Parse(title string) Tags {
 		t.Resolution = Res1080
 	case reRes720.MatchString(title):
 		t.Resolution = Res720
+	case reRes576.MatchString(title):
+		t.Resolution = Res576
 	case reRes480.MatchString(title):
 		t.Resolution = Res480
 	}
+
+	t.HDR = reHDR.MatchString(title)
+	t.DV = reDV.MatchString(title)
 
 	// Source, strongest signal first.
 	switch {

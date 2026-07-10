@@ -17,7 +17,7 @@ func TestParse(t *testing.T) {
 		},
 		{
 			"Inception 2010 MULTi 2160p UHD BluRay REMUX HDR HEVC-GROUP",
-			Tags{Resolution: Res2160, Source: SrcRemux, Codec: "x265"},
+			Tags{Resolution: Res2160, Source: SrcRemux, Codec: "x265", HDR: true},
 		},
 		{
 			"Breaking Bad S01-S05 Complete 1080p BluRay x265",

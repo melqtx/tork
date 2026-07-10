@@ -170,22 +170,23 @@ func newPreviewLayout(width int) previewLayout {
 }
 
 // graphLayout is one shared column grid for every graph row: an arrow/guide,
-// a flexing title, then fixed decision columns. Headers, expanded leaves, and
-// single-source rows all render through cols() so their columns line up.
+// a flexing title (badges like the gold "best" trail inside it), then fixed
+// decision columns. Headers, expanded leaves, and single-source rows all
+// render through cols() so their columns line up.
 //
-//	 arrow  title…            src  best  provider     seed  meter  size
-//	▾ interstellar · 1080p    ×4        [yts]         S208  ▮▮▮▯▯  2.1 GiB
+//	 arrow  title…                        src  provider  seeds  meter  size
+//	▾ interstellar 2014 · 1080p  best     ×4   [yts]     S208   ▮▮▮▯▯  2.1 GiB
 type graphLayout struct {
-	titleW, srcW, bestW, provW, seedW, meterW, sizeW int
+	titleW, srcW, provW, seedW, meterW, sizeW int
 }
 
 func newGraphLayout(width int) graphLayout {
 	// provW holds a bracketed tag [tpb-movies] (10 + 2 brackets).
-	l := graphLayout{srcW: 3, bestW: 4, provW: 12, seedW: 6, sizeW: 9}
+	l := graphLayout{srcW: 3, provW: 12, seedW: 6, sizeW: 9}
 	l.meterW = graphBarCells(width) // 5, or 0 on narrow terminals
 	// Each row is drawn after renderWindow's 1-col selection gutter, so reserve
 	// it here: gutter ' ' arrow ' ' title ' ' cols; cols joins cells with spaces.
-	fixed := 1 + 1 + 1 + 1 + l.srcW + 1 + l.bestW + 1 + l.provW + 1 + l.seedW + 1 + l.sizeW
+	fixed := 1 + 1 + 1 + 1 + l.srcW + 1 + l.provW + 1 + l.seedW + 1 + l.sizeW
 	if l.meterW > 0 {
 		fixed += l.meterW + 1
 	}
@@ -196,10 +197,9 @@ func newGraphLayout(width int) graphLayout {
 // cols pads the fixed decision columns into one aligned block. Empty strings
 // render as blank cells so headers and flat rows still line up with the
 // expanded leaves that fill every column.
-func (l graphLayout) cols(src, best, prov, seed, meter, size string) string {
+func (l graphLayout) cols(src, prov, seed, meter, size string) string {
 	cells := []string{
 		padRight(src, l.srcW),
-		padRight(best, l.bestW),
 		padRight(prov, l.provW),
 		padRight(seed, l.seedW),
 	}

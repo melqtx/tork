@@ -81,14 +81,15 @@ func TestNoisyDoesNotFrontGroup(t *testing.T) {
 	}
 }
 
-// TestGraphFlatLeafHasNoBar asserts single-source rows carry no meter.
-func TestGraphFlatLeafHasNoBar(t *testing.T) {
-	r := &resultsModel{rows: []scoredRow{
+// TestGraphFlatLeafHasMeter asserts single-source rows carry the swarm meter
+// on the shared global scale, so they compare against groups at a glance.
+func TestGraphFlatLeafHasMeter(t *testing.T) {
+	r := &resultsModel{meterMax: 100, rows: []scoredRow{
 		{res: provider.Result{Title: "Solo 1080p", Provider: "yts", Size: "1 GiB", Seeders: 42, Magnet: "magnet:?x"}},
 	}}
 	got := r.graphFlatLeaf(0, 100, false)
-	if strings.ContainsAny(got, "▮▯") {
-		t.Fatalf("flat leaf has a meter: %q", got)
+	if !strings.Contains(got, "▮") {
+		t.Fatalf("flat leaf missing filled meter: %q", got)
 	}
 }
 

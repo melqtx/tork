@@ -58,10 +58,11 @@ type resultsModel struct {
 	weights   rank.Weights
 	sort      sortMode
 
-	grouped bool // source-graph view toggle (see graphview.go)
-	groups  []group
-	gwin    listWindow // cursor over the flattened grouped view
-	bestIdx int        // r.rows index of the single best pick, or -1 (see recomputeBest)
+	grouped  bool // source-graph view toggle (see graphview.go)
+	groups   []group
+	gwin     listWindow // cursor over the flattened grouped view
+	bestIdx  int        // r.rows index of the single best pick, or -1 (see recomputeBest)
+	meterMax int        // max seeders among visible rows: one shared meter scale
 
 	resultCh <-chan provider.Result
 	statusCh <-chan aggregator.StatusEvent
@@ -388,10 +389,13 @@ func (r *resultsModel) refreshFilter() {
 // recomputeBest finds the single best pick among visible rows: the highest-
 // ranked non-noisy result. Because r.rows is sorted best-first, the smallest
 // visible non-noisy index wins. -1 when every visible row is noisy. This is the
-// only row that earns the gold "best" badge, so it stays meaningful.
+// only row that earns the gold "best" badge, so it stays meaningful. It also
+// refreshes meterMax, the shared scale every swarm meter is drawn against.
 func (r *resultsModel) recomputeBest() {
 	r.bestIdx = -1
+	r.meterMax = 0
 	for _, idx := range r.visible {
+		r.meterMax = max(r.meterMax, r.rows[idx].res.Seeders)
 		if r.rows[idx].noisy {
 			continue
 		}
@@ -406,6 +410,16 @@ func (a *App) listRows() int {
 	return max(1, a.bodyHeight()-2)
 }
 
+// graphRows is the window height of the grouped list: listRows minus the
+// detail panel (5 lines) when the terminal is tall enough to show one. Key
+// handling and rendering must agree on this so paging moves by a real page.
+func (a *App) graphRows() int {
+	if a.bodyHeight() >= 14 {
+		return max(1, a.listRows()-6)
+	}
+	return max(1, a.listRows()-1)
+}
+
 func (a *App) viewResults() string {
 	r := &a.results
 	width := a.contentWidth()
@@ -416,12 +430,16 @@ func (a *App) viewResults() string {
 
 	if r.grouped {
 		b.WriteString(a.graphColumns(width) + "\n")
-		graphH := max(1, listH-1) // column header takes one row
-		if a.bodyHeight() >= 14 {
-			graphH = max(1, listH-6)
+		graphH := a.graphRows()
+		detail := a.bodyHeight() >= 14
+		// Shrink the window to the rows that exist so the detail panel sits
+		// right under the list instead of drifting to the bottom of a tall
+		// terminal with a void in between.
+		if n := len(r.navItems()); n < graphH {
+			graphH = max(1, n)
 		}
 		b.WriteString(a.viewGraph(width, graphH))
-		if a.bodyHeight() >= 14 {
+		if detail {
 			b.WriteString("\n")
 			b.WriteString(a.graphDetail(width))
 		}

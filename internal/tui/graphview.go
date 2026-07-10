@@ -76,6 +76,12 @@ func (r *resultsModel) rebuildGroups() {
 			return !r.rows[idxs[i]].noisy && r.rows[idxs[j]].noisy
 		})
 	}
+	// Sink groups made entirely of noise (cams, dead swarms, off-topic) below
+	// every group with at least one clean source, stable so both partitions
+	// keep the global best-first order.
+	sort.SliceStable(r.groups, func(i, j int) bool {
+		return !groupAllNoisy(r, &r.groups[i]) && groupAllNoisy(r, &r.groups[j])
+	})
 	if n := len(r.navItems()); r.gwin.cursor >= n {
 		r.gwin.cursor = max(0, n-1)
 	}
@@ -102,7 +108,7 @@ func (r *resultsModel) navItems() []navItem {
 func (a *App) updateGraphKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	r := &a.results
 	items := r.navItems()
-	rows := a.listRows()
+	rows := a.graphRows()
 	switch msg.String() {
 	case "up", "k":
 		r.gwin.move(-1, len(items), rows)
@@ -228,15 +234,25 @@ func (a *App) graphColumns(width int) string {
 	lay := newGraphLayout(width)
 	head := fmt.Sprintf("   %s %s",
 		padRight("title", lay.titleW),
-		lay.cols("src", "", "provider", "seeds", "", "size"),
+		lay.cols("src", "provider", "seeds", "", "size"),
 	)
 	return styleFaint.Render(truncate(head, width))
 }
 
-// graphHeader is the decision row for a group: the title flexes, then the same
-// fixed columns every row shares - source count, the gold "best" badge (only
-// when its top source is the single best pick overall), provider, seeders, and
-// size. The meter column stays blank; it belongs to the expanded leaves.
+// titleCell fits a title plus its trailing badges into the flexible column:
+// badges keep their full width and the title gives way.
+func titleCell(title string, w int, badges string) string {
+	if badges == "" {
+		return truncate(title, w)
+	}
+	avail := max(1, w-lipglossWidth(badges)-1)
+	return truncate(title, avail) + " " + badges
+}
+
+// graphHeader is the decision row for a group: the title flexes (carrying the
+// gold "best" badge when its top source is the single best pick overall), then
+// the same fixed columns every row shares - source count, provider, seeders,
+// the swarm meter, and size, all summarizing the group's champion.
 func (r *resultsModel) graphHeader(g *group, width int, selected bool) string {
 	lay := newGraphLayout(width)
 	allNoisy := groupAllNoisy(r, g)
@@ -253,13 +269,18 @@ func (r *resultsModel) graphHeader(g *group, width int, selected bool) string {
 	if !plain {
 		arrowS = styleFaint.Render(arrow)
 	}
-	label := truncate(g.label, lay.titleW)
+	badge := ""
+	titleW := lay.titleW
+	if g.rowIdx[0] == r.bestIdx {
+		badge = colorize(plain, styleBest, "best")
+		titleW = max(1, lay.titleW-lipglossWidth(badge)-1)
+	}
+	label := truncate(g.label, titleW)
 	if !plain {
 		label = styleFg.Render(label) // the group's own voice, brighter than its sources
 	}
-	bestCell := ""
-	if g.rowIdx[0] == r.bestIdx {
-		bestCell = colorize(plain, styleBest, "best")
+	if badge != "" {
+		label += " " + badge
 	}
 	size := truncate(best.res.Size, lay.sizeW)
 	if size == "" {
@@ -267,10 +288,9 @@ func (r *resultsModel) graphHeader(g *group, width int, selected bool) string {
 	}
 	cols := lay.cols(
 		fmt.Sprintf("×%d", len(g.rowIdx)),
-		bestCell,
 		providerCol(best.res.Provider, plain),
 		seedPill(best.res.Seeders, plain),
-		"",
+		seederMeter(best.res.Seeders, r.meterMax, lay.meterW, plain),
 		size,
 	)
 	line := fmt.Sprintf("%s %s %s", arrowS, padRight(label, lay.titleW), cols)
@@ -281,11 +301,13 @@ func (r *resultsModel) graphHeader(g *group, width int, selected bool) string {
 	return line
 }
 
-// graphLeaf renders one source inside an expanded group as a numbered choice on
-// a faint tree guide. The "#1" already marks the in-group best, so leaves never
-// carry the "best" badge - that stays reserved for the single overall pick on
-// its header/flat row. Only leaves show the swarm-health meter, since comparing
-// sources is the whole reason to expand a group.
+// graphLeaf renders one source inside an expanded group as a numbered choice
+// on a faint tree guide, followed by the release fingerprint - the parts that
+// actually differ between sources of the same content (source, codec, HDR/DV,
+// release group) - so the group can be compared without leaving the list. The
+// "#1" already marks the in-group best, so leaves never carry the "best"
+// badge; that stays reserved for the single overall pick on its header/flat
+// row.
 func (r *resultsModel) graphLeaf(g *group, leaf, width int, selected bool) string {
 	lay := newGraphLayout(width)
 	row := r.rows[g.rowIdx[leaf]]
@@ -300,15 +322,17 @@ func (r *resultsModel) graphLeaf(g *group, leaf, width int, selected bool) strin
 		guideS = styleFaint.Render(guide)
 	}
 	inner := fmt.Sprintf("#%d", leaf+1)
-	if b := sourceBadges(row, plain); b != "" {
-		inner += "  " + b
+	if fp := leafFingerprint(row); fp != "" {
+		inner += "  " + colorize(plain, styleDim, fp)
 	}
-	meter := seederMeter(row.res.Seeders, groupMaxSeeders(r, g), lay.meterW, plain)
+	if b := sourceBadges(row, plain); b != "" {
+		inner = titleCell(inner, lay.titleW, b)
+	}
 	cols := lay.cols(
-		"", "",
+		"",
 		providerCol(row.res.Provider, plain),
 		seedPill(row.res.Seeders, plain),
-		meter,
+		seederMeter(row.res.Seeders, r.meterMax, lay.meterW, plain),
 		truncate(row.res.Size, lay.sizeW),
 	)
 	line := fmt.Sprintf("%s %s %s", guideS, padRight(truncate(inner, lay.titleW), lay.titleW), cols)
@@ -319,30 +343,54 @@ func (r *resultsModel) graphLeaf(g *group, leaf, width int, selected bool) strin
 	return line
 }
 
+// leafFingerprint is the compact release identity of one source: source,
+// codec, HDR/DV, and the scene group. It intentionally skips resolution and
+// season - the group label already fixes those.
+func leafFingerprint(row scoredRow) string {
+	var parts []string
+	if s := row.tags.Source.String(); s != "" {
+		parts = append(parts, s)
+	}
+	if c := row.tags.Codec; c != "" {
+		parts = append(parts, c)
+	}
+	switch {
+	case row.tags.DV && row.tags.HDR:
+		parts = append(parts, "DV·HDR")
+	case row.tags.DV:
+		parts = append(parts, "DV")
+	case row.tags.HDR:
+		parts = append(parts, "HDR")
+	}
+	if g := rank.ReleaseGroup(row.res.Title); g != "" {
+		parts = append(parts, "-"+g)
+	}
+	return strings.Join(parts, " ")
+}
+
 // graphFlatLeaf renders a single-source group as a dense one-liner: the title
-// flexes (with any status badges trailing it), then the same fixed columns as
-// the headers. A blank arrow slot keeps its title aligned with group labels;
-// the meter column stays blank (there is nothing to compare against).
+// flexes (with the gold "best" badge and any status badges trailing it), then
+// the same fixed columns as the headers. A blank arrow slot keeps its title
+// aligned with group labels.
 func (r *resultsModel) graphFlatLeaf(idx, width int, selected bool) string {
 	lay := newGraphLayout(width)
 	row := r.rows[idx]
 	plain := selected || row.noisy
 
-	bestCell := ""
+	badges := sourceBadges(row, plain)
 	if idx == r.bestIdx {
-		bestCell = colorize(plain, styleBest, "best")
+		b := colorize(plain, styleBest, "best")
+		if badges != "" {
+			b += " " + badges
+		}
+		badges = b
 	}
-	title := truncate(row.res.Title, lay.titleW)
-	if b := sourceBadges(row, plain); b != "" {
-		avail := max(1, lay.titleW-lipglossWidth(b)-1)
-		title = truncate(row.res.Title, avail) + " " + b
-	}
+	title := titleCell(row.res.Title, lay.titleW, badges)
 	cols := lay.cols(
 		"",
-		bestCell,
 		providerCol(row.res.Provider, plain),
 		seedPill(row.res.Seeders, plain),
-		"",
+		seederMeter(row.res.Seeders, r.meterMax, lay.meterW, plain),
 		truncate(row.res.Size, lay.sizeW),
 	)
 	line := fmt.Sprintf("  %s %s", padRight(title, lay.titleW), cols)
@@ -487,9 +535,13 @@ func (a *App) graphDetail(width int) string {
 	if reasons := rank.NoiseReasons(r.query, row.res.Title, row.tags, row.res.Seeders); len(reasons) > 0 {
 		noise = "noise: " + strings.Join(reasons, ", ")
 	}
+	pos := fmt.Sprintf("#%d of %d", it.leaf+1, len(g.rowIdx))
+	if fp := leafFingerprint(row); fp != "" {
+		pos += "  " + fp
+	}
 	lines = append(lines,
 		styleFg.Render(truncate(row.res.Title, width)),
-		fmt.Sprintf("%s  %s  %s  %s", providerBracket(row.res.Provider), trusted, magnet, styleDim.Render(fmt.Sprintf("#%d of %d", it.leaf+1, len(g.rowIdx)))),
+		fmt.Sprintf("%s  %s  %s  %s", providerBracket(row.res.Provider), trusted, magnet, styleDim.Render(pos)),
 		fmt.Sprintf("%s %d   %s %d   %s", styleSeeders.Render("S"), row.res.Seeders, styleLeechers.Render("L"), row.res.Leechers, styleDim.Render(row.res.Size)),
 		formatSizeSpread(median, spread)+styleFaint.Render(" · ")+styleDim.Render(noise),
 	)
@@ -582,14 +634,6 @@ func seederBarStyle(seeders int) lipgloss.Style {
 	default:
 		return styleHealthBad
 	}
-}
-
-func groupMaxSeeders(r *resultsModel, g *group) int {
-	maxSeeders := 0
-	for _, idx := range g.rowIdx {
-		maxSeeders = max(maxSeeders, r.rows[idx].res.Seeders)
-	}
-	return maxSeeders
 }
 
 func groupSizeSpread(rows []scoredRow, idxs []int) (median int64, maxDevPct float64) {
