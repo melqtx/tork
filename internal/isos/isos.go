@@ -419,15 +419,24 @@ var DefaultClient = &http.Client{
 	},
 }
 
-// Resolve fetches the distro's current official image.
+// Resolve fetches the distro's current official image with the default client.
 func Resolve(ctx context.Context, d Distro) (Image, error) {
+	return ResolveWithClient(ctx, d, nil)
+}
+
+// ResolveWithClient fetches the distro's current official image with client.
+// A nil client preserves Resolve's default client behavior.
+func ResolveWithClient(ctx context.Context, d Distro, client *http.Client) (Image, error) {
+	if client == nil {
+		client = DefaultClient
+	}
 	if d.resolve != nil {
-		return d.resolve(ctx, DefaultClient, d)
+		return d.resolve(ctx, client, d)
 	}
 	if d.Direct {
-		return resolveDirect(ctx, DefaultClient, d)
+		return resolveDirect(ctx, client, d)
 	}
-	return resolveGeneric(ctx, DefaultClient, d)
+	return resolveGeneric(ctx, client, d)
 }
 
 func resolveGeneric(ctx context.Context, c *http.Client, d Distro) (Image, error) {

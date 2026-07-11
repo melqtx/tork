@@ -190,6 +190,9 @@ func (a *App) viewSearch() string {
 	// footer status bar pinned to the bottom, sharing chrome's help/error logic
 	left := hints(hint("enter", "open"), hint("↑↓", "menu"), hint("tab", "screens"), hint("^c", "quit"))
 	right := styleFaint.Render(cozyGreeting())
+	if proxyStatus := a.proxyStatusTail(); proxyStatus != "" {
+		right = proxyStatus
+	}
 	bar := " " + a.footerLine(tw-2, left, right) + " "
 	footer := styleRule.Render(strings.Repeat("─", tw)) + "\n" + bar
 

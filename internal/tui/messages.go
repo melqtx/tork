@@ -42,6 +42,14 @@ type previewReadyMsg struct {
 type tickMsg time.Time
 type clearErrMsg struct{}
 
+// proxyCheckMsg is produced by the bounded, SOCKS-routed egress check. It
+// deliberately carries no egress IP because the status bar only needs to show
+// the route's state; doctor is the explicit place that prints the address.
+type proxyCheckMsg struct {
+	isTor bool
+	err   error
+}
+
 // healthDoneMsg reports a manual health re-check finishing; the store already
 // holds the new snapshot, so only the error travels.
 type healthDoneMsg struct{ err error }

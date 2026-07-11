@@ -7,11 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/melqtx/tork/internal/config"
 	"github.com/melqtx/tork/internal/provider"
+	"github.com/melqtx/tork/internal/proxy"
 	"github.com/melqtx/tork/internal/state"
 )
 
@@ -38,6 +40,15 @@ func findCheck(t *testing.T, rep Report, name string) Check {
 }
 
 func okEngine(*config.Config) (int, error) { return 51413, nil }
+
+type mustNotProbeProvider struct{ called atomic.Bool }
+
+func (p *mustNotProbeProvider) Name() string { return "must-not-probe" }
+
+func (p *mustNotProbeProvider) Search(context.Context, string, chan<- provider.Result) error {
+	p.called.Store(true)
+	return nil
+}
 
 func TestRunDoctorHealthy(t *testing.T) {
 	cfg := testConfig(t)
@@ -71,6 +82,157 @@ func TestDoctorMissingConfigExplainsDefaults(t *testing.T) {
 	rep := RunDoctor(context.Background(), cfg, []provider.Provider{fakeProvider{name: "good", results: 1}}, OpenReadOnly(cfg.HealthPath()), nil)
 	if c := findCheck(t, rep, "config"); c.Status != StatusWarn || !strings.Contains(c.Detail, "defaults in memory") {
 		t.Fatalf("missing config = %+v, want defaults-in-memory warning", c)
+	}
+}
+
+func TestDoctorReportsStrictProxyWithoutCredentials(t *testing.T) {
+	dir := t.TempDir()
+	downloads := filepath.Join(dir, "downloads")
+	if err := os.MkdirAll(downloads, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("download_dir: "+downloads+"\nproxy:\n  socks5: socks5://127.0.0.1:9050\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadReadOnlyFrom(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep := RunDoctor(context.Background(), cfg, []provider.Provider{fakeProvider{name: "good", results: 1}}, OpenReadOnly(cfg.HealthPath()), nil)
+	c := findCheck(t, rep, "proxy")
+	if c.Status != StatusOK || !strings.Contains(c.Detail, "127.0.0.1:9050") || !strings.Contains(c.Detail, "strict TCP-only") {
+		t.Fatalf("proxy check = %+v", c)
+	}
+}
+
+func TestDoctorInvalidProxySkipsProviderProbes(t *testing.T) {
+	dir := t.TempDir()
+	downloads := filepath.Join(dir, "downloads")
+	if err := os.MkdirAll(downloads, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("download_dir: "+downloads+"\nproxy:\n  socks5: http://alice:secret@127.0.0.1:9050\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadReadOnlyFrom(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &mustNotProbeProvider{}
+	rep := RunDoctor(context.Background(), cfg, []provider.Provider{p}, OpenReadOnly(cfg.HealthPath()), nil)
+	if p.called.Load() || len(rep.Probe) != 0 {
+		t.Fatalf("invalid proxy ran provider probes: called=%v probes=%+v", p.called.Load(), rep.Probe)
+	}
+	if c := findCheck(t, rep, "providers"); c.Status != StatusWarn || !strings.Contains(c.Detail, "not checked") {
+		t.Fatalf("providers check = %+v", c)
+	}
+	if c := findCheck(t, rep, "proxy"); c.Status != StatusFail || strings.Contains(c.Detail, "secret") {
+		t.Fatalf("proxy check = %+v", c)
+	}
+	if !rep.Failed() {
+		t.Fatal("invalid proxy config must fail doctor")
+	}
+}
+
+func TestDoctorAdvertisesProxySetupWhenDisabled(t *testing.T) {
+	cfg := testConfig(t)
+	rep := RunDoctor(context.Background(), cfg, []provider.Provider{fakeProvider{name: "good", results: 1}}, OpenReadOnly(cfg.HealthPath()), nil)
+	c := findCheck(t, rep, "proxy")
+	if c.Status != StatusOK || !strings.Contains(c.Detail, "tork proxy tor") {
+		t.Fatalf("disabled proxy check = %+v", c)
+	}
+}
+
+func TestDoctorEgressProbeReportsTorAndSkipsWhenDisabled(t *testing.T) {
+	dir := t.TempDir()
+	downloads := filepath.Join(dir, "downloads")
+	if err := os.MkdirAll(downloads, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("download_dir: "+downloads+"\nproxy:\n  socks5: socks5://127.0.0.1:9050\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadReadOnlyFrom(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep := RunDoctorWithEgressProbe(context.Background(), cfg, []provider.Provider{fakeProvider{name: "good", results: 1}}, OpenReadOnly(cfg.HealthPath()), nil,
+		func(context.Context, *config.Config) (proxy.Egress, error) {
+			return proxy.Egress{IP: "185.220.101.7", IsTor: true}, nil
+		})
+	c := findCheck(t, rep, "proxy egress")
+	if c.Status != StatusOK || !strings.Contains(c.Detail, "egress IP 185.220.101.7") || !strings.Contains(c.Detail, "Tor verified") {
+		t.Fatalf("egress check = %+v", c)
+	}
+
+	disabled := testConfig(t)
+	rep = RunDoctorWithEgressProbe(context.Background(), disabled, []provider.Provider{fakeProvider{name: "good", results: 1}}, OpenReadOnly(disabled.HealthPath()), nil,
+		func(context.Context, *config.Config) (proxy.Egress, error) {
+			t.Fatal("disabled proxy must not contact egress probe")
+			return proxy.Egress{}, nil
+		})
+	c = findCheck(t, rep, "proxy egress")
+	if c.Status != StatusWarn || !strings.Contains(c.Detail, "not configured; skipped") {
+		t.Fatalf("disabled egress check = %+v", c)
+	}
+}
+
+func TestDoctorEgressServiceFailureOnlyWarns(t *testing.T) {
+	dir := t.TempDir()
+	downloads := filepath.Join(dir, "downloads")
+	if err := os.MkdirAll(downloads, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("download_dir: "+downloads+"\nproxy:\n  socks5: socks5://127.0.0.1:9050\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadReadOnlyFrom(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep := RunDoctorWithEgressProbe(context.Background(), cfg, []provider.Provider{fakeProvider{name: "good", results: 1}}, OpenReadOnly(cfg.HealthPath()), nil,
+		func(context.Context, *config.Config) (proxy.Egress, error) {
+			return proxy.Egress{}, errors.New("echo service timeout")
+		})
+	c := findCheck(t, rep, "proxy egress")
+	if c.Status != StatusWarn || c.Detail != "verification service unavailable" || rep.Failed() {
+		t.Fatalf("service failure = %+v, report = %+v", c, rep.Checks)
+	}
+}
+
+func TestDoctorFlagsInsecureProxyCredentialsWithoutMutating(t *testing.T) {
+	dir := t.TempDir()
+	downloads := filepath.Join(dir, "downloads")
+	if err := os.MkdirAll(downloads, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "config.yaml")
+	data := []byte("download_dir: " + downloads + "\nproxy:\n  socks5: socks5://alice:secret@127.0.0.1:9050\n")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadReadOnlyFrom(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep := RunDoctor(context.Background(), cfg, []provider.Provider{fakeProvider{name: "good", results: 1}}, OpenReadOnly(cfg.HealthPath()), nil)
+	c := findCheck(t, rep, "proxy")
+	if c.Status != StatusFail || !strings.Contains(c.Detail, "0600") || !rep.Failed() {
+		t.Fatalf("proxy check = %+v, report = %+v", c, rep.Checks)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(data) {
+		t.Fatal("doctor changed credential config")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o644 {
+		t.Fatalf("doctor changed credential config mode to %#o", got)
 	}
 }
 

@@ -234,7 +234,7 @@ func (e *Engine) openDirect(ctx context.Context, url string, offset int64) (*htt
 	if offset > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 	}
-	resp, err := directClient.Do(req)
+	resp, err := e.directHTTP.Do(req)
 	if err != nil {
 		return nil, err
 	}

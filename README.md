@@ -43,12 +43,57 @@ CC=/usr/bin/clang CXX=/usr/bin/clang++ go install github.com/melqtx/tork/cmd/tor
 Config lives in `~/.tork/`; downloads land in `~/Downloads/tork` (change with
 `tork -d DIR`).
 
+## SOCKS5 proxy
+
+For the usual local Tor setup, one command is enough:
+
+```sh
+tork proxy tor
+tork doctor --proxy-check
+```
+
+`tork proxy status` shows the redacted endpoint and strict-mode limits without
+making a network request. To use another unauthenticated SOCKS5 proxy:
+
+```sh
+tork proxy set socks5://127.0.0.1:1080
+```
+
+For an authenticated endpoint, run `tork proxy set` without an argument and
+enter the URL through hidden terminal input, so it never appears in shell
+history or a process list. You can also configure tork by hand:
+
+```yaml
+proxy:
+  socks5: "socks5://user:password@127.0.0.1:9050"
+```
+
+`socks5://` and `socks5h://` both resolve destination names at the proxy.
+Username and password are optional and must be URL-encoded. For Tor, the usual
+local endpoint is `socks5://127.0.0.1:9050`.
+
+Credentials require `~/.tork/config.yaml` to be a regular file with mode
+`0600`. A normal tork launch tightens an insecure regular config once; `tork
+doctor` stays read-only and reports the problem instead.
+
+Proxy mode is strict: searches, ISO requests, HTTP trackers, and outgoing TCP
+peers use the proxy. tork disables DHT, uTP, UDP trackers, inbound peers, port
+forwarding, and WebTorrent rather than risk a direct connection. Downloads may
+find fewer peers as a result. The TUI keeps a visible `SOCKS strict` badge; it
+becomes `((o)) Tor strict` only after a live verification confirms a Tor exit. A
+check-service outage is shown as unavailable, not as a leak, and tork never
+falls back to a direct connection.
+
 ## Keep an eye on it
 
 `tork doctor` is read-only by default and checks config, disk, state, and
-provider reachability. Add `--engine` for an opt-in listener check or `--record`
-to save provider results in `~/.tork/health.json`. Health history contains local
-provider timings plus torrent names and swarm counts; it is never uploaded.
+provider reachability. Add `--engine` for an opt-in listener check, `--record`
+to save provider results in `~/.tork/health.json`, or `--proxy-check` to ask the
+Tor Project's check service what egress IP it sees through your configured
+proxy. That proves this explicit HTTP check used the route; it is not a promise
+of anonymity or a claim about your normal connection. Health history contains
+local provider timings plus torrent names and swarm counts; it is never
+uploaded.
 
 Automatic checks are off by default. Enable a local daily check with:
 
@@ -90,5 +135,8 @@ enable.
 
 Provider availability and results can change without notice. tork does not
 endorse or guarantee third-party content.
+
+A proxy routes tork's traffic, but it is not a promise of anonymity or legal
+protection.
 
 MIT, see [LICENSE](LICENSE).

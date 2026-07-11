@@ -10,6 +10,7 @@ import (
 
 	"github.com/melqtx/tork/internal/config"
 	"github.com/melqtx/tork/internal/provider"
+	"github.com/melqtx/tork/internal/proxy"
 	"github.com/melqtx/tork/internal/state"
 )
 
@@ -68,11 +69,26 @@ const lowDiskBytes = 5 << 30
 // real client (and without engine importing health, or vice versa).
 type EngineProbe func(*config.Config) (port int, err error)
 
+// EgressProbe verifies a configured proxy without making health depend on a
+// particular public endpoint. Tests inject a local endpoint; the CLI uses
+// ProbeProxyEgress.
+type EgressProbe func(context.Context, *config.Config) (proxy.Egress, error)
+
 // RunDoctor executes every diagnostic and returns them in display order. Its
 // own checks never mutate anything - a broken state entry is reported, not
 // repaired - though an engineProbe, being opt-in, does start a real client and
 // so touches the piece-completion database.
 func RunDoctor(ctx context.Context, cfg *config.Config, providers []provider.Provider, store *Store, engineProbe EngineProbe) Report {
+	return runDoctor(ctx, cfg, providers, store, engineProbe, nil)
+}
+
+// RunDoctorWithEgressProbe is RunDoctor with an explicit, opt-in proxy egress
+// check. The normal doctor contract remains free of this extra public request.
+func RunDoctorWithEgressProbe(ctx context.Context, cfg *config.Config, providers []provider.Provider, store *Store, engineProbe EngineProbe, egressProbe EgressProbe) Report {
+	return runDoctor(ctx, cfg, providers, store, engineProbe, egressProbe)
+}
+
+func runDoctor(ctx context.Context, cfg *config.Config, providers []provider.Provider, store *Store, engineProbe EngineProbe, egressProbe EgressProbe) Report {
 	var rep Report
 	add := func(name string, st Status, format string, args ...any) {
 		rep.Checks = append(rep.Checks, Check{Name: name, Status: st, Detail: fmt.Sprintf(format, args...)})
@@ -85,11 +101,17 @@ func RunDoctor(ctx context.Context, cfg *config.Config, providers []provider.Pro
 	} else {
 		add("config", StatusOK, "%s", cfg.ConfigPath())
 	}
+	rep.Checks = append(rep.Checks, checkProxy(cfg))
+	if egressProbe != nil {
+		rep.Checks = append(rep.Checks, checkProxyEgress(ctx, cfg, egressProbe))
+	}
 	rep.Checks = append(rep.Checks, checkDownloadDir(cfg))
 	rep.Checks = append(rep.Checks, checkState(cfg))
 	rep.Checks = append(rep.Checks, checkEngine(cfg, engineProbe))
 
-	if len(providers) == 0 {
+	if cfg.ProxyError() != nil {
+		add("providers", StatusWarn, "not checked; proxy config is invalid")
+	} else if len(providers) == 0 {
 		add("providers", StatusFail, "none enabled - searching will return nothing")
 	} else {
 		rep.Probe = ProbeProviders(ctx, providers, cfg.SearchTimeout())
@@ -109,6 +131,80 @@ func RunDoctor(ctx context.Context, cfg *config.Config, providers []provider.Pro
 
 	rep.Checks = append(rep.Checks, checkHistory(cfg, store))
 	return rep
+}
+
+// ProbeProxyEgress is the production doctor probe. It uses exactly the same
+// SOCKS-only HTTP transport as searches and direct downloads.
+func ProbeProxyEgress(ctx context.Context, cfg *config.Config) (proxy.Egress, error) {
+	return cfg.ProxyRuntime().VerifyEgress(ctx)
+}
+
+func checkProxy(cfg *config.Config) Check {
+	c := Check{Name: "proxy"}
+	if err := cfg.ProxyError(); err != nil {
+		c.Status = StatusFail
+		c.Detail = fmt.Sprintf("invalid proxy config: %v (fix with 'tork proxy set' or 'tork proxy off')", err)
+		return c
+	}
+	runtime := cfg.ProxyRuntime()
+	if runtime == nil || !runtime.Enabled() {
+		c.Status = StatusOK
+		c.Detail = "not configured (run 'tork proxy tor' to route through Tor)"
+		return c
+	}
+	secure, err := cfg.ProxyCredentialConfigSecure()
+	if err != nil {
+		c.Status = StatusFail
+		c.Detail = fmt.Sprintf("cannot inspect credential permissions: %v", err)
+		return c
+	}
+	if !secure {
+		c.Status = StatusFail
+		c.Detail = "proxy credentials require config.yaml mode 0600"
+		return c
+	}
+	c.Status = StatusOK
+	c.Detail = fmt.Sprintf("SOCKS5 %s · strict TCP-only torrent mode", runtime.Endpoint())
+	return c
+}
+
+func checkProxyEgress(ctx context.Context, cfg *config.Config, probe EgressProbe) Check {
+	c := Check{Name: "proxy egress"}
+	if cfg.ProxyError() != nil {
+		c.Status = StatusWarn
+		c.Detail = "not checked; proxy config is invalid"
+		return c
+	}
+	runtime := cfg.ProxyRuntime()
+	if runtime == nil || !runtime.Enabled() {
+		c.Status = StatusWarn
+		c.Detail = "not configured; skipped"
+		return c
+	}
+	secure, err := cfg.ProxyCredentialConfigSecure()
+	if err != nil || !secure {
+		c.Status = StatusWarn
+		c.Detail = "not checked; credential config is insecure"
+		return c
+	}
+	egress, err := probe(ctx, cfg)
+	if err != nil {
+		if proxy.IsRouteFailure(err) {
+			c.Status = StatusFail
+			c.Detail = "proxy route unavailable"
+			return c
+		}
+		c.Status = StatusWarn
+		c.Detail = "verification service unavailable"
+		return c
+	}
+	c.Status = StatusOK
+	if egress.IsTor {
+		c.Detail = fmt.Sprintf("egress IP %s · Tor verified · strict", egress.IP)
+	} else {
+		c.Detail = fmt.Sprintf("egress IP %s · SOCKS route verified (not a Tor exit) · strict", egress.IP)
+	}
+	return c
 }
 
 func providerCheck(p ProviderProbe) Check {
@@ -217,6 +313,18 @@ func checkEngine(cfg *config.Config, probe EngineProbe) Check {
 		}
 		c.Status = StatusFail
 		c.Detail = err.Error()
+		return c
+	}
+	if port == 0 {
+		if cfg.ProxyRuntime().Enabled() {
+			c.Status = StatusOK
+			c.Detail = "started · no inbound listener (strict proxy mode)"
+			return c
+		}
+		// Without a proxy this is unexpected: the engine came up but bound
+		// nothing, so inbound peers are silently impossible.
+		c.Status = StatusWarn
+		c.Detail = "started · no inbound listener"
 		return c
 	}
 	c.Status = StatusOK

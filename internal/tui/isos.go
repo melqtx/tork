@@ -169,7 +169,7 @@ func (a *App) downloadISOCmd(d isos.Distro) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 
-		t, err := isos.Resolve(ctx, d)
+		t, err := isos.ResolveWithClient(ctx, d, a.cfg.ProxyHTTPClient())
 		if err != nil {
 			return torrentAddedMsg{name: d.Name, err: err}
 		}

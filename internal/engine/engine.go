@@ -4,9 +4,12 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -118,6 +121,10 @@ type Engine struct {
 	direct  map[metainfo.Hash]*directItem // plain-HTTPS downloads (see direct.go)
 	dwg     sync.WaitGroup                // running direct-download goroutines
 	pcClose func()                        // bolt piece-completion closer
+
+	torrentHTTP *http.Client
+	directHTTP  *http.Client
+	strictProxy bool
 }
 
 func New(cfg *config.Config) (*Engine, error) {
@@ -148,6 +155,28 @@ func New(cfg *config.Config) (*Engine, error) {
 	if cfg.MaxConnections > 0 {
 		cc.EstablishedConnsPerTorrent = cfg.MaxConnections
 	}
+	runtime := cfg.ProxyRuntime()
+	strictProxy := runtime != nil && runtime.Enabled()
+	torrentHTTP := torrentClient
+	directHTTP := directClient
+	if strictProxy {
+		// SOCKS5 is TCP-only. Do not leave a second, direct transport path
+		// around for DHT, uTP, UDP trackers, inbound peers, or WebRTC.
+		cc.DisableTCP = true
+		cc.DisableUTP = true
+		cc.NoDHT = true
+		cc.NoDefaultPortForwarding = true
+		cc.AcceptPeerConnections = false
+		cc.DialForPeerConns = false
+		cc.DisableWebtorrent = true
+		cc.HTTPDialContext = runtime.DialContext
+		cc.TrackerDialContext = runtime.DialContext
+		cc.TrackerListenPacket = func(_, _ string) (net.PacketConn, error) {
+			return nil, errors.New("UDP trackers are disabled in strict SOCKS5 mode")
+		}
+		torrentHTTP = runtime.HTTPClient(30*time.Second, 0)
+		directHTTP = runtime.HTTPClient(0, 30*time.Second)
+	}
 	// the TUI owns the terminal; drop anacrolix's stderr logging entirely
 	silent := analog.NewLogger("tork")
 	silent.Handlers = []analog.Handler{analog.DiscardHandler}
@@ -158,13 +187,21 @@ func New(cfg *config.Config) (*Engine, error) {
 		pc.Close()
 		return nil, fmt.Errorf("start torrent client: %w", err)
 	}
+	if strictProxy {
+		// DisableTCP prevents a direct listener. AddDialer restores only an
+		// outbound TCP route, and Runtime routes every dial through SOCKS5.
+		client.AddDialer(runtime)
+	}
 	return &Engine{
-		client:  client,
-		cfg:     cfg,
-		pc:      pc,
-		items:   make(map[metainfo.Hash]*item),
-		direct:  make(map[metainfo.Hash]*directItem),
-		pcClose: func() { pc.Close() },
+		client:      client,
+		cfg:         cfg,
+		pc:          pc,
+		items:       make(map[metainfo.Hash]*item),
+		direct:      make(map[metainfo.Hash]*directItem),
+		pcClose:     func() { pc.Close() },
+		torrentHTTP: torrentHTTP,
+		directHTTP:  directHTTP,
+		strictProxy: strictProxy,
 	}, nil
 }
 
@@ -215,7 +252,7 @@ func (e *Engine) addMagnetWithOptions(magnet string, opts AddOptions) (metainfo.
 		}
 		e.mu.Unlock()
 	}
-	spec.Storage = e.storageForDir(opts.DownloadDir)
+	e.prepareSpec(spec, opts.DownloadDir)
 
 	t, _, err := e.client.AddTorrentSpec(spec)
 	if err != nil {
@@ -270,7 +307,7 @@ func (e *Engine) AddTorrentURL(ctx context.Context, url string) (h metainfo.Hash
 
 func (e *Engine) AddTorrentURLWithOptions(ctx context.Context, url string, opts AddOptions) (h metainfo.Hash, name, magnet string, err error) {
 	opts = e.normalizeOptions(opts)
-	mi, err := fetchMetaInfo(ctx, url)
+	mi, err := e.fetchMetaInfo(ctx, url)
 	if err != nil {
 		return metainfo.Hash{}, "", "", fmt.Errorf("fetch torrent: %w", err)
 	}
@@ -280,7 +317,7 @@ func (e *Engine) AddTorrentURLWithOptions(ctx context.Context, url string, opts 
 	}
 
 	spec := torrent.TorrentSpecFromMetaInfo(mi)
-	spec.Storage = e.storageForDir(opts.DownloadDir)
+	e.prepareSpec(spec, opts.DownloadDir)
 	t, _, err := e.client.AddTorrentSpec(spec)
 	if err != nil {
 		return metainfo.Hash{}, "", "", err
@@ -329,7 +366,7 @@ func (e *Engine) AddTorrentURLForPreview(ctx context.Context, url string) (h met
 func (e *Engine) addTorrentURLForPreviewWithOptions(ctx context.Context, url string, opts AddOptions) (h metainfo.Hash, name, magnet string, owned bool, err error) {
 	opts.Preview = true
 	opts = e.normalizeOptions(opts)
-	mi, err := fetchMetaInfo(ctx, url)
+	mi, err := e.fetchMetaInfo(ctx, url)
 	if err != nil {
 		return metainfo.Hash{}, "", "", false, fmt.Errorf("fetch torrent: %w", err)
 	}
@@ -352,7 +389,7 @@ func (e *Engine) addTorrentURLForPreviewWithOptions(ctx context.Context, url str
 	e.mu.Unlock()
 
 	spec := torrent.TorrentSpecFromMetaInfo(mi)
-	spec.Storage = e.storageForDir(opts.DownloadDir)
+	e.prepareSpec(spec, opts.DownloadDir)
 	t, _, err := e.client.AddTorrentSpec(spec)
 	if err != nil {
 		return metainfo.Hash{}, "", "", false, err
@@ -375,12 +412,12 @@ func (e *Engine) addTorrentURLForPreviewWithOptions(ctx context.Context, url str
 	return h, name, magnet, true, nil
 }
 
-func fetchMetaInfo(ctx context.Context, url string) (*metainfo.MetaInfo, error) {
+func (e *Engine) fetchMetaInfo(ctx context.Context, url string) (*metainfo.MetaInfo, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := torrentClient.Do(req)
+	resp, err := e.torrentHTTP.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -389,6 +426,47 @@ func fetchMetaInfo(ctx context.Context, url string) (*metainfo.MetaInfo, error) 
 		return nil, fmt.Errorf("%s: unexpected status %d", url, resp.StatusCode)
 	}
 	return metainfo.Load(io.LimitReader(resp.Body, maxTorrentBytes))
+}
+
+// prepareSpec applies storage and strips the transports strict SOCKS5 mode
+// cannot carry. This runs for magnets and metainfo files alike.
+func (e *Engine) prepareSpec(spec *torrent.TorrentSpec, downloadDir string) {
+	spec.Storage = e.storageForDir(downloadDir)
+	if !e.strictProxy {
+		return
+	}
+	spec.Trackers = proxySafeTrackerTiers(spec.Trackers)
+	spec.Webseeds = proxySafeHTTPURLs(spec.Webseeds)
+	spec.Sources = proxySafeHTTPURLs(spec.Sources)
+	spec.DhtNodes = nil
+}
+
+func proxySafeTrackerTiers(tiers [][]string) (out [][]string) {
+	for _, tier := range tiers {
+		var safe []string
+		for _, raw := range tier {
+			u, err := url.Parse(raw)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+				continue
+			}
+			safe = append(safe, raw)
+		}
+		if len(safe) > 0 {
+			out = append(out, safe)
+		}
+	}
+	return out
+}
+
+func proxySafeHTTPURLs(urls []string) (out []string) {
+	for _, raw := range urls {
+		u, err := url.Parse(raw)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+			continue
+		}
+		out = append(out, raw)
+	}
+	return out
 }
 
 // AddForPreview fetches metadata only: the torrent is registered but no data is

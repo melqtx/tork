@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/term"
 
 	"github.com/melqtx/tork/internal/aggregator"
 	"github.com/melqtx/tork/internal/autopilot"
@@ -21,6 +23,7 @@ import (
 	"github.com/melqtx/tork/internal/engine"
 	"github.com/melqtx/tork/internal/health"
 	"github.com/melqtx/tork/internal/provider"
+	"github.com/melqtx/tork/internal/proxy"
 	"github.com/melqtx/tork/internal/state"
 	"github.com/melqtx/tork/internal/tui"
 )
@@ -80,6 +83,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "proxy" {
+		if err := runProxy(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "tork:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "tork:", err)
 		os.Exit(1)
@@ -92,12 +102,14 @@ func printHelp() {
 Usage:
   tork [--evil] [-d DIR]
   tork autopilot [--dry-run] [--headless] [--evil] [-n N] [-d DIR] "query"
-  tork doctor [--record] [--engine] [-d DIR]
+  tork doctor [--record] [--engine] [--proxy-check] [-d DIR]
+  tork proxy tor|set [SOCKS5_URL]|off|status
   tork --version
 
 Commands:
   autopilot   search, pick the best sources, and queue them
   doctor      read-only config, disk, state, and provider diagnostic
+  proxy       configure or inspect strict SOCKS5 routing
 
 Flags:
   -d, --download-dir DIR   where to save downloads (default: your OS
@@ -119,6 +131,7 @@ func runDoctor(args []string) (failed bool, err error) {
 	fs.StringVar(dlDir, "d", "", "shorthand for --download-dir")
 	record := fs.Bool("record", false, "record this provider check in health history")
 	deepEngine := fs.Bool("engine", false, "start the torrent engine to verify its listener")
+	proxyCheck := fs.Bool("proxy-check", false, "verify proxy egress through the Tor Project check service")
 	if err := fs.Parse(args); err != nil {
 		return false, err
 	}
@@ -142,7 +155,12 @@ func runDoctor(args []string) (failed bool, err error) {
 	if *deepEngine {
 		engineProbe = probeEngine
 	}
-	rep := health.RunDoctor(ctx, cfg, enabledProviders(cfg), store, engineProbe)
+	var rep health.Report
+	if *proxyCheck {
+		rep = health.RunDoctorWithEgressProbe(ctx, cfg, enabledProviders(cfg), store, engineProbe, health.ProbeProxyEgress)
+	} else {
+		rep = health.RunDoctor(ctx, cfg, enabledProviders(cfg), store, engineProbe)
+	}
 	fmt.Print(health.FormatReport(rep))
 
 	if *record && len(rep.Probe) > 0 {
@@ -151,6 +169,117 @@ func runDoctor(args []string) (failed bool, err error) {
 		}
 	}
 	return rep.Failed(), nil
+}
+
+func runProxy(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: tork proxy tor|set [SOCKS5_URL]|off|status")
+	}
+	switch args[0] {
+	case "tor":
+		if len(args) != 1 {
+			return errors.New("usage: tork proxy tor")
+		}
+		return saveProxy("socks5://127.0.0.1:9050")
+	case "set":
+		raw, err := proxyURLFromArgs(args[1:])
+		if err != nil {
+			return err
+		}
+		return saveProxy(raw)
+	case "off":
+		if len(args) != 1 {
+			return errors.New("usage: tork proxy off")
+		}
+		update, err := config.UpdateProxy("")
+		if err != nil {
+			return err
+		}
+		if update.Changed {
+			fmt.Println("proxy disabled; tork will use its normal direct mode next launch")
+		} else {
+			fmt.Println("proxy is already disabled")
+		}
+		return nil
+	case "status":
+		if len(args) != 1 {
+			return errors.New("usage: tork proxy status")
+		}
+		return printProxyStatus()
+	default:
+		return errors.New("usage: tork proxy tor|set [SOCKS5_URL]|off|status")
+	}
+}
+
+func proxyURLFromArgs(args []string) (string, error) {
+	switch len(args) {
+	case 0:
+		if !term.IsTerminal(os.Stdin.Fd()) {
+			return "", errors.New("run 'tork proxy set SOCKS5_URL' or enter a credentialed URL from an interactive terminal")
+		}
+		fmt.Fprint(os.Stderr, "SOCKS5 URL (hidden input): ")
+		input, err := term.ReadPassword(os.Stdin.Fd())
+		fmt.Fprintln(os.Stderr)
+		if err != nil {
+			return "", fmt.Errorf("read proxy URL: %w", err)
+		}
+		raw := strings.TrimSpace(string(input))
+		if raw == "" {
+			return "", errors.New("SOCKS5 URL is required")
+		}
+		return raw, nil
+	case 1:
+		raw := args[0]
+		runtime, err := proxy.New(raw)
+		if err != nil {
+			return "", err
+		}
+		if runtime.HasCredentials() {
+			return "", errors.New("for a credentialed proxy, run 'tork proxy set' and enter the URL privately")
+		}
+		return raw, nil
+	default:
+		return "", errors.New("usage: tork proxy set [SOCKS5_URL]")
+	}
+}
+
+func saveProxy(raw string) error {
+	update, err := config.UpdateProxy(raw)
+	if err != nil {
+		return err
+	}
+	if !update.Changed {
+		fmt.Printf("proxy is already SOCKS5 %s · strict TCP-only torrent mode\n", update.Endpoint)
+		return nil
+	}
+	fmt.Printf("proxy configured: SOCKS5 %s · strict TCP-only torrent mode\n", update.Endpoint)
+	fmt.Println("verify it with: tork doctor --proxy-check")
+	return nil
+}
+
+func printProxyStatus() error {
+	cfg, err := config.LoadReadOnly()
+	if err != nil {
+		return err
+	}
+	if err := cfg.ProxyError(); err != nil {
+		return fmt.Errorf("proxy config is invalid: %v (fix with 'tork proxy set SOCKS5_URL' or 'tork proxy off')", err)
+	}
+	runtime := cfg.ProxyRuntime()
+	if runtime == nil || !runtime.Enabled() {
+		fmt.Println("proxy: not configured (run 'tork proxy tor' to route through Tor)")
+		return nil
+	}
+	secure, err := cfg.ProxyCredentialConfigSecure()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("proxy: SOCKS5 %s · strict TCP-only torrent mode\n", runtime.Endpoint())
+	fmt.Println("verify it with: tork doctor --proxy-check")
+	if !secure {
+		return errors.New("proxy credentials require config.yaml mode 0600")
+	}
+	return nil
 }
 
 // probeEngine starts the torrent engine just long enough to prove it can bind
@@ -435,13 +564,14 @@ func pathOrPartExists(path string) bool {
 
 func enabledProviders(cfg *config.Config) []provider.Provider {
 	var out []provider.Provider
+	client := cfg.ProxyHTTPClient()
 
 	for _, name := range []string{"knaben", "yts", "nyaa", "tpb_movies", "tpb_tv", "eztv", "x1337"} {
 		p, ok := cfg.Providers[name]
 		if !ok || !p.Enabled {
 			continue
 		}
-		out = appendProvider(out, name, p)
+		out = appendProvider(out, client, name, p)
 	}
 
 	var custom []string
@@ -458,29 +588,29 @@ func enabledProviders(cfg *config.Config) []provider.Provider {
 		if !p.Enabled {
 			continue
 		}
-		out = appendProvider(out, name, p)
+		out = appendProvider(out, client, name, p)
 	}
 	return out
 }
 
-func appendProvider(out []provider.Provider, name string, p config.ProviderConfig) []provider.Provider {
+func appendProvider(out []provider.Provider, client *http.Client, name string, p config.ProviderConfig) []provider.Provider {
 	switch providerType(name, p.Type) {
 	case "knaben":
-		return append(out, provider.NewKnaben(nil, p.Mirror))
+		return append(out, provider.NewKnaben(client, p.Mirror))
 	case "yts":
-		return append(out, provider.NewYTS(nil, p.Mirror))
+		return append(out, provider.NewYTS(client, p.Mirror))
 	case "nyaa":
-		return append(out, provider.NewNyaa(nil, p.Mirror))
+		return append(out, provider.NewNyaa(client, p.Mirror))
 	case "eztv_html":
-		return append(out, provider.NewEZTV(nil, p.Mirror))
+		return append(out, provider.NewEZTV(client, p.Mirror))
 	case "1337x_html":
-		return append(out, provider.NewX1337(nil, p.BaseURLs()))
+		return append(out, provider.NewX1337(client, p.BaseURLs()))
 	case "tpb_movies":
-		return append(out, provider.NewPirateBayMovies(nil, p.BaseURLs()...))
+		return append(out, provider.NewPirateBayMovies(client, p.BaseURLs()...))
 	case "tpb_tv":
-		return append(out, provider.NewPirateBayTV(nil, p.BaseURLs()...))
+		return append(out, provider.NewPirateBayTV(client, p.BaseURLs()...))
 	case "rss", "torznab":
-		return append(out, provider.NewRSS(nil, name, p.SearchURL))
+		return append(out, provider.NewRSS(client, name, p.SearchURL))
 	}
 	return out
 }

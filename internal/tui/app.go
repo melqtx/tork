@@ -36,19 +36,21 @@ type App struct {
 	width  int
 	height int
 
-	search    searchModel
-	isos      isosModel
-	results   resultsModel
-	preview   previewModel
-	downloads downloadsModel
-	compass   compassModel
+	search     searchModel
+	isos       isosModel
+	results    resultsModel
+	preview    previewModel
+	downloads  downloadsModel
+	compass    compassModel
+	proxy      proxyBadge
+	proxyCheck proxyChecker
 
 	errText      string
 	lastTickSave time.Time // throttles progress-only state.json writes on the tick
 }
 
 func New(cfg *config.Config, eng *engine.Engine, agg *aggregator.Aggregator, st *state.State, hs *health.Store) *App {
-	return &App{
+	a := &App{
 		cfg:       cfg,
 		eng:       eng,
 		agg:       agg,
@@ -59,6 +61,10 @@ func New(cfg *config.Config, eng *engine.Engine, agg *aggregator.Aggregator, st 
 		results:   newResultsModel(cfg.Ranking),
 		downloads: newDownloadsModel(),
 	}
+	if runtime := cfg.ProxyRuntime(); runtime != nil && runtime.Enabled() {
+		a.proxy.state = proxyBadgeUnverified
+	}
+	return a
 }
 
 // ShowDownloads opens the app on the downloads screen (used after autopilot
@@ -72,6 +78,9 @@ func (a *App) Init() tea.Cmd {
 		a.downloads.snaps = snaps
 		a.downloads.ticking = true
 		cmds = append(cmds, tickCmd(a.tickInterval()))
+	}
+	if proxyCmd := a.startProxyCheck(time.Now()); proxyCmd != nil {
+		cmds = append(cmds, proxyCmd)
 	}
 	return tea.Batch(cmds...)
 }
@@ -105,14 +114,15 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		a.downloads.snaps = a.eng.Snapshots()
 		saveCmd := a.syncCompletedToState()
+		proxyCmd := a.startProxyCheck(time.Time(msg))
 		if a.screen == screenPreview {
 			a.preview.refresh(a.eng)
 		}
 		if a.tickShouldContinue() {
-			return a, tea.Batch(saveCmd, tickCmd(a.tickInterval()))
+			return a, tea.Batch(saveCmd, proxyCmd, tickCmd(a.tickInterval()))
 		}
 		a.downloads.ticking = false
-		return a, saveCmd
+		return a, tea.Batch(saveCmd, proxyCmd)
 
 	case torrentAddedMsg:
 		return a, a.onTorrentAdded(msg)
@@ -126,6 +136,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case healthDoneMsg:
 		return a, a.onHealthDone(msg)
+
+	case proxyCheckMsg:
+		a.onProxyCheck(msg)
+		return a, nil
 	}
 
 	switch a.screen {
@@ -253,7 +267,7 @@ func (a *App) onTorrentAdded(msg torrentAddedMsg) tea.Cmd {
 	a.st.Upsert(entry)
 	a.screen = screenDownloads
 	a.downloads.snaps = a.eng.Snapshots()
-	return tea.Batch(a.saveState(), a.ensureTick())
+	return tea.Batch(a.saveState(), a.ensureTick(), a.startProxyCheck(time.Now()))
 }
 
 // syncCompletedToState marks finished torrents done in state.json and keeps

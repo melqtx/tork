@@ -122,7 +122,7 @@ func (a *App) footerLine(width int, help, right string) string {
 // footerBar is a rule plus a help/status line (errors take over when present).
 func (a *App) footerBar(help string) string {
 	w := a.contentWidth()
-	return rule(w) + "\n" + a.footerLine(w, help, "")
+	return rule(w) + "\n" + a.footerLine(w, help, a.proxyStatusTail())
 }
 
 // chrome composes a full screen: centered column, header on top, body filling
