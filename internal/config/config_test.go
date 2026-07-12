@@ -39,6 +39,9 @@ func TestLoadFromWritesDefaultsOnFirstRun(t *testing.T) {
 	if cfg.Health.Enabled || cfg.Health.IntervalHours != 24 {
 		t.Errorf("health defaults = %+v, want disabled daily checks", cfg.Health)
 	}
+	if !cfg.MetadataCache.Enabled || cfg.MetadataCache.MaxMB != 256 || cfg.MetadataCache.MaxEntries != 512 {
+		t.Errorf("metadata cache defaults = %+v", cfg.MetadataCache)
+	}
 }
 
 func TestLoadReadOnlyDoesNotCreateFiles(t *testing.T) {
@@ -115,6 +118,48 @@ func TestLoadFromReadsExistingFile(t *testing.T) {
 	}
 	if cfg.Providers["eztv"].Enabled {
 		t.Error("eztv should remain opt-in after merge")
+	}
+}
+
+func TestLoadFromReadsAutopilotSafetyDefaults(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".tork")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yaml := "autopilot:\n  max_downloads: 3\n  min_seeders: 12\n  max_size_gb: 8.5\n  allowed_categories: [movies, anime]\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadFrom(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Autopilot.MaxDownloads != 3 || cfg.Autopilot.MinSeeders != 12 || cfg.Autopilot.MaxSizeGB != 8.5 {
+		t.Fatalf("autopilot config = %+v", cfg.Autopilot)
+	}
+	if len(cfg.Autopilot.AllowedCategories) != 2 || cfg.Autopilot.AllowedCategories[1] != "anime" {
+		t.Fatalf("autopilot categories = %v", cfg.Autopilot.AllowedCategories)
+	}
+}
+
+func TestLoadFromReadsMetadataCacheSettings(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".tork")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yaml := "metadata_cache:\n  enabled: false\n  max_mb: 32\n  max_entries: 40\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadFrom(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MetadataCache.Enabled || cfg.MetadataCache.MaxMB != 32 || cfg.MetadataCache.MaxEntries != 40 {
+		t.Fatalf("metadata cache config = %+v", cfg.MetadataCache)
+	}
+	if _, err := os.Stat(cfg.MetadataCacheDir()); !os.IsNotExist(err) {
+		t.Fatalf("config load eagerly created cache directory: %v", err)
 	}
 }
 

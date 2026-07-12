@@ -81,3 +81,22 @@ func TestEntryDataPresentAcceptsPartFile(t *testing.T) {
 		t.Fatal("part file reported missing")
 	}
 }
+
+func TestResolveOpenTargetRejectsConflictingInputs(t *testing.T) {
+	if _, err := resolveOpenTarget([]string{"one", "two"}, ""); err == nil {
+		t.Fatal("accepted multiple positional inputs")
+	}
+	if _, err := resolveOpenTarget([]string{"0123456789abcdef0123456789abcdef01234567"}, "https://example.test/download?id=1"); err == nil {
+		t.Fatal("accepted positional input with --torrent-url")
+	}
+}
+
+func TestResolveOpenTargetAcceptsExplicitAmbiguousURL(t *testing.T) {
+	target, err := resolveOpenTarget(nil, "https://example.test/download?id=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target == nil || target.Value != "https://example.test/download?id=1" {
+		t.Fatalf("target = %+v", target)
+	}
+}

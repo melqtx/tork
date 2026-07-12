@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -23,6 +24,20 @@ func TestRingSpeed(t *testing.T) {
 	want := float64(1 << 20)
 	if got < want*0.99 || got > want*1.01 {
 		t.Errorf("speed = %f, want ~%f", got, want)
+	}
+}
+
+func TestMetadataStatusSummaryIsTruthful(t *testing.T) {
+	direct := MetadataStatus{PeersTotal: 3, Trackers: 16, DHTEnabled: true, Waiting: 12 * time.Second}
+	got := direct.Summary()
+	for _, want := range []string{"3 peers seen", "16 trackers", "DHT", "12s"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("summary %q omitted %q", got, want)
+		}
+	}
+	strict := MetadataStatus{Trackers: 1, ProxyStrict: true}
+	if got := strict.Summary(); !strings.Contains(got, "1 TCP tracker") || !strings.Contains(got, "DHT off") {
+		t.Fatalf("strict summary = %q", got)
 	}
 }
 

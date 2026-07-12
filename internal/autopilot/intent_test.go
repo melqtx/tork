@@ -36,3 +36,27 @@ func TestParseIntent(t *testing.T) {
 		}
 	}
 }
+
+func TestParseIntentExtractsNaturalSizeLimit(t *testing.T) {
+	in := ParseIntent("grab dune 2024 2160p under 12.5GB")
+	if in.Query != "dune 2024" {
+		t.Fatalf("Query = %q, want dune 2024", in.Query)
+	}
+	want := int64(12.5 * (1 << 30))
+	if in.MaxSizeBytes != want {
+		t.Fatalf("MaxSizeBytes = %d, want %d", in.MaxSizeBytes, want)
+	}
+}
+
+func TestParseSizeLimit(t *testing.T) {
+	got, err := ParseSizeLimit("1.5 GiB")
+	if err != nil || got != int64(1.5*(1<<30)) {
+		t.Fatalf("ParseSizeLimit = %d, %v", got, err)
+	}
+	if _, err := ParseSizeLimit("lots"); err == nil {
+		t.Fatal("ParseSizeLimit accepted a non-size")
+	}
+	if _, err := ParseSizeLimit("999999999999999TB"); err == nil {
+		t.Fatal("ParseSizeLimit accepted an overflowing size")
+	}
+}

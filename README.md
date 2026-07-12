@@ -43,6 +43,32 @@ CC=/usr/bin/clang CXX=/usr/bin/clang++ go install github.com/melqtx/tork/cmd/tor
 Config lives in `~/.tork/`; downloads land in `~/Downloads/tork` (change with
 `tork -d DIR`).
 
+Already have a torrent? Paste its magnet link, bare infohash, local `.torrent`
+path, or `.torrent` URL into the same home search box. To go straight to the
+quiet file preview:
+
+```sh
+tork 'magnet:?xt=urn:btih:…'
+tork ~/Downloads/linux.iso.torrent
+tork 'https://example.org/linux.iso.torrent'
+tork --torrent-url 'https://example.org/download?id=123'
+```
+
+Nothing starts downloading until you confirm it. If a bare hash is still
+finding metadata peers, wait to choose individual files or press enter to queue
+the whole torrent immediately. Once metadata arrives, tork keeps a private
+bounded copy under `~/.tork/metainfo/`, so reopening or resuming that magnet no
+longer depends on finding a metadata peer.
+
+Cache defaults are conservative and can be changed in `~/.tork/config.yaml`:
+
+```yaml
+metadata_cache:
+  enabled: true
+  max_mb: 256
+  max_entries: 512
+```
+
 ## SOCKS5 proxy
 
 For the usual local Tor setup, one command is enough:
@@ -86,14 +112,14 @@ falls back to a direct connection.
 
 ## Keep an eye on it
 
-`tork doctor` is read-only by default and checks config, disk, state, and
-provider reachability. Add `--engine` for an opt-in listener check, `--record`
-to save provider results in `~/.tork/health.json`, or `--proxy-check` to ask the
-Tor Project's check service what egress IP it sees through your configured
-proxy. That proves this explicit HTTP check used the route; it is not a promise
-of anonymity or a claim about your normal connection. Health history contains
-local provider timings plus torrent names and swarm counts; it is never
-uploaded.
+`tork doctor` is read-only by default and checks config, disk, state, cached
+metadata, and provider reachability. Add `--engine` for an opt-in listener
+check, `--record` to save provider results in `~/.tork/health.json`, or
+`--proxy-check` to ask the Tor Project's check service what egress IP it sees
+through your configured proxy. That proves this explicit HTTP check used the
+route; it is not a promise of anonymity or a claim about your normal
+connection. Health history contains local provider timings plus torrent names
+and swarm counts; it is never uploaded.
 
 Automatic checks are off by default. Enable a local daily check with:
 
@@ -117,10 +143,30 @@ manual check.
 
 ## Autopilot (WIP)
 
-Describe what you want and let the cat fetch it:
+Describe what you want and let the cat make a plan:
 
 ```sh
-tork autopilot "all breaking bad seasons 1080p"      # also: --dry-run, -n N, --headless
+tork autopilot "all breaking bad seasons 1080p under 40GB"
+tork autopilot --dry-run --min-seeders 20 "dune 2024 2160p"
+```
+
+Autopilot shows its picks, total known size, reasons, and a summary of rejected
+results before asking to queue anything. Use `-n N` to cap the picks,
+`--max-size 8GB` to cap each download, or `--category movies,anime` to narrow
+provider categories. When the same limit appears in several places, the flag
+wins over the request text, which wins over config defaults. `--headless` skips
+the TUI but still asks before queuing; scripts and cron jobs need `--yes`.
+Decisions stay local in `~/.tork/autopilot.jsonl` so a strange choice can be
+inspected later.
+
+Persistent defaults can live under `autopilot` in `~/.tork/config.yaml`:
+
+```yaml
+autopilot:
+  max_downloads: 3
+  min_seeders: 10
+  max_size_gb: 40
+  allowed_categories: [movies, anime]
 ```
 
 ## Legal

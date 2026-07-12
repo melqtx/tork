@@ -3,6 +3,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -22,6 +23,8 @@ import (
 	"github.com/anacrolix/torrent/storage"
 
 	"github.com/melqtx/tork/internal/config"
+	"github.com/melqtx/tork/internal/intake"
+	"github.com/melqtx/tork/internal/metacache"
 )
 
 type TorrentState int
@@ -79,6 +82,67 @@ type Snapshot struct {
 	Seeders        int // peers we are connected to that hold the complete torrent
 	State          TorrentState
 	Note           string // short human status (direct downloads: failure reason)
+	Metadata       MetadataStatus
+}
+
+type MetadataSource string
+
+const (
+	MetadataPeers MetadataSource = "peers"
+	MetadataCache MetadataSource = "cache"
+	MetadataFile  MetadataSource = "file"
+	MetadataURL   MetadataSource = "url"
+)
+
+type MetadataStatus struct {
+	Source      MetadataSource
+	Waiting     time.Duration
+	PeersActive int
+	PeersTotal  int
+	Trackers    int
+	DHTEnabled  bool
+	ProxyStrict bool
+}
+
+func (m MetadataStatus) Summary() string {
+	var parts []string
+	if m.PeersTotal > 0 {
+		parts = append(parts, fmt.Sprintf("%d peers seen", m.PeersTotal))
+	}
+	if m.Trackers > 0 {
+		label := "trackers"
+		if m.Trackers == 1 {
+			label = "tracker"
+		}
+		if m.ProxyStrict {
+			label = "TCP " + label
+		}
+		parts = append(parts, fmt.Sprintf("%d %s", m.Trackers, label))
+	}
+	if m.DHTEnabled {
+		parts = append(parts, "DHT")
+	} else if m.ProxyStrict {
+		parts = append(parts, "DHT off")
+	}
+	if m.Waiting > 0 {
+		parts = append(parts, m.Waiting.Round(time.Second).String())
+	}
+	return strings.Join(parts, " · ")
+}
+
+func (m MetadataStatus) SourceLabel() string {
+	switch m.Source {
+	case MetadataCache:
+		return "cached metadata"
+	case MetadataFile:
+		return "local torrent"
+	case MetadataURL:
+		return "remote torrent"
+	case MetadataPeers:
+		return "peer metadata"
+	default:
+		return ""
+	}
 }
 
 func (s Snapshot) Progress() float64 {
@@ -96,20 +160,23 @@ type AddOptions struct {
 }
 
 type item struct {
-	t             *torrent.Torrent // nil while paused
-	magnet        string
-	name          string // last known name, survives pause
-	downloadDir   string
-	dataPath      string
-	length        int64 // last known length
-	done          int64 // last known completed bytes
-	paused        bool
-	preview       bool // fetched metadata only; awaiting StartDownload
-	seeding       bool
-	noSeedApplied bool  // connections already capped for a completed non-seeding item
-	excluded      []int // file indices not to download
-	selectedBytes int64 // sum of non-excluded file lengths (0 until applied)
-	samples       ring
+	t              *torrent.Torrent // nil while paused
+	magnet         string
+	name           string // last known name, survives pause
+	downloadDir    string
+	dataPath       string
+	length         int64 // last known length
+	done           int64 // last known completed bytes
+	paused         bool
+	preview        bool // fetched metadata only; awaiting StartDownload
+	seeding        bool
+	noSeedApplied  bool  // connections already capped for a completed non-seeding item
+	excluded       []int // file indices not to download
+	selectedBytes  int64 // sum of non-excluded file lengths (0 until applied)
+	metadataSource MetadataSource
+	metadataStart  time.Time
+	trackerCount   int
+	samples        ring
 }
 
 type Engine struct {
@@ -120,11 +187,13 @@ type Engine struct {
 	items   map[metainfo.Hash]*item
 	direct  map[metainfo.Hash]*directItem // plain-HTTPS downloads (see direct.go)
 	dwg     sync.WaitGroup                // running direct-download goroutines
+	mwg     sync.WaitGroup                // metadata-ready/cache goroutines
 	pcClose func()                        // bolt piece-completion closer
 
 	torrentHTTP *http.Client
 	directHTTP  *http.Client
 	strictProxy bool
+	metainfo    *metacache.Cache
 }
 
 func New(cfg *config.Config) (*Engine, error) {
@@ -202,6 +271,7 @@ func New(cfg *config.Config) (*Engine, error) {
 		torrentHTTP: torrentHTTP,
 		directHTTP:  directHTTP,
 		strictProxy: strictProxy,
+		metainfo:    metacache.New(cfg),
 	}, nil
 }
 
@@ -252,9 +322,31 @@ func (e *Engine) addMagnetWithOptions(magnet string, opts AddOptions) (metainfo.
 		}
 		e.mu.Unlock()
 	}
+	magnetSpec := spec
+	metadataSource := MetadataPeers
+	cacheHit := false
+	if !spec.InfoHash.IsZero() {
+		if cached, ok := e.metainfo.Load(metainfo.Hash(spec.InfoHash)); ok {
+			if cachedSpec, cacheErr := torrent.TorrentSpecFromMetaInfoErr(cached); cacheErr == nil {
+				mergeSpecHints(cachedSpec, spec)
+				spec = cachedSpec
+				metadataSource = MetadataCache
+				cacheHit = true
+			} else {
+				e.metainfo.Discard(metainfo.Hash(spec.InfoHash))
+			}
+		}
+	}
 	e.prepareSpec(spec, opts.DownloadDir)
 
 	t, _, err := e.client.AddTorrentSpec(spec)
+	if err != nil && cacheHit {
+		e.metainfo.Discard(metainfo.Hash(magnetSpec.InfoHash))
+		spec = magnetSpec
+		metadataSource = MetadataPeers
+		e.prepareSpec(spec, opts.DownloadDir)
+		t, _, err = e.client.AddTorrentSpec(spec)
+	}
 	if err != nil {
 		return metainfo.Hash{}, false, err
 	}
@@ -269,18 +361,24 @@ func (e *Engine) addMagnetWithOptions(magnet string, opts AddOptions) (metainfo.
 			existing.downloadDir = opts.DownloadDir
 			existing.seeding = *opts.Seed
 			existing.noSeedApplied = false
+			existing.metadataSource = metadataSource
+			existing.metadataStart = time.Now()
+			existing.trackerCount = trackerCount(spec.Trackers)
 			e.startWhenReady(t, h)
 		}
 		e.mu.Unlock()
 		return h, false, nil
 	}
 	e.items[h] = &item{
-		t:           t,
-		magnet:      magnet,
-		downloadDir: opts.DownloadDir,
-		seeding:     *opts.Seed,
-		excluded:    opts.Excluded,
-		preview:     opts.Preview,
+		t:              t,
+		magnet:         magnet,
+		downloadDir:    opts.DownloadDir,
+		seeding:        *opts.Seed,
+		excluded:       opts.Excluded,
+		preview:        opts.Preview,
+		metadataSource: metadataSource,
+		metadataStart:  time.Now(),
+		trackerCount:   trackerCount(spec.Trackers),
 	}
 	e.mu.Unlock()
 
@@ -291,10 +389,6 @@ func (e *Engine) addMagnetWithOptions(magnet string, opts AddOptions) (metainfo.
 // torrentClient fetches .torrent files; a plain timeout is enough since these
 // are small and served by official mirrors.
 var torrentClient = &http.Client{Timeout: 30 * time.Second}
-
-// maxTorrentBytes caps a fetched .torrent file. Even a large multi-GiB image
-// has a metainfo of a few MiB at most.
-const maxTorrentBytes = 16 << 20
 
 // AddTorrentURL fetches an official .torrent file over HTTP and starts
 // downloading it, exactly like Add does for a magnet. It derives a magnet URI
@@ -315,6 +409,7 @@ func (e *Engine) AddTorrentURLWithOptions(ctx context.Context, url string, opts 
 	if err != nil {
 		return metainfo.Hash{}, "", "", fmt.Errorf("read torrent: %w", err)
 	}
+	_ = e.metainfo.Store(*mi)
 
 	spec := torrent.TorrentSpecFromMetaInfo(mi)
 	e.prepareSpec(spec, opts.DownloadDir)
@@ -335,6 +430,9 @@ func (e *Engine) AddTorrentURLWithOptions(ctx context.Context, url string, opts 
 			existing.downloadDir = opts.DownloadDir
 			existing.seeding = *opts.Seed
 			existing.noSeedApplied = false
+			existing.metadataSource = MetadataURL
+			existing.metadataStart = time.Now()
+			existing.trackerCount = trackerCount(spec.Trackers)
 			e.startWhenReady(t, h)
 		}
 		magnet = existing.magnet
@@ -342,13 +440,16 @@ func (e *Engine) AddTorrentURLWithOptions(ctx context.Context, url string, opts 
 		return h, name, magnet, nil
 	}
 	e.items[h] = &item{
-		t:           t,
-		magnet:      magnet,
-		name:        name,
-		downloadDir: opts.DownloadDir,
-		seeding:     *opts.Seed,
-		excluded:    opts.Excluded,
-		preview:     opts.Preview,
+		t:              t,
+		magnet:         magnet,
+		name:           name,
+		downloadDir:    opts.DownloadDir,
+		seeding:        *opts.Seed,
+		excluded:       opts.Excluded,
+		preview:        opts.Preview,
+		metadataSource: MetadataURL,
+		metadataStart:  time.Now(),
+		trackerCount:   trackerCount(spec.Trackers),
 	}
 	e.mu.Unlock()
 
@@ -360,16 +461,38 @@ func (e *Engine) AddTorrentURLWithOptions(ctx context.Context, url string, opts 
 // mode. It returns owned=false when the torrent was already tracked, so callers
 // know cancel must not remove it.
 func (e *Engine) AddTorrentURLForPreview(ctx context.Context, url string) (h metainfo.Hash, name, magnet string, owned bool, err error) {
-	return e.addTorrentURLForPreviewWithOptions(ctx, url, AddOptions{Preview: true})
-}
-
-func (e *Engine) addTorrentURLForPreviewWithOptions(ctx context.Context, url string, opts AddOptions) (h metainfo.Hash, name, magnet string, owned bool, err error) {
-	opts.Preview = true
-	opts = e.normalizeOptions(opts)
 	mi, err := e.fetchMetaInfo(ctx, url)
 	if err != nil {
 		return metainfo.Hash{}, "", "", false, fmt.Errorf("fetch torrent: %w", err)
 	}
+	return e.addMetaInfoForPreview(mi, AddOptions{Preview: true}, MetadataURL)
+}
+
+// AddTorrentFileForPreview reads a bounded local metainfo file and opens it in
+// the same preview flow as a remote .torrent URL.
+func (e *Engine) AddTorrentFileForPreview(path string) (h metainfo.Hash, name, magnet string, owned bool, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return metainfo.Hash{}, "", "", false, fmt.Errorf("open torrent: %w", err)
+	}
+	defer f.Close()
+	fileInfo, err := f.Stat()
+	if err != nil {
+		return metainfo.Hash{}, "", "", false, err
+	}
+	if !fileInfo.Mode().IsRegular() || fileInfo.Size() <= 0 || fileInfo.Size() > intake.MaxTorrentBytes {
+		return metainfo.Hash{}, "", "", false, fmt.Errorf("torrent file must be a regular file no larger than 16 MiB")
+	}
+	mi, err := metainfo.Load(io.LimitReader(f, intake.MaxTorrentBytes+1))
+	if err != nil {
+		return metainfo.Hash{}, "", "", false, fmt.Errorf("read torrent: %w", err)
+	}
+	return e.addMetaInfoForPreview(mi, AddOptions{Preview: true}, MetadataFile)
+}
+
+func (e *Engine) addMetaInfoForPreview(mi *metainfo.MetaInfo, opts AddOptions, source MetadataSource) (h metainfo.Hash, name, magnet string, owned bool, err error) {
+	opts.Preview = true
+	opts = e.normalizeOptions(opts)
 	info, err := mi.UnmarshalInfo()
 	if err != nil {
 		return metainfo.Hash{}, "", "", false, fmt.Errorf("read torrent: %w", err)
@@ -377,6 +500,7 @@ func (e *Engine) addTorrentURLForPreviewWithOptions(ctx context.Context, url str
 	h = mi.HashInfoBytes()
 	name = info.Name
 	magnet = mi.Magnet(&h, &info).String()
+	_ = e.metainfo.Store(*mi)
 
 	e.mu.Lock()
 	if existing, ok := e.items[h]; ok {
@@ -398,13 +522,16 @@ func (e *Engine) addTorrentURLForPreviewWithOptions(ctx context.Context, url str
 
 	e.mu.Lock()
 	e.items[h] = &item{
-		t:           t,
-		magnet:      magnet,
-		name:        name,
-		downloadDir: opts.DownloadDir,
-		seeding:     *opts.Seed,
-		excluded:    opts.Excluded,
-		preview:     true,
+		t:              t,
+		magnet:         magnet,
+		name:           name,
+		downloadDir:    opts.DownloadDir,
+		seeding:        *opts.Seed,
+		excluded:       opts.Excluded,
+		preview:        true,
+		metadataSource: source,
+		metadataStart:  time.Now(),
+		trackerCount:   trackerCount(spec.Trackers),
 	}
 	e.mu.Unlock()
 
@@ -425,7 +552,19 @@ func (e *Engine) fetchMetaInfo(ctx context.Context, url string) (*metainfo.MetaI
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("%s: unexpected status %d", url, resp.StatusCode)
 	}
-	return metainfo.Load(io.LimitReader(resp.Body, maxTorrentBytes))
+	if resp.ContentLength > intake.MaxTorrentBytes {
+		return nil, fmt.Errorf("torrent file is too large (maximum 16 MiB)")
+	}
+	// Chunked responses report no Content-Length, so the size check must also
+	// run on the bytes actually received.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, intake.MaxTorrentBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > intake.MaxTorrentBytes {
+		return nil, fmt.Errorf("torrent file is too large (maximum 16 MiB)")
+	}
+	return metainfo.Load(bytes.NewReader(data))
 }
 
 // prepareSpec applies storage and strips the transports strict SOCKS5 mode
@@ -477,23 +616,88 @@ func (e *Engine) AddForPreview(magnet string) (metainfo.Hash, bool, error) {
 }
 
 func (e *Engine) startWhenReady(t *torrent.Torrent, h metainfo.Hash) {
+	e.mwg.Add(1)
 	go func() {
+		defer e.mwg.Done()
 		defer func() { _ = recover() }() // a torrent callback must never crash the app
 		select {
 		case <-t.GotInfo():
 		case <-t.Closed():
 			return
 		}
+		mi := t.Metainfo()
+		_ = e.metainfo.Store(mi)
 		e.mu.Lock()
 		defer e.mu.Unlock()
 		it, ok := e.items[h]
-		if !ok || it.preview {
-			return // dropped, or waiting on StartDownload
+		if !ok {
+			return // dropped
+		}
+		// Metadata can carry a fuller announce-list than the magnet did; keep
+		// the discovery feedback line honest.
+		if n := trackerCount(mi.UpvertedAnnounceList()); n > it.trackerCount {
+			it.trackerCount = n
+		}
+		if it.preview {
+			return // waiting on StartDownload
 		}
 		it.name = displayName(it)
 		it.dataPath = torrentDataPath(it)
 		e.applyExclusions(t, it, it.excluded)
 	}()
+}
+
+func mergeSpecHints(dst, src *torrent.TorrentSpec) {
+	dst.Trackers = mergeTrackerTiers(dst.Trackers, src.Trackers)
+	dst.Webseeds = appendUnique(dst.Webseeds, src.Webseeds...)
+	dst.DhtNodes = appendUnique(dst.DhtNodes, src.DhtNodes...)
+	dst.PeerAddrs = appendUnique(dst.PeerAddrs, src.PeerAddrs...)
+	dst.Sources = appendUnique(dst.Sources, src.Sources...)
+	if dst.DisplayName == "" {
+		dst.DisplayName = src.DisplayName
+	}
+}
+
+func mergeTrackerTiers(a, b [][]string) [][]string {
+	seen := map[string]bool{}
+	out := make([][]string, 0, len(a)+len(b))
+	for _, tiers := range [][][]string{a, b} {
+		for _, tier := range tiers {
+			var merged []string
+			for _, raw := range tier {
+				if raw != "" && !seen[raw] {
+					seen[raw] = true
+					merged = append(merged, raw)
+				}
+			}
+			if len(merged) > 0 {
+				out = append(out, merged)
+			}
+		}
+	}
+	return out
+}
+
+func appendUnique(dst []string, values ...string) []string {
+	seen := make(map[string]bool, len(dst)+len(values))
+	for _, value := range dst {
+		seen[value] = true
+	}
+	for _, value := range values {
+		if value != "" && !seen[value] {
+			seen[value] = true
+			dst = append(dst, value)
+		}
+	}
+	return dst
+}
+
+func trackerCount(tiers [][]string) int {
+	total := 0
+	for _, tier := range tiers {
+		total += len(tier)
+	}
+	return total
 }
 
 // applyExclusions sets per-file priorities; an empty list downloads
@@ -549,7 +753,12 @@ func (e *Engine) StartDownload(h metainfo.Hash, excluded []int) {
 	it.excluded = excluded
 	it.name = displayName(it)
 	it.dataPath = torrentDataPath(it)
-	e.applyExclusions(it.t, it, excluded)
+	// A bare infohash may be approved before any peer has supplied metadata.
+	// anacrolix's file selection methods require Info to exist, so leave the
+	// already-running startWhenReady callback to apply the selection later.
+	if it.t.Info() != nil {
+		e.applyExclusions(it.t, it, excluded)
+	}
 }
 
 // Pause drops the torrent from the client but keeps its entry; piece
@@ -741,6 +950,24 @@ func (e *Engine) Snapshot(h metainfo.Hash) (Snapshot, bool) {
 	return Snapshot{}, false
 }
 
+func (e *Engine) MetadataDiscovery(h metainfo.Hash) (MetadataStatus, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	it, ok := e.items[h]
+	if !ok || it.t == nil {
+		return MetadataStatus{}, false
+	}
+	stats := it.t.Stats()
+	status := MetadataStatus{
+		Source: it.metadataSource, PeersActive: stats.ActivePeers, PeersTotal: stats.TotalPeers,
+		Trackers: it.trackerCount, DHTEnabled: !e.strictProxy, ProxyStrict: e.strictProxy,
+	}
+	if it.t.Info() == nil && !it.metadataStart.IsZero() {
+		status.Waiting = time.Since(it.metadataStart)
+	}
+	return status, true
+}
+
 func (e *Engine) snapshot(h metainfo.Hash, it *item, now time.Time) Snapshot {
 	name := displayName(it)
 	if name != "?" {
@@ -749,7 +976,14 @@ func (e *Engine) snapshot(h metainfo.Hash, it *item, now time.Time) Snapshot {
 			it.dataPath = torrentDataPath(it)
 		}
 	}
-	s := Snapshot{Hash: h, Magnet: it.magnet, Name: name, DownloadDir: it.downloadDir, DataPath: it.dataPath, Seed: it.seeding}
+	s := Snapshot{
+		Hash: h, Magnet: it.magnet, Name: name, DownloadDir: it.downloadDir,
+		DataPath: it.dataPath, Seed: it.seeding,
+		Metadata: MetadataStatus{
+			Source: it.metadataSource, Trackers: it.trackerCount,
+			DHTEnabled: !e.strictProxy, ProxyStrict: e.strictProxy,
+		},
+	}
 
 	if it.paused || it.t == nil {
 		s.State = StatePaused
@@ -765,6 +999,11 @@ func (e *Engine) snapshot(h metainfo.Hash, it *item, now time.Time) Snapshot {
 	s.PeersActive = stats.ActivePeers
 	s.PeersTotal = stats.TotalPeers
 	s.Seeders = stats.ConnectedSeeders
+	s.Metadata.PeersActive = stats.ActivePeers
+	s.Metadata.PeersTotal = stats.TotalPeers
+	if t.Info() == nil && !it.metadataStart.IsZero() {
+		s.Metadata.Waiting = now.Sub(it.metadataStart)
+	}
 
 	it.samples.push(sample{at: now, bytes: s.BytesCompleted})
 	s.SpeedBps = it.samples.speedBps()
@@ -772,6 +1011,7 @@ func (e *Engine) snapshot(h metainfo.Hash, it *item, now time.Time) Snapshot {
 	switch {
 	case t.Info() == nil:
 		s.State = StateFetchingMeta
+		s.Note = s.Metadata.Summary()
 	case it.preview:
 		s.State = StatePreviewing
 	case s.Length > 0 && s.BytesCompleted >= s.Length:
@@ -818,6 +1058,7 @@ func (e *Engine) Close() {
 
 	e.client.Close()
 	<-e.client.Closed()
+	e.mwg.Wait()
 	e.pcClose()
 }
 

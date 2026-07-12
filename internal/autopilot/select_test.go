@@ -121,3 +121,56 @@ func TestSelectSeederFloorAndCap(t *testing.T) {
 		t.Error("Movie A is below the seeder floor and must be excluded")
 	}
 }
+
+func TestBuildPlanExplainsSafetyRejections(t *testing.T) {
+	knownMagnet := hashMagnet("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
+	knownMeta, _ := metainfo.ParseMagnetUri(knownMagnet)
+	results := []provider.Result{
+		{Title: "Good Movie 1080p", Provider: "test", Category: "Movies/HD", Seeders: 50, SizeBytes: 2 << 30, Magnet: hashMagnet("1111111111111111111111111111111111111111")},
+		{Title: "Huge Movie 1080p", Provider: "test", Category: "Movies/HD", Seeders: 50, SizeBytes: 20 << 30, Magnet: hashMagnet("2222222222222222222222222222222222222222")},
+		{Title: "Mystery Movie 1080p", Provider: "test", Category: "Movies/HD", Seeders: 50, Magnet: hashMagnet("3333333333333333333333333333333333333333")},
+		{Title: "Quiet Movie 1080p", Provider: "test", Category: "Movies/HD", Seeders: 2, SizeBytes: 1 << 30, Magnet: hashMagnet("4444444444444444444444444444444444444444")},
+		{Title: "Wrong Category 1080p", Provider: "test", Category: "Anime", Seeders: 50, SizeBytes: 1 << 30, Magnet: hashMagnet("5555555555555555555555555555555555555555")},
+		{Title: "Known Movie 1080p", Provider: "test", Category: "Movies", Seeders: 50, SizeBytes: 1 << 30, Magnet: knownMagnet},
+	}
+	in := Intent{Query: "movie", MinSeeders: 5, Max: 10, MaxSizeBytes: 8 << 30, Categories: []string{"movies"}}
+	plan := BuildPlan(results, in, rank.DefaultWeights(), map[metainfo.Hash]bool{knownMeta.InfoHash: true})
+	if len(plan.Picks) != 1 || plan.Picks[0].Result.Title != "Good Movie 1080p" {
+		t.Fatalf("picks = %v, want only Good Movie", titles(plan.Picks))
+	}
+	for reason, want := range map[string]int{
+		"over size limit": 1, "size unknown": 1, "below seeder minimum": 1,
+		"category not allowed": 1, "already queued": 1,
+	} {
+		if got := plan.Rejected[reason]; got != want {
+			t.Errorf("rejected[%q] = %d, want %d", reason, got, want)
+		}
+	}
+	if plan.TotalBytes != 2<<30 {
+		t.Fatalf("TotalBytes = %d, want %d", plan.TotalBytes, int64(2<<30))
+	}
+}
+
+func TestCategoryAllowedMatchesSegmentsNotSubstrings(t *testing.T) {
+	cases := []struct {
+		category string
+		allowed  []string
+		want     bool
+	}{
+		{"Movies", []string{"movies"}, true},
+		{"movie", []string{"movies"}, true}, // 1337x singular icon label
+		{"Movies > HD", []string{"movies"}, true},
+		{"movies/hd", []string{"movies"}, true},
+		{"Anime - English-translated", []string{"anime"}, true},
+		{"XXX Movies", []string{"movies"}, false},
+		{"XXX", []string{"movies", "anime"}, false},
+		{"Anime Music Video", []string{"anime"}, false},
+		{"", []string{"movies"}, false},
+		{"Movies", nil, false},
+	}
+	for _, tc := range cases {
+		if got := categoryAllowed(tc.category, tc.allowed); got != tc.want {
+			t.Errorf("categoryAllowed(%q, %v) = %v, want %v", tc.category, tc.allowed, got, tc.want)
+		}
+	}
+}

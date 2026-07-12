@@ -304,7 +304,21 @@ func (a *App) launchTorrentURLPreviewCmd(rawURL, name string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		h, metaName, magnet, owned, err := a.eng.AddTorrentURLForPreview(ctx, rawURL)
-		if name == "" {
+		if metaName != "" {
+			name = metaName
+		}
+		return previewReadyMsg{hash: h, magnet: magnet, name: name, from: from, owned: owned, err: err}
+	}
+}
+
+func (a *App) launchTorrentFilePreviewCmd(path, name string) tea.Cmd {
+	from := a.screen
+	return func() (msg tea.Msg) {
+		defer guard(&msg, func(r any) tea.Msg {
+			return previewReadyMsg{magnet: path, name: name, from: from, err: fmt.Errorf("add panicked: %v", r)}
+		})
+		h, metaName, magnet, owned, err := a.eng.AddTorrentFileForPreview(path)
+		if metaName != "" {
 			name = metaName
 		}
 		return previewReadyMsg{hash: h, magnet: magnet, name: name, from: from, owned: owned, err: err}

@@ -44,6 +44,7 @@ type App struct {
 	compass    compassModel
 	proxy      proxyBadge
 	proxyCheck proxyChecker
+	startup    tea.Cmd // optional one-shot action requested on the command line
 
 	errText      string
 	lastTickSave time.Time // throttles progress-only state.json writes on the tick
@@ -81,6 +82,10 @@ func (a *App) Init() tea.Cmd {
 	}
 	if proxyCmd := a.startProxyCheck(time.Now()); proxyCmd != nil {
 		cmds = append(cmds, proxyCmd)
+	}
+	if a.startup != nil {
+		cmds = append(cmds, a.startup)
+		a.startup = nil
 	}
 	return tea.Batch(cmds...)
 }

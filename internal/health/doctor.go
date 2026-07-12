@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/melqtx/tork/internal/config"
+	"github.com/melqtx/tork/internal/metacache"
 	"github.com/melqtx/tork/internal/provider"
 	"github.com/melqtx/tork/internal/proxy"
 	"github.com/melqtx/tork/internal/state"
@@ -107,6 +108,7 @@ func runDoctor(ctx context.Context, cfg *config.Config, providers []provider.Pro
 	}
 	rep.Checks = append(rep.Checks, checkDownloadDir(cfg))
 	rep.Checks = append(rep.Checks, checkState(cfg))
+	rep.Checks = append(rep.Checks, checkMetadataCache(cfg))
 	rep.Checks = append(rep.Checks, checkEngine(cfg, engineProbe))
 
 	if cfg.ProxyError() != nil {
@@ -294,6 +296,35 @@ func checkState(cfg *config.Config) Check {
 	}
 	c.Status = StatusOK
 	c.Detail = fmt.Sprintf("%d entries", len(st.Entries))
+	return c
+}
+
+func checkMetadataCache(cfg *config.Config) Check {
+	c := Check{Name: "metadata cache"}
+	rep := metacache.New(cfg).Inspect()
+	if !rep.Enabled {
+		c.Status = StatusOK
+		c.Detail = "disabled"
+		return c
+	}
+	if rep.Err != nil {
+		c.Status = StatusWarn
+		c.Detail = fmt.Sprintf("unreadable: %v", rep.Err)
+		return c
+	}
+	if !rep.Exists {
+		c.Status = StatusOK
+		c.Detail = "empty; created when metadata is first cached"
+		return c
+	}
+	if rep.Invalid > 0 || rep.Insecure > 0 {
+		c.Status = StatusWarn
+		c.Detail = fmt.Sprintf("%d entries · %s · %d invalid · %d insecure permissions",
+			rep.Entries, humanBytes(rep.Bytes), rep.Invalid, rep.Insecure)
+		return c
+	}
+	c.Status = StatusOK
+	c.Detail = fmt.Sprintf("%d entries · %s", rep.Entries, humanBytes(rep.Bytes))
 	return c
 }
 

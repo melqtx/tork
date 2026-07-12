@@ -36,8 +36,10 @@ func (p ProviderConfig) BaseURLs() []string {
 }
 
 type AutopilotConfig struct {
-	MaxDownloads int `yaml:"max_downloads"`
-	MinSeeders   int `yaml:"min_seeders"`
+	MaxDownloads      int      `yaml:"max_downloads"`
+	MinSeeders        int      `yaml:"min_seeders"`
+	MaxSizeGB         float64  `yaml:"max_size_gb,omitempty"`
+	AllowedCategories []string `yaml:"allowed_categories,omitempty"`
 }
 
 // HealthConfig tunes the opportunistic health check that runs on launch when
@@ -51,6 +53,12 @@ type HealthConfig struct {
 // is deliberately global: searches and downloads share the same privacy path.
 type ProxyConfig struct {
 	SOCKS5 string `yaml:"socks5,omitempty"`
+}
+
+type MetadataCacheConfig struct {
+	Enabled    bool `yaml:"enabled"`
+	MaxMB      int  `yaml:"max_mb"`
+	MaxEntries int  `yaml:"max_entries"`
 }
 
 // Interval is the gap between automatic health checks. A missing or nonsensical
@@ -75,6 +83,7 @@ type Config struct {
 	Autopilot             AutopilotConfig           `yaml:"autopilot"`
 	Health                HealthConfig              `yaml:"health"`
 	Proxy                 ProxyConfig               `yaml:"proxy"`
+	MetadataCache         MetadataCacheConfig       `yaml:"metadata_cache"`
 	Providers             map[string]ProviderConfig `yaml:"providers"`
 
 	dir          string // ~/.tork, resolved at load time
@@ -103,6 +112,8 @@ func (c *Config) Dir() string                  { return c.dir }
 func (c *Config) StatePath() string            { return filepath.Join(c.dir, "state.json") }
 func (c *Config) ConfigPath() string           { return filepath.Join(c.dir, "config.yaml") }
 func (c *Config) HealthPath() string           { return filepath.Join(c.dir, "health.json") }
+func (c *Config) AutopilotHistoryPath() string { return filepath.Join(c.dir, "autopilot.jsonl") }
+func (c *Config) MetadataCacheDir() string     { return filepath.Join(c.dir, "metainfo") }
 func (c *Config) PieceCompletionDir() string   { return c.dir }
 func (c *Config) ProxyRuntime() *proxy.Runtime { return c.proxyRuntime }
 
@@ -181,6 +192,7 @@ func Default(dir string) *Config {
 		Ranking:               rank.DefaultWeights(),
 		Autopilot:             AutopilotConfig{MaxDownloads: 10, MinSeeders: 5},
 		Health:                HealthConfig{Enabled: false, IntervalHours: 24},
+		MetadataCache:         MetadataCacheConfig{Enabled: true, MaxMB: 256, MaxEntries: 512},
 		Providers: map[string]ProviderConfig{
 			"knaben": {Enabled: true, Type: "knaben", Mirror: "https://knaben.org"},
 			"yts":    {Enabled: true, Type: "yts", Mirror: "https://yts.mx"},
