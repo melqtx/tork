@@ -3,16 +3,13 @@ package tui
 import (
 	"context"
 	"fmt"
-	"net/url"
-	"path"
-	"regexp"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/melqtx/tork/internal/provider"
+	"github.com/melqtx/tork/internal/intake"
 )
 
 // homeDest is a destination on the front-page menu.
@@ -33,8 +30,8 @@ type searchModel struct {
 
 func newSearchModel() searchModel {
 	ti := textinput.New()
-	ti.Placeholder = "search movies, shows, anime, software… or paste a magnet link"
-	ti.CharLimit = 200
+	ti.Placeholder = "search anything… or paste a magnet / .torrent path"
+	ti.CharLimit = 4096 // tracker-rich magnets and long local paths are valid inputs
 	ti.Width = 50
 	ti.Prompt = "❯ "
 	ti.PromptStyle = styleBrand
@@ -44,52 +41,34 @@ func newSearchModel() searchModel {
 	return searchModel{input: ti}
 }
 
-type magnetInputKind int
-
-const (
-	magnetInputMagnet magnetInputKind = iota
-	magnetInputInfoHash
-	magnetInputTorrentURL
-)
-
-var (
-	reHexInfoHash    = regexp.MustCompile(`(?i)^[0-9a-f]{40}$`)
-	reBase32InfoHash = regexp.MustCompile(`(?i)^[a-z2-7]{32}$`)
-)
-
-func detectMagnetInput(query string) (target, name string, kind magnetInputKind, ok bool) {
-	query = strings.TrimSpace(query)
-	lower := strings.ToLower(query)
-	if strings.HasPrefix(lower, "magnet:?") {
-		return query, magnetDisplayName(query), magnetInputMagnet, true
-	}
-	if reHexInfoHash.MatchString(query) || reBase32InfoHash.MatchString(query) {
-		return provider.BuildMagnet(query, "", provider.DefaultTrackers), "", magnetInputInfoHash, true
-	}
-	u, err := url.Parse(query)
-	if err == nil && (u.Scheme == "http" || u.Scheme == "https") && strings.HasSuffix(strings.ToLower(u.Path), ".torrent") {
-		return query, torrentURLName(u), magnetInputTorrentURL, true
-	}
-	return "", "", 0, false
-}
-
-func magnetDisplayName(mag string) string {
-	u, err := url.Parse(mag)
+// OpenTorrent arranges for any supported explicit CLI input to open in the
+// same quiet preview flow as pasting it on the home screen.
+func (a *App) OpenTorrent(raw string) error {
+	target, ok, err := intake.DetectCLI(raw)
 	if err != nil {
-		return ""
+		return err
 	}
-	return u.Query().Get("dn")
+	if !ok {
+		return fmt.Errorf("expected a magnet link, infohash, torrent URL, or local torrent file")
+	}
+	return a.OpenTarget(target)
+
 }
 
-func torrentURLName(u *url.URL) string {
-	name := path.Base(u.Path)
-	if dec, err := url.PathUnescape(name); err == nil {
-		name = dec
+// OpenTarget queues a previously classified input for the first TUI frame.
+func (a *App) OpenTarget(target intake.Target) error {
+	a.search.input.SetValue(target.Value)
+	switch target.Kind {
+	case intake.Magnet, intake.InfoHash:
+		a.startup = a.launchCmd(target.Value, target.Name, true)
+	case intake.TorrentURL:
+		a.startup = a.launchTorrentURLPreviewCmd(target.Value, target.Name)
+	case intake.TorrentFile:
+		a.startup = a.launchTorrentFilePreviewCmd(target.Value, target.Name)
+	default:
+		return fmt.Errorf("unsupported torrent input")
 	}
-	if name == "." || name == "/" {
-		return ""
-	}
-	return name
+	return nil
 }
 
 func (a *App) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -105,11 +84,20 @@ func (a *App) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch key.String() {
 	case "enter":
 		if query := strings.TrimSpace(a.search.input.Value()); query != "" {
-			if target, name, kind, ok := detectMagnetInput(query); ok {
-				if kind == magnetInputTorrentURL {
-					return a, a.launchTorrentURLPreviewCmd(target, name)
+			target, detected, err := intake.DetectHome(query)
+			if err != nil {
+				a.errText = err.Error()
+				return a, clearErrCmd()
+			}
+			if detected {
+				switch target.Kind {
+				case intake.TorrentURL:
+					return a, a.launchTorrentURLPreviewCmd(target.Value, target.Name)
+				case intake.TorrentFile:
+					return a, a.launchTorrentFilePreviewCmd(target.Value, target.Name)
+				default:
+					return a, a.launchCmd(target.Value, target.Name, true)
 				}
-				return a, a.launchCmd(target, name, true)
 			}
 			return a, a.startSearch(query)
 		}

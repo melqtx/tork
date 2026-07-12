@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -22,6 +23,7 @@ import (
 	"github.com/melqtx/tork/internal/config"
 	"github.com/melqtx/tork/internal/engine"
 	"github.com/melqtx/tork/internal/health"
+	"github.com/melqtx/tork/internal/intake"
 	"github.com/melqtx/tork/internal/provider"
 	"github.com/melqtx/tork/internal/proxy"
 	"github.com/melqtx/tork/internal/state"
@@ -100,20 +102,23 @@ func printHelp() {
 	fmt.Print(`tork - terminal torrent search and download
 
 Usage:
-  tork [--evil] [-d DIR]
-  tork autopilot [--dry-run] [--headless] [--evil] [-n N] [-d DIR] "query"
+  tork [--evil] [-d DIR] [MAGNET | INFOHASH | TORRENT_URL | TORRENT_FILE]
+  tork [--evil] [-d DIR] --torrent-url URL
+  tork autopilot [--dry-run] [--headless] [--yes] [--evil] [-n N] [-d DIR] "query"
   tork doctor [--record] [--engine] [--proxy-check] [-d DIR]
   tork proxy tor|set [SOCKS5_URL]|off|status
   tork --version
 
 Commands:
-  autopilot   search, pick the best sources, and queue them
+  autopilot   search, explain the best choices, then queue them
   doctor      read-only config, disk, state, and provider diagnostic
   proxy       configure or inspect strict SOCKS5 routing
 
 Flags:
   -d, --download-dir DIR   where to save downloads (default: your OS
                            Downloads folder, ~/Downloads/tork)
+      --torrent-url URL    explicit torrent endpoint when its path does not
+                           end in .torrent
       --evil               evil mode: downloads never seed after they finish
                            (applies to new downloads this session only)
 
@@ -345,6 +350,11 @@ func runAutopilot(args []string) error {
 	maxN := fs.Int("n", 0, "max downloads (overrides config)")
 	dryRun := fs.Bool("dry-run", false, "plan only; don't download")
 	headless := fs.Bool("headless", false, "no TUI; print progress until complete")
+	yes := fs.Bool("yes", false, "queue the plan without asking")
+	fs.BoolVar(yes, "y", false, "shorthand for --yes")
+	minSeeders := fs.Int("min-seeders", -1, "minimum seeders (overrides config)")
+	maxSize := fs.String("max-size", "", "largest allowed download, for example 8GB")
+	categories := fs.String("category", "", "comma-separated allowed provider categories")
 	dlDir := fs.String("download-dir", "", "download directory (default: your OS Downloads/tork)")
 	fs.StringVar(dlDir, "d", "", "shorthand for --download-dir")
 	evil := fs.Bool("evil", false, "evil mode: never seed after downloads complete")
@@ -353,7 +363,21 @@ func runAutopilot(args []string) error {
 	}
 	raw := strings.TrimSpace(strings.Join(fs.Args(), " "))
 	if raw == "" {
-		return errors.New(`usage: tork autopilot [-n N] [--dry-run] [--headless] "query"`)
+		return errors.New(`usage: tork autopilot [-n N] [--max-size 8GB] [--dry-run] [--headless] [--yes] "query"`)
+	}
+	var maxSizeBytes int64
+	if strings.TrimSpace(*maxSize) != "" {
+		parsed, parseErr := autopilot.ParseSizeLimit(*maxSize)
+		if parseErr != nil {
+			return errors.New("--max-size must look like 750MB, 8GB, or 1.5TB")
+		}
+		maxSizeBytes = parsed
+	}
+	var allowedCategories []string
+	for _, category := range strings.Split(*categories, ",") {
+		if category = strings.TrimSpace(category); category != "" {
+			allowedCategories = append(allowedCategories, category)
+		}
 	}
 
 	cfg, err := config.Load()
@@ -391,11 +415,27 @@ func runAutopilot(args []string) error {
 	defer stop()
 
 	dep := autopilot.Deps{Cfg: cfg, Agg: agg, Eng: eng, State: st, Providers: providers, Out: os.Stdout}
-	queued, err := dep.Execute(ctx, raw, *dryRun, *maxN)
+	opts := autopilot.Options{
+		DryRun: *dryRun, MaxDownloads: *maxN,
+		MaxSizeBytes: maxSizeBytes, Categories: allowedCategories,
+	}
+	if *minSeeders >= 0 {
+		opts.MinSeeders = *minSeeders
+		opts.OverrideMinSeeders = true
+	}
+	// --headless controls output, not consent: it still confirms on a
+	// terminal and still requires --yes everywhere else.
+	if !*dryRun && !*yes {
+		if !term.IsTerminal(os.Stdin.Fd()) {
+			return errors.New("autopilot needs confirmation; rerun with --yes for non-interactive use")
+		}
+		opts.Confirm = confirmAutopilot
+	}
+	plan, err := dep.Execute(ctx, raw, opts)
 	if err != nil {
 		return err
 	}
-	if *dryRun || len(queued) == 0 {
+	if *dryRun || plan.Queued == 0 {
 		return nil
 	}
 
@@ -426,12 +466,31 @@ func runAutopilot(args []string) error {
 	return st.Save(cfg.StatePath())
 }
 
+func confirmAutopilot(plan autopilot.Plan) bool {
+	fmt.Fprintf(os.Stdout, "\nqueue these %d download(s)? [y/N] ", len(plan.Picks))
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
 func run() error {
 	fs := flag.NewFlagSet("tork", flag.ContinueOnError)
 	dlDir := fs.String("download-dir", "", "download directory (default: your OS Downloads/tork)")
 	fs.StringVar(dlDir, "d", "", "shorthand for --download-dir")
 	evil := fs.Bool("evil", false, "evil mode: never seed after downloads complete")
+	torrentURL := fs.String("torrent-url", "", "explicit .torrent download URL (allows non-.torrent paths)")
 	if err := fs.Parse(os.Args[1:]); err != nil {
+		return err
+	}
+	openTarget, err := resolveOpenTarget(fs.Args(), *torrentURL)
+	if err != nil {
 		return err
 	}
 
@@ -476,11 +535,41 @@ func run() error {
 	stopHealth := maybeCheckHealth(context.Background(), cfg, store, providers, eng, healthWarmup)
 	defer stopHealth()
 
-	p := tea.NewProgram(tui.New(cfg, eng, agg, st, store), tea.WithAltScreen())
+	app := tui.New(cfg, eng, agg, st, store)
+	if openTarget != nil {
+		if err := app.OpenTarget(*openTarget); err != nil {
+			return err
+		}
+	}
+	p := tea.NewProgram(app, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		return err
 	}
 	return st.Save(cfg.StatePath())
+}
+
+func resolveOpenTarget(args []string, explicitURL string) (*intake.Target, error) {
+	if len(args) > 1 || (explicitURL != "" && len(args) != 0) {
+		return nil, errors.New("usage: tork [--evil] [-d DIR] [MAGNET | INFOHASH | TORRENT_URL | TORRENT_FILE]")
+	}
+	if explicitURL != "" {
+		target, err := intake.ExplicitTorrentURL(explicitURL)
+		if err != nil {
+			return nil, err
+		}
+		return &target, nil
+	}
+	if len(args) == 0 {
+		return nil, nil
+	}
+	target, ok, err := intake.DetectCLI(args[0])
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, errors.New("expected a magnet link, infohash, torrent URL, or local torrent file")
+	}
+	return &target, nil
 }
 
 // resumeAll re-adds persisted downloads; bolt piece completion (torrents) and

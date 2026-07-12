@@ -60,8 +60,13 @@ func TestEngineDownloadsFromLocalSeeder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer seeder.Close()
-	seederT, err := seeder.AddTorrent(&mi)
+	seederClosed := false
+	defer func() {
+		if !seederClosed {
+			seeder.Close()
+		}
+	}()
+	_, err = seeder.AddTorrent(&mi)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,11 +113,10 @@ func TestEngineDownloadsFromLocalSeeder(t *testing.T) {
 	}
 	eng.Close() // releases the bolt piece-completion lock
 
-	// --- resume: a fresh engine on the same dir must complete from disk.
-	// Metadata still comes from the seeder, but bolt piece completion means
-	// no payload is re-transferred - assert via the seeder's upload counter.
-	statsBefore := seederT.Stats()
-	uploadedBefore := statsBefore.BytesWrittenData.Int64()
+	// --- offline resume: cached metainfo plus bolt piece completion must make a
+	// fresh engine complete from disk after the only seeder is gone.
+	seeder.Close()
+	seederClosed = true
 
 	eng2, err := New(cfg)
 	if err != nil {
@@ -123,23 +127,17 @@ func TestEngineDownloadsFromLocalSeeder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if snap, ok := eng2.Snapshot(h2); !ok || snap.Metadata.Source != MetadataCache {
+		t.Fatalf("resume metadata = %+v, ok=%v; want cache", snap.Metadata, ok)
+	}
 	snap = awaitComplete(t, eng2, h2, 90*time.Second)
 	if snap.BytesCompleted != int64(len(payload)) {
 		t.Fatalf("resume completed %d bytes, want %d", snap.BytesCompleted, len(payload))
 	}
-	statsAfter := seederT.Stats()
-	uploadedDuringResume := statsAfter.BytesWrittenData.Int64() - uploadedBefore
-	if uploadedDuringResume > 64<<10 {
-		t.Errorf("resume re-downloaded %d bytes from seeder; piece completion should have prevented that", uploadedDuringResume)
-	}
 }
 
 func TestAddWithOptionsRecordsDownloadDir(t *testing.T) {
-	t.Setenv("XDG_DOWNLOAD_DIR", filepath.Join(t.TempDir(), "Downloads"))
-	cfg, err := config.LoadFrom(filepath.Join(t.TempDir(), ".tork"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg := strictProxyConfig(t, "127.0.0.1:1")
 	eng, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -158,6 +156,156 @@ func TestAddWithOptionsRecordsDownloadDir(t *testing.T) {
 	}
 	if snap.DownloadDir != dir {
 		t.Fatalf("DownloadDir = %q, want %q", snap.DownloadDir, dir)
+	}
+}
+
+func TestLocalTorrentFilePreviewCachesForOfflineReopen(t *testing.T) {
+	seedDir := t.TempDir()
+	payloadPath := filepath.Join(seedDir, "local.bin")
+	if err := os.WriteFile(payloadPath, []byte("local torrent payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info := metainfo.Info{PieceLength: 16 << 10}
+	if err := info.BuildFromFilePath(payloadPath); err != nil {
+		t.Fatal(err)
+	}
+	infoBytes, err := bencode.Marshal(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mi := metainfo.MetaInfo{InfoBytes: infoBytes, Announce: "https://tracker.example/announce"}
+	torrentPath := filepath.Join(t.TempDir(), "local.torrent")
+	f, err := os.Create(torrentPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mi.Write(f); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := strictProxyConfig(t, "127.0.0.1:1")
+	eng, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, name, magnet, owned, err := eng.AddTorrentFileForPreview(torrentPath)
+	if err != nil {
+		eng.Close()
+		t.Fatal(err)
+	}
+	if !owned || name != "local.bin" {
+		eng.Close()
+		t.Fatalf("preview = hash %s name %q owned %v", h.HexString(), name, owned)
+	}
+	files, ready := eng.Files(h)
+	if !ready || len(files) != 1 || files[0].Path != "local.bin" {
+		eng.Close()
+		t.Fatalf("files = %+v, ready=%v", files, ready)
+	}
+	if snap, ok := eng.Snapshot(h); !ok || snap.Metadata.Source != MetadataFile {
+		eng.Close()
+		t.Fatalf("local metadata = %+v, ok=%v", snap.Metadata, ok)
+	}
+	eng.Close()
+	if err := os.Remove(torrentPath); err != nil {
+		t.Fatal(err)
+	}
+
+	eng2, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng2.Close()
+	h2, owned, err := eng2.AddForPreview(magnet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !owned || h2 != h {
+		t.Fatalf("cached preview = hash %s owned %v", h2.HexString(), owned)
+	}
+	if files, ready := eng2.Files(h2); !ready || len(files) != 1 {
+		t.Fatalf("cached files = %+v, ready=%v", files, ready)
+	}
+	if snap, ok := eng2.Snapshot(h2); !ok || snap.Metadata.Source != MetadataCache {
+		t.Fatalf("cached metadata = %+v, ok=%v", snap.Metadata, ok)
+	}
+}
+
+func TestInvalidSemanticCacheFallsBackToMagnet(t *testing.T) {
+	cfg := strictProxyConfig(t, "127.0.0.1:1")
+	eng, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Close()
+	// Decodes as an info dictionary, but has no piece hash for its one piece;
+	// the torrent client rejects it even though the cache's lightweight parser
+	// can read it.
+	infoBytes, err := bencode.Marshal(metainfo.Info{Name: "bad.bin", PieceLength: 16 << 10, Length: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mi := metainfo.MetaInfo{InfoBytes: infoBytes}
+	if err := eng.metainfo.Store(mi); err != nil {
+		t.Fatal(err)
+	}
+	hash := mi.HashInfoBytes()
+	h, _, err := eng.AddForPreview("magnet:?xt=urn:btih:" + hash.HexString())
+	if err != nil {
+		t.Fatalf("fallback magnet add failed: %v", err)
+	}
+	status, ok := eng.MetadataDiscovery(h)
+	if !ok || status.Source != MetadataPeers {
+		t.Fatalf("fallback discovery = %+v, ok=%v", status, ok)
+	}
+	cachePath := filepath.Join(cfg.MetadataCacheDir(), hash.HexString()+".torrent")
+	if _, err := os.Stat(cachePath); !os.IsNotExist(err) {
+		t.Fatalf("rejected cache entry was not discarded: %v", err)
+	}
+}
+
+func TestDisabledMetadataCacheDoesNotPersistLocalTorrent(t *testing.T) {
+	payloadPath := filepath.Join(t.TempDir(), "disabled.bin")
+	if err := os.WriteFile(payloadPath, []byte("payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info := metainfo.Info{PieceLength: 16 << 10}
+	if err := info.BuildFromFilePath(payloadPath); err != nil {
+		t.Fatal(err)
+	}
+	infoBytes, err := bencode.Marshal(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mi := metainfo.MetaInfo{InfoBytes: infoBytes}
+	torrentPath := filepath.Join(t.TempDir(), "disabled.torrent")
+	f, err := os.Create(torrentPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mi.Write(f); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	f.Close()
+
+	cfg := strictProxyConfig(t, "127.0.0.1:1")
+	cfg.MetadataCache.Enabled = false
+	eng, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, _, err := eng.AddTorrentFileForPreview(torrentPath); err != nil {
+		eng.Close()
+		t.Fatal(err)
+	}
+	eng.Close()
+	if _, err := os.Stat(cfg.MetadataCacheDir()); !os.IsNotExist(err) {
+		t.Fatalf("disabled cache created directory: %v", err)
 	}
 }
 
@@ -217,6 +365,9 @@ func TestPreviewAndExcludeFiles(t *testing.T) {
 			break
 		}
 	}
+	if port == 0 {
+		t.Fatal("seeder has no TCP listen addr")
+	}
 
 	t.Setenv("XDG_DOWNLOAD_DIR", filepath.Join(t.TempDir(), "Downloads"))
 	cfg, err := config.LoadFrom(filepath.Join(t.TempDir(), ".tork"))
@@ -229,30 +380,41 @@ func TestPreviewAndExcludeFiles(t *testing.T) {
 	}
 	defer eng.Close()
 
-	magnet := fmt.Sprintf("magnet:?xt=urn:btih:%s&x.pe=127.0.0.1:%d", mi.HashInfoBytes().HexString(), port)
-	h, owned, err := eng.AddForPreview(magnet)
+	torrentPath := filepath.Join(t.TempDir(), "pack.torrent")
+	f, err := os.Create(torrentPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mi.Write(f); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	h, _, _, owned, err := eng.AddTorrentFileForPreview(torrentPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !owned {
-		t.Fatal("first preview add should own the metadata-only torrent")
+		t.Fatal("first local preview should own the torrent")
 	}
-
-	// wait for metadata; nothing should download while previewing
-	var files []FileInfo
-	deadline := time.After(90 * time.Second)
-	for files == nil {
-		select {
-		case <-deadline:
-			t.Fatal("metadata never arrived for preview")
-		case <-time.After(100 * time.Millisecond):
-		}
-		if fs, ok := eng.Files(h); ok {
-			files = fs
-		}
+	eng.mu.Lock()
+	leecher := eng.items[h].t
+	eng.mu.Unlock()
+	leecher.AddPeers([]torrent.PeerInfo{{
+		Addr:   &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: port},
+		Source: torrent.PeerSourceDirect,
+	}})
+	files, ready := eng.Files(h)
+	if !ready {
+		t.Fatal("local metainfo was not ready immediately")
 	}
 	if len(files) != 3 {
 		t.Fatalf("Files returned %d entries, want 3", len(files))
+	}
+	if snap, ok := eng.Snapshot(h); !ok || snap.Metadata.Source != MetadataFile {
+		t.Fatalf("local preview metadata = %+v, ok=%v", snap.Metadata, ok)
 	}
 
 	// find the largest file (big.dat) and exclude it

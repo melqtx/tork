@@ -357,6 +357,43 @@ func TestDoctorDefaultChecksDoNotWriteDownloadOrHealthFiles(t *testing.T) {
 	}
 }
 
+func TestDoctorMetadataCacheCheckIsReadOnly(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default(dir)
+	if err := os.MkdirAll(cfg.DownloadDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rep := RunDoctor(context.Background(), cfg, []provider.Provider{fakeProvider{name: "p"}}, OpenReadOnly(cfg.HealthPath()), nil)
+	c := findCheck(t, rep, "metadata cache")
+	if c.Status != StatusOK || !strings.Contains(c.Detail, "first cached") {
+		t.Fatalf("metadata cache check = %+v", c)
+	}
+	if _, err := os.Stat(cfg.MetadataCacheDir()); !os.IsNotExist(err) {
+		t.Fatalf("doctor created metadata cache: %v", err)
+	}
+}
+
+func TestDoctorReportsInvalidCacheWithoutRepairing(t *testing.T) {
+	cfg := testConfig(t)
+	if err := os.MkdirAll(cfg.MetadataCacheDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(cfg.MetadataCacheDir(), strings.Repeat("a", 40)+".torrent")
+	bad := []byte("broken metainfo")
+	if err := os.WriteFile(path, bad, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rep := RunDoctor(context.Background(), cfg, []provider.Provider{fakeProvider{name: "p"}}, OpenReadOnly(cfg.HealthPath()), nil)
+	c := findCheck(t, rep, "metadata cache")
+	if c.Status != StatusWarn || !strings.Contains(c.Detail, "1 invalid") {
+		t.Fatalf("metadata cache check = %+v", c)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != string(bad) {
+		t.Fatalf("doctor repaired cache: %q, %v", got, err)
+	}
+}
+
 // An entry whose data vanished is worth flagging, but tork still runs.
 func TestDoctorMissingDataWarns(t *testing.T) {
 	cfg := testConfig(t)

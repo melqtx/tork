@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/anacrolix/torrent"
+	"github.com/anacrolix/torrent/bencode"
+	"github.com/anacrolix/torrent/metainfo"
 
 	"github.com/melqtx/tork/internal/config"
 )
@@ -92,6 +94,38 @@ func TestStrictProxyFiltersUnsafeTorrentTransports(t *testing.T) {
 	}
 	if spec.DhtNodes != nil {
 		t.Fatalf("strict proxy DHT nodes = %#v, want nil", spec.DhtNodes)
+	}
+}
+
+func TestStrictProxySanitizesCachedDiscoveryHints(t *testing.T) {
+	eng, err := New(strictProxyConfig(t, "127.0.0.1:9050"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Close()
+	infoBytes, err := bencode.Marshal(metainfo.Info{Name: "cached.bin", PieceLength: 16 << 10, Length: 1, Pieces: make([]byte, 20)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mi := metainfo.MetaInfo{
+		InfoBytes: infoBytes,
+		AnnounceList: metainfo.AnnounceList{
+			{"udp://tracker.example:6969", "https://tracker.example/announce"},
+		},
+		Nodes: []metainfo.Node{"node.example:6881"},
+	}
+	if err := eng.metainfo.Store(mi); err != nil {
+		t.Fatal(err)
+	}
+	magnet := "magnet:?xt=urn:btih:" + mi.HashInfoBytes().HexString() +
+		"&tr=http%3A%2F%2Ftracker-two.example%2Fannounce"
+	h, _, err := eng.AddForPreview(magnet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, ok := eng.MetadataDiscovery(h)
+	if !ok || status.Source != MetadataCache || status.Trackers != 2 || status.DHTEnabled || !status.ProxyStrict {
+		t.Fatalf("cached strict discovery = %+v, ok=%v", status, ok)
 	}
 }
 

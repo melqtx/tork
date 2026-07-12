@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -55,41 +56,87 @@ type Deps struct {
 	Out       io.Writer
 }
 
-// Execute parses a request, searches all providers, ranks and selects the
-// best downloads, prints a report, and (unless dryRun) resolves magnets and
-// queues them. maxOverride > 0 replaces the configured download cap.
-// It returns the picks that were queued.
-func (d Deps) Execute(ctx context.Context, raw string, dryRun bool, maxOverride int) ([]Pick, error) {
+// Options controls one execution without changing the user's saved defaults.
+type Options struct {
+	DryRun             bool
+	MaxDownloads       int
+	MinSeeders         int
+	OverrideMinSeeders bool
+	MaxSizeBytes       int64
+	Categories         []string
+	Confirm            func(Plan) bool
+}
+
+// Execute parses a request, searches all providers, prints an explainable
+// plan, optionally asks the caller to confirm it, and queues the approved
+// picks. Every decision is appended to the local autopilot history.
+func (d Deps) Execute(ctx context.Context, raw string, opts Options) (Plan, error) {
 	in := ParseIntent(raw)
 	in.MinSeeders = d.Cfg.Autopilot.MinSeeders
 	in.Max = d.Cfg.Autopilot.MaxDownloads
-	if maxOverride > 0 {
-		in.Max = maxOverride
+	if d.Cfg.Autopilot.MaxSizeGB > 0 && in.MaxSizeBytes == 0 {
+		if d.Cfg.Autopilot.MaxSizeGB >= 1<<33 {
+			return Plan{}, fmt.Errorf("autopilot.max_size_gb is too large")
+		}
+		in.MaxSizeBytes = int64(d.Cfg.Autopilot.MaxSizeGB * (1 << 30))
+	}
+	in.Categories = append([]string(nil), d.Cfg.Autopilot.AllowedCategories...)
+	if opts.MaxDownloads > 0 {
+		in.Max = opts.MaxDownloads
+	}
+	if opts.OverrideMinSeeders {
+		in.MinSeeders = opts.MinSeeders
+	}
+	if opts.MaxSizeBytes > 0 {
+		in.MaxSizeBytes = opts.MaxSizeBytes
+	}
+	if len(opts.Categories) > 0 {
+		in.Categories = append([]string(nil), opts.Categories...)
 	}
 
 	fmt.Fprintf(d.Out, "autopilot: %q\n", raw)
-	fmt.Fprintf(d.Out, "  parsed → query=%q  resolution=%s  season=%s  max=%d  min-seeders=%d\n\n",
+	fmt.Fprintf(d.Out, "  plan → query=%q  resolution=%s  season=%s  max=%d  min-seeders=%d",
 		in.Query, resStr(in), seasonStr(in), in.Max, in.MinSeeders)
+	if in.MaxSizeBytes > 0 {
+		fmt.Fprintf(d.Out, "  max-size=%s", formatBytes(in.MaxSizeBytes))
+	}
+	if len(in.Categories) > 0 {
+		fmt.Fprintf(d.Out, "  categories=%s", strings.Join(in.Categories, ","))
+	}
+	fmt.Fprintln(d.Out)
+	fmt.Fprintln(d.Out)
 
 	results := d.gather(ctx, in.Query)
 	fmt.Fprintf(d.Out, "\n%d results gathered\n", len(results))
 
 	known := knownHashes(d.State)
-	picks := Select(results, in, d.Cfg.Ranking, known)
-	if len(picks) == 0 {
+	plan := BuildPlan(results, in, d.Cfg.Ranking, known)
+	if len(plan.Picks) == 0 {
 		fmt.Fprintln(d.Out, "\nno suitable downloads found (try lowering min_seeders or relaxing the query)")
-		return nil, nil
+		printRejections(d.Out, plan.Rejected)
+		plan.Outcome = "no matches"
+		d.record(raw, in, plan)
+		return plan, nil
 	}
-	printPicks(d.Out, picks)
+	printPicks(d.Out, plan.Picks)
+	fmt.Fprintf(d.Out, "  total: %s\n", formatBytes(plan.TotalBytes))
+	printRejections(d.Out, plan.Rejected)
 
-	if dryRun {
+	if opts.DryRun {
 		fmt.Fprintln(d.Out, "\ndry run - nothing queued")
-		return picks, nil
+		plan.Outcome = "dry run"
+		d.record(raw, in, plan)
+		return plan, nil
+	}
+	if opts.Confirm != nil && !opts.Confirm(plan) {
+		fmt.Fprintln(d.Out, "not queued")
+		plan.Outcome = "cancelled"
+		d.record(raw, in, plan)
+		return plan, nil
 	}
 
 	fmt.Fprintln(d.Out, "\nqueuing…")
-	queued := picks[:0]
-	for _, p := range picks {
+	for _, p := range plan.Picks {
 		magnet, err := d.resolve(ctx, p.Result)
 		if err != nil {
 			fmt.Fprintf(d.Out, "  ✗ %s: %s\n", trunc(p.Result.Title, 50), ShortReason(err))
@@ -120,9 +167,25 @@ func (d Deps) Execute(ctx context.Context, raw string, dryRun bool, maxOverride 
 		}
 		d.State.Upsert(entry)
 		fmt.Fprintf(d.Out, "  ✓ %s\n", trunc(p.Result.Title, 60))
-		queued = append(queued, p)
+		plan.Queued++
 	}
-	return queued, d.State.Save(d.Cfg.StatePath())
+	plan.Outcome = "queued"
+	if plan.Queued < len(plan.Picks) {
+		plan.Outcome = "partially queued"
+	}
+	if err := d.State.Save(d.Cfg.StatePath()); err != nil {
+		plan.Outcome = "state save failed"
+		d.record(raw, in, plan)
+		return plan, err
+	}
+	d.record(raw, in, plan)
+	return plan, nil
+}
+
+func (d Deps) record(raw string, in Intent, plan Plan) {
+	if err := appendDecision(d.Cfg.AutopilotHistoryPath(), raw, in, plan); err != nil {
+		fmt.Fprintf(d.Out, "  ! could not save autopilot decision: %s\n", ShortReason(err))
+	}
 }
 
 // gather runs the aggregator to completion, printing per-provider status.
@@ -224,6 +287,40 @@ func printPicks(out io.Writer, picks []Pick) {
 			p.Result.Seeders, p.Score, p.Reason)
 	}
 	tw.Flush()
+}
+
+func printRejections(out io.Writer, rejected map[string]int) {
+	keys := make([]string, 0, len(rejected))
+	for reason, count := range rejected {
+		if count > 0 {
+			keys = append(keys, reason)
+		}
+	}
+	if len(keys) == 0 {
+		return
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, reason := range keys {
+		parts = append(parts, fmt.Sprintf("%d %s", rejected[reason], reason))
+	}
+	fmt.Fprintf(out, "  skipped: %s\n", strings.Join(parts, " · "))
+}
+
+func formatBytes(n int64) string {
+	if n <= 0 {
+		return "size unknown"
+	}
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for q := n / unit; q >= unit && exp < 4; q /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 func resStr(in Intent) string {

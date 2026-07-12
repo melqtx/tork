@@ -3,6 +3,7 @@ package autopilot
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/anacrolix/torrent/metainfo"
 
@@ -16,6 +17,108 @@ type Pick struct {
 	Tags   rank.Tags
 	Score  float64
 	Reason string
+}
+
+// Plan is the explainable result of an autopilot decision. Rejected contains
+// calm aggregate reasons rather than a wall of every discarded release.
+type Plan struct {
+	Picks      []Pick
+	Rejected   map[string]int
+	TotalBytes int64
+	Queued     int
+	Outcome    string
+}
+
+// BuildPlan applies safety constraints before the normal deterministic
+// selector, then accounts for everything it did not choose.
+func BuildPlan(results []provider.Result, in Intent, w rank.Weights, known map[metainfo.Hash]bool) Plan {
+	plan := Plan{Rejected: map[string]int{}}
+	eligible := make([]provider.Result, 0, len(results))
+	for _, r := range results {
+		switch {
+		case r.Seeders < in.MinSeeders:
+			plan.Rejected["below seeder minimum"]++
+		case in.MaxSizeBytes > 0 && r.SizeBytes <= 0:
+			plan.Rejected["size unknown"]++
+		case in.MaxSizeBytes > 0 && r.SizeBytes > in.MaxSizeBytes:
+			plan.Rejected["over size limit"]++
+		case len(in.Categories) > 0 && !categoryAllowed(r.Category, in.Categories):
+			plan.Rejected["category not allowed"]++
+		case resultKnown(r, known):
+			plan.Rejected["already queued"]++
+		default:
+			eligible = append(eligible, r)
+		}
+	}
+
+	selectionIntent := in
+	selectionIntent.MinSeeders = 0
+	plan.Picks = Select(eligible, selectionIntent, w, nil)
+	selected := map[string]bool{}
+	for _, p := range plan.Picks {
+		selected[resultIdentity(p.Result)] = true
+		plan.TotalBytes += p.Result.SizeBytes
+	}
+	for _, r := range eligible {
+		if !selected[resultIdentity(r)] {
+			plan.Rejected["lower-ranked alternative or cap"]++
+		}
+	}
+	return plan
+}
+
+func resultKnown(r provider.Result, known map[metainfo.Hash]bool) bool {
+	h, ok := infoHash(r)
+	return ok && known[h]
+}
+
+func resultIdentity(r provider.Result) string {
+	return r.Provider + "\x00" + r.Magnet + "\x00" + r.DetailURL + "\x00" + r.Title
+}
+
+// categoryAllowed matches a provider category against the allowlist by whole
+// hierarchy segments, never substrings, so "movies" admits "Movies > HD" but
+// not "XXX Movies". Comparison ignores a trailing plural so 1337x's singular
+// labels ("movie") match the documented allowlist spelling ("movies").
+func categoryAllowed(category string, allowed []string) bool {
+	segments := categorySegments(category)
+	if len(segments) == 0 {
+		return false
+	}
+	for _, want := range allowed {
+		want = normalizeCategory(want)
+		if want == "" {
+			continue
+		}
+		for _, segment := range segments {
+			if segment == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// categorySegments splits hierarchical labels such as "Movies > HD",
+// "movies/hd", or nyaa's "Anime - English-translated". A compound label with
+// no separator ("XXX Movies") stays one segment.
+func categorySegments(category string) []string {
+	category = strings.ReplaceAll(category, " - ", ">")
+	parts := strings.FieldsFunc(category, func(r rune) bool {
+		return r == '>' || r == '/' || r == ',' || r == '|'
+	})
+	segments := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = normalizeCategory(part); part != "" {
+			segments = append(segments, part)
+		}
+	}
+	return segments
+}
+
+func normalizeCategory(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	return strings.TrimSuffix(s, "s")
 }
 
 // Select turns raw search results into a deduplicated set of best-choice

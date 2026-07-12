@@ -17,21 +17,25 @@ import (
 // previewModel is the magnet sandbox: inspect a torrent's files and choose
 // which to download before any data transfers.
 type previewModel struct {
-	hash     metainfo.Hash
-	magnet   string
-	name     string
-	from     screen
-	owned    bool
-	files    []engine.FileInfo
-	tree     *fileNode
-	rows     []*fileNode
-	ready    bool
-	excluded map[int]bool // keyed by FileInfo.Index
-	win      listWindow
+	hash      metainfo.Hash
+	magnet    string
+	name      string
+	from      screen
+	owned     bool
+	files     []engine.FileInfo
+	tree      *fileNode
+	rows      []*fileNode
+	ready     bool
+	startedAt time.Time
+	excluded  map[int]bool // keyed by FileInfo.Index
+	win       listWindow
 }
 
 func newPreviewModel(h metainfo.Hash, magnet, name string, from screen, owned bool) previewModel {
-	return previewModel{hash: h, magnet: magnet, name: previewName(magnet, name), from: from, owned: owned, excluded: map[int]bool{}}
+	return previewModel{
+		hash: h, magnet: magnet, name: previewName(magnet, name), from: from,
+		owned: owned, startedAt: time.Now(), excluded: map[int]bool{},
+	}
 }
 
 // refresh polls the engine for file metadata once it arrives.
@@ -99,7 +103,13 @@ func (a *App) updatePreview(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 	if !p.ready {
-		return a, nil // ignore edits until the file list is known
+		// Metadata can take a while for a bare hash because a peer must supply
+		// it. Enter lets the user approve the whole torrent now and watch peer
+		// discovery from Downloads; waiting preserves file-by-file selection.
+		if key.String() == "enter" && p.hash != (metainfo.Hash{}) {
+			return a, a.startPreviewDownload()
+		}
+		return a, nil
 	}
 	rows := a.previewRows()
 	switch key.String() {
@@ -249,19 +259,42 @@ func (a *App) viewPreview() string {
 	width := a.contentWidth()
 
 	if !p.ready {
+		waited := time.Since(p.startedAt).Round(time.Second)
+		status, hasStatus := a.eng.MetadataDiscovery(p.hash)
+		if hasStatus && status.Waiting > 0 {
+			waited = status.Waiting.Round(time.Second)
+		}
+		if waited < 0 {
+			waited = 0
+		}
+		discovery := waited.String()
+		if hasStatus && status.Summary() != "" {
+			discovery = status.Summary()
+		}
+		detail := styleFaint.Render("needs a peer with metadata; may take a moment")
+		if waited >= 10*time.Second {
+			detail = styleFaint.Render("still looking; press enter to queue the whole torrent now")
+		}
 		msg := lipgloss.JoinVertical(lipgloss.Center,
 			styleFg.Render(truncate(p.name, width-4)),
 			"",
-			styleDim.Render("fetching metadata…")+styleFaint.Render("  (needs peers; may take a moment)"),
+			styleDim.Render("finding metadata peers…"),
+			styleFaint.Render(discovery),
+			detail,
 		)
 		body := lipgloss.Place(width, a.bodyHeight(), lipgloss.Center, lipgloss.Center, msg)
-		return a.chrome("preview", body, hints(hint("esc", "cancel")))
+		return a.chrome("preview", body, hints(hint("enter", "queue all now"), hint("esc", "cancel")))
 	}
 
 	var b strings.Builder
-	b.WriteString(" " + styleFg.Render(truncate(p.name, max(20, width-40))) +
+	source := ""
+	if status, ok := a.eng.MetadataDiscovery(p.hash); ok && status.SourceLabel() != "" {
+		source = styleFaint.Render(" · " + status.SourceLabel())
+	}
+	nameWidth := max(12, width-40-lipgloss.Width(source))
+	b.WriteString(" " + styleFg.Render(truncate(p.name, nameWidth)) +
 		styleFaint.Render(fmt.Sprintf("   %d files · %d dirs", len(p.files), countDirs(p.tree))) +
-		styleFaint.Render(" · total ") + styleDim.Render(humanBytes(p.totalBytes())) + "\n")
+		styleFaint.Render(" · total ") + styleDim.Render(humanBytes(p.totalBytes())) + source + "\n")
 	flagged := ""
 	if n := p.flaggedCount(); n > 0 {
 		flagged = styleFaint.Render(" · ") + styleHealthMid.Render(fmt.Sprintf("⚠ %d flagged", n))
@@ -325,11 +358,11 @@ func (p *previewModel) selectedFiles() int {
 func (p *previewModel) checkbox(n *fileNode) string {
 	switch nodeCheck(n, p.excluded) {
 	case checkAll:
-		return styleOK.Render("◉")
+		return styleOK.Render("[✓]")
 	case checkMixed:
-		return styleHealthMid.Render("◐")
+		return styleHealthMid.Render("[-]")
 	default:
-		return styleFaint.Render("○")
+		return styleFaint.Render("[ ]")
 	}
 }
 
