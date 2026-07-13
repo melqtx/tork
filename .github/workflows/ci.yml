@@ -18,5 +18,12 @@ jobs:
         run: go vet ./...
       - name: build
         run: go build ./...
+      - name: build linux/riscv64 with cgo
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-riscv64-linux-gnu g++-riscv64-linux-gnu
+          CC=riscv64-linux-gnu-gcc CXX=riscv64-linux-gnu-g++ \
+            CGO_ENABLED=1 GOOS=linux GOARCH=riscv64 \
+            go build -trimpath -o /tmp/tork-linux-riscv64 ./cmd/tork
       - name: test (race)
         run: go test -race -timeout 5m ./...

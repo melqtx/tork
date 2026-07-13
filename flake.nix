@@ -9,12 +9,14 @@
       systems = [
         "aarch64-darwin"
         "aarch64-linux"
+        "riscv64-linux"
         "x86_64-darwin"
         "x86_64-linux"
       ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
       pkgsFor = system: import nixpkgs { inherit system; };
       version = "0.3.0";
+      vendorHash = "sha256-mpuvGJEygfcfsGftK1oPjPCfkko28VE22MmSRL35Tdo=";
     in
     {
       packages = forAllSystems (
@@ -22,7 +24,7 @@
         let
           pkgs = pkgsFor system;
           tork = pkgs.callPackage ./packaging/nix/package.nix {
-            inherit version;
+            inherit version vendorHash;
             source = self;
           };
         in

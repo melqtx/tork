@@ -3,6 +3,7 @@
   buildGoModule,
   fetchFromGitHub,
   version ? "0.3.0",
+  vendorHash ? "sha256-Vk3lmPUDvuhOzha8GlH0anRLgVhhyFjz9y328T2gycs=",
   source ? fetchFromGitHub {
     owner = "melqtx";
     repo = "tork";
@@ -17,7 +18,7 @@ buildGoModule rec {
 
   src = source;
 
-  vendorHash = "sha256-Vk3lmPUDvuhOzha8GlH0anRLgVhhyFjz9y328T2gycs=";
+  inherit vendorHash;
 
   subPackages = [ "cmd/tork" ];
 
