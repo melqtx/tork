@@ -7,7 +7,7 @@
     owner = "melqtx";
     repo = "tork";
     tag = "v${version}";
-    hash = "sha256-Re6aw01Wb/8NzdJ1mxUCV3FRdkcXv+0tLNayKFF1LYY=";
+    hash = "sha256-geyEUzD6kO644iwfhQHSpVEGc/mXnumsXpitsQjCQEI=";
   },
 }:
 
