@@ -5,6 +5,7 @@ pkgbase = tork
 	url = https://github.com/melqtx/tork
 	arch = x86_64
 	arch = aarch64
+	arch = riscv64
 	license = MIT
 	makedepends = go
 	depends = glibc
