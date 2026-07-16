@@ -1,5 +1,6 @@
 # compiled binary
 /tork
+/bin/
 
 # backups tork writes when it recovers corrupt state
 *.bak

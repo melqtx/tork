@@ -3,7 +3,9 @@ package tui
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -16,6 +18,8 @@ import (
 	"github.com/melqtx/tork/internal/engine"
 	"github.com/melqtx/tork/internal/state"
 )
+
+const finderRevealAvailable = runtime.GOOS == "darwin"
 
 type downloadItem struct {
 	Hash           metainfo.Hash
@@ -40,6 +44,8 @@ type removeConfirm struct {
 	item       downloadItem
 	deleteData bool
 }
+
+type revealDownloadMsg struct{ err error }
 
 type pathAction int
 
@@ -142,8 +148,29 @@ func (a *App) updateDownloads(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if it, ok := a.selectedDownload(items); ok {
 			d.confirmRemove = &removeConfirm{item: it, deleteData: true}
 		}
+	case "o":
+		if finderRevealAvailable {
+			it, ok := a.selectedDownload(items)
+			if !ok {
+				break
+			}
+			return a, revealDownload(it)
+		}
 	}
 	return a, nil
+}
+
+func revealDownload(it downloadItem) tea.Cmd {
+	return func() tea.Msg {
+		path := strings.TrimSpace(it.DataPath)
+		if path == "" {
+			return revealDownloadMsg{err: fmt.Errorf("reveal needs a known saved path")}
+		}
+		if err := exec.Command("open", "-R", path).Run(); err != nil {
+			return revealDownloadMsg{err: fmt.Errorf("reveal failed: %w", err)}
+		}
+		return revealDownloadMsg{}
+	}
 }
 
 func newPathPrompt(action pathAction, it downloadItem, prompt, value string) pathPrompt {
@@ -612,7 +639,11 @@ func (a *App) viewDownloads() string {
 		b.WriteString("\n" + rule(width) + "\n" + detail)
 	}
 
-	help := hints(hint("↑↓", "move"), hint("p", "pause"), hint("s", "seed"), hint("v", "verify"), hint("m", "move"), hint("r", "relink"), hint("x", "remove"), hint("d", "delete"), hint("H", "health"), hint("esc", "search"))
+	helpParts := []string{hint("↑↓", "move"), hint("p", "pause"), hint("s", "seed"), hint("v", "verify"), hint("m", "move"), hint("r", "relink"), hint("x", "remove"), hint("d", "delete"), hint("H", "health"), hint("esc", "search")}
+	if finderRevealAvailable {
+		helpParts = append(helpParts, hint("o", "reveal"))
+	}
+	help := hints(helpParts...)
 	if d.confirmRemove != nil {
 		verb := "remove from list"
 		if d.confirmRemove.deleteData {
@@ -675,12 +706,16 @@ func (a *App) downloadDetail(it downloadItem, width int) string {
 	if it.Seed {
 		seed = "on"
 	}
+	keys := "m move folder · r relink existing files · d delete data"
+	if finderRevealAvailable {
+		keys += " · o reveal in Finder"
+	}
 	lines := []string{
 		styleFaint.Render("path  ") + styleDim.Render(truncate(path, width-7)),
 		styleFaint.Render("root  ") + styleDim.Render(truncate(it.DownloadDir, width-7)),
 		styleFaint.Render("seed  ") + styleDim.Render(seed) + styleFaint.Render("   status  ") + stateBadge(it.State),
 		styleFaint.Render("size  ") + styleDim.Render(fmt.Sprintf("%s selected", humanBytes(it.Length))),
-		styleFaint.Render("keys  ") + styleDim.Render("m move folder · r relink existing files · d delete data"),
+		styleFaint.Render("keys  ") + styleDim.Render(keys),
 	}
 	return strings.Join(lines, "\n")
 }

@@ -139,6 +139,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.errText = ""
 		return a, nil
 
+	case revealDownloadMsg:
+		if msg.err != nil {
+			a.errText = msg.err.Error()
+			return a, clearErrCmd()
+		}
+		return a, nil
+
 	case healthDoneMsg:
 		return a, a.onHealthDone(msg)
 
