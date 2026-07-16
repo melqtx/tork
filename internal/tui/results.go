@@ -153,6 +153,9 @@ func (a *App) updateResults(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.errText = "resolve failed: " + msg.err.Error()
 			return a, clearErrCmd()
 		}
+		if msg.yank {
+			return a, yankDownloadValue("magnet", msg.magnet)
+		}
 		return a, a.launchCmd(msg.magnet, msg.res.Title, msg.preview)
 
 	case tea.KeyMsg:
@@ -211,6 +214,10 @@ func (a *App) updateResultsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if r.win.cursor >= 0 && r.win.cursor < len(r.visible) {
 			return a, a.downloadResultDirect(r.rows[r.visible[r.win.cursor]].res)
 		}
+	case "Y":
+		if r.win.cursor >= 0 && r.win.cursor < len(r.visible) {
+			return a, a.yankResult(r.rows[r.visible[r.win.cursor]].res)
+		}
 	}
 	return a, nil
 }
@@ -256,27 +263,44 @@ func (a *App) downloadResultDirect(res provider.Result) tea.Cmd {
 }
 
 func (a *App) actOnResult(res provider.Result, preview bool) tea.Cmd {
-	r := &a.results
-	if r.resolving {
+	if a.results.resolving {
 		return nil
 	}
 	if res.Magnet != "" {
 		return a.launchCmd(res.Magnet, res.Title, preview)
 	}
+	return a.startResolve(res, preview, false)
+}
+
+// yankResult copies the row's magnet, resolving it first when the provider's
+// listing only carries a details-page link (the `Y` shortcut).
+func (a *App) yankResult(res provider.Result) tea.Cmd {
+	if res.Magnet != "" {
+		return yankDownloadValue("magnet", res.Magnet)
+	}
+	if a.results.resolving {
+		return nil
+	}
+	return a.startResolve(res, false, true)
+}
+
+// startResolve fetches the magnet behind a details-page row; the resolved
+// magnet is routed by magnetResolvedMsg (yank to clipboard vs launch).
+func (a *App) startResolve(res provider.Result, preview, yank bool) tea.Cmd {
 	resolver := a.findResolver(res.Provider)
 	if resolver == nil {
 		a.errText = res.Provider + ": cannot resolve magnet"
 		return clearErrCmd()
 	}
-	r.resolving = true
+	a.results.resolving = true
 	return func() (msg tea.Msg) {
 		defer guard(&msg, func(r any) tea.Msg {
-			return magnetResolvedMsg{res: res, err: fmt.Errorf("resolve panicked: %v", r)}
+			return magnetResolvedMsg{res: res, yank: yank, err: fmt.Errorf("resolve panicked: %v", r)}
 		})
 		ctx, cancel := context.WithTimeout(context.Background(), a.cfg.SearchTimeout())
 		defer cancel()
 		magnet, err := resolver.ResolveMagnet(ctx, res)
-		return magnetResolvedMsg{res: res, magnet: magnet, preview: preview, err: err}
+		return magnetResolvedMsg{res: res, magnet: magnet, preview: preview, yank: yank, err: err}
 	}
 }
 
@@ -492,14 +516,18 @@ func (a *App) viewResults() string {
 	case r.grouped:
 		help = hints(hint("↑↓", "move"), hint("←→/space", "fold"), hint("enter", "get"), hint("D", "direct"), hint("o", r.sort.String()), hint("v", "flat"), hint("/", "filter"), hint("esc", "back"))
 	default:
-		help = hints(hint("↑↓", "move"), hint("enter", "get"), hint("/", "filter"), hint("o", r.sort.String()), hint("v", "graph"), hint("esc", "back"))
+		help = hints(hint("↑↓", "move"), hint("enter", "get"), hint("Y", "magnet"), hint("/", "filter"), hint("o", r.sort.String()), hint("v", "graph"), hint("esc", "back"))
 	}
 
 	ctx := "results"
 	if r.query != "" {
 		ctx = "results · " + r.query
 	}
-	return a.chrome(ctx, b.String(), help)
+	body := b.String()
+	if a.yanked != "" {
+		body = overlayBottomRight(padLines(body, a.bodyHeight()), yankToast(a.yanked), width)
+	}
+	return a.chrome(ctx, body, help)
 }
 
 // renderTitle pads/truncates and highlights fuzzy-matched runes.

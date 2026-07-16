@@ -47,6 +47,8 @@ type App struct {
 	startup    tea.Cmd // optional one-shot action requested on the command line
 
 	errText      string
+	yanked       string    // field just copied ("path", "magnet"); drives the toast
+	yankGen      int       // invalidates stale toast-clear timers when yanks overlap
 	lastTickSave time.Time // throttles progress-only state.json writes on the tick
 }
 
@@ -146,10 +148,18 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
-	case copyDownloadPathMsg:
+	case yankDoneMsg:
 		if msg.err != nil {
 			a.errText = msg.err.Error()
 			return a, clearErrCmd()
+		}
+		a.yanked = msg.what
+		a.yankGen++
+		return a, clearYankCmd(a.yankGen)
+
+	case clearYankMsg:
+		if msg.gen == a.yankGen {
+			a.yanked = ""
 		}
 		return a, nil
 

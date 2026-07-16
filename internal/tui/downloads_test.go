@@ -95,13 +95,31 @@ func TestMovePayloadMovesPartFileRoundTrip(t *testing.T) {
 	}
 }
 
-func TestPathClipboardSequenceCopiesFullPath(t *testing.T) {
+func TestClipboardSequenceCopiesFullText(t *testing.T) {
 	t.Setenv("TMUX", "")
 	t.Setenv("STY", "")
 
-	got := pathClipboardSequence("/home/cat/Downloads/image.iso").String()
+	got := clipboardSequence("/home/cat/Downloads/image.iso").String()
 	want := "\x1b]52;c;L2hvbWUvY2F0L0Rvd25sb2Fkcy9pbWFnZS5pc28=\x07"
 	if got != want {
 		t.Fatalf("clipboard sequence = %q, want %q", got, want)
+	}
+}
+
+func TestOverlayBottomRightKeepsLeftContent(t *testing.T) {
+	base := strings.Join([]string{"aa", "bb", "cc", "dd", "ee"}, "\n")
+	got := strings.Split(overlayBottomRight(base, "XX\nYY", 8), "\n")
+
+	if len(got) != 5 {
+		t.Fatalf("line count = %d, want 5", len(got))
+	}
+	if got[0] != "aa" || got[1] != "bb" || got[2] != "cc" {
+		t.Fatalf("untouched lines changed: %q", got)
+	}
+	if !strings.HasPrefix(got[3], "dd") || !strings.HasSuffix(got[3], "XX") {
+		t.Fatalf("toast row 1 = %q, want left content kept and XX right-aligned", got[3])
+	}
+	if !strings.HasPrefix(got[4], "ee") || !strings.HasSuffix(got[4], "YY") {
+		t.Fatalf("toast row 2 = %q, want left content kept and YY right-aligned", got[4])
 	}
 }

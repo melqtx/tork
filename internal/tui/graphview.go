@@ -159,6 +159,16 @@ func (a *App) updateGraphKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		return a, a.downloadResultDirect(res)
+	case "Y":
+		it, ok := currentItem(items, r.gwin.cursor)
+		if !ok {
+			return a, nil
+		}
+		res, ok := r.graphResultForItem(it)
+		if !ok {
+			return a, nil
+		}
+		return a, a.yankResult(res)
 	}
 	return a, nil
 }

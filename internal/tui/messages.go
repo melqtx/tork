@@ -19,6 +19,7 @@ type magnetResolvedMsg struct {
 	res     provider.Result
 	magnet  string
 	preview bool // route to the preview screen instead of downloading directly
+	yank    bool // copy the magnet to the clipboard instead of acting on it
 	err     error
 }
 
@@ -41,6 +42,10 @@ type previewReadyMsg struct {
 
 type tickMsg time.Time
 type clearErrMsg struct{}
+
+// clearYankMsg hides the yank toast; gen must match the App's current yank
+// generation so a timer from an earlier yank can't cut a newer toast short.
+type clearYankMsg struct{ gen int }
 
 // proxyCheckMsg is produced by the bounded, SOCKS-routed egress check. It
 // deliberately carries no egress IP because the status bar only needs to show
@@ -90,4 +95,10 @@ func tickCmd(d time.Duration) tea.Cmd {
 
 func clearErrCmd() tea.Cmd {
 	return tea.Tick(4*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
+}
+
+// clearYankCmd hides the yank toast; shorter than clearErrCmd because a
+// confirmation needs less dwell time than an error.
+func clearYankCmd(gen int) tea.Cmd {
+	return tea.Tick(1500*time.Millisecond, func(time.Time) tea.Msg { return clearYankMsg{gen: gen} })
 }

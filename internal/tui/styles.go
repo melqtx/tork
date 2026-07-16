@@ -50,6 +50,8 @@ var (
 
 	styleKey   = lipgloss.NewStyle().Foreground(colBrand2)
 	styleKeyLb = lipgloss.NewStyle().Foreground(colMuted)
+
+	styleYankBox = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colBrand).Padding(0, 2)
 )
 
 var (

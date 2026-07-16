@@ -9,11 +9,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/aymanbagabas/go-osc52/v2"
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/anacrolix/torrent/metainfo"
 	"github.com/melqtx/tork/internal/engine"
@@ -48,7 +50,12 @@ type removeConfirm struct {
 
 type revealDownloadMsg struct{ err error }
 
-type copyDownloadPathMsg struct{ err error }
+// yankDoneMsg reports a clipboard copy; what names the copied field ("path",
+// "magnet") so the popup can say which one landed.
+type yankDoneMsg struct {
+	what string
+	err  error
+}
 
 type pathAction int
 
@@ -145,7 +152,11 @@ func (a *App) updateDownloads(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case "y":
 		if it, ok := a.selectedDownload(items); ok {
-			return a, copyDownloadPath(it)
+			return a, yankDownloadValue("path", it.DataPath)
+		}
+	case "Y":
+		if it, ok := a.selectedDownload(items); ok {
+			return a, yankDownloadValue("magnet", it.Magnet)
 		}
 	case "x":
 		if it, ok := a.selectedDownload(items); ok {
@@ -167,23 +178,33 @@ func (a *App) updateDownloads(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
-func copyDownloadPath(it downloadItem) tea.Cmd {
+func yankDownloadValue(what, value string) tea.Cmd {
 	return func() tea.Msg {
-		path := strings.TrimSpace(it.DataPath)
-		if path == "" {
-			return copyDownloadPathMsg{err: fmt.Errorf("copy needs a known saved path")}
+		text := strings.TrimSpace(value)
+		if text == "" {
+			return yankDoneMsg{what: what, err: fmt.Errorf("copy needs a known %s", what)}
 		}
-
-		seq := pathClipboardSequence(path)
-		if _, err := seq.WriteTo(os.Stdout); err != nil {
-			return copyDownloadPathMsg{err: fmt.Errorf("copy path failed: %w", err)}
+		if err := writeClipboard(text); err != nil {
+			return yankDoneMsg{what: what, err: fmt.Errorf("copy %s failed: %w", what, err)}
 		}
-		return copyDownloadPathMsg{}
+		return yankDoneMsg{what: what}
 	}
 }
 
-func pathClipboardSequence(path string) osc52.Sequence {
-	seq := osc52.New(path)
+// writeClipboard prefers the OS clipboard: bubbletea's renderer writes frames
+// to stdout from its own goroutine, so emitting OSC 52 here can interleave
+// with a frame mid-sequence. The escape-sequence path survives only as a
+// fallback for hosts without a clipboard helper (e.g. a bare SSH session).
+func writeClipboard(text string) error {
+	if err := clipboard.WriteAll(text); err == nil {
+		return nil
+	}
+	_, err := clipboardSequence(text).WriteTo(os.Stdout)
+	return err
+}
+
+func clipboardSequence(text string) osc52.Sequence {
+	seq := osc52.New(text)
 	switch {
 	case os.Getenv("TMUX") != "":
 		return seq.Tmux()
@@ -205,6 +226,30 @@ func revealDownload(it downloadItem) tea.Cmd {
 		}
 		return revealDownloadMsg{}
 	}
+}
+
+// yankToast is the small confirmation box flashed in the bottom-right corner
+// after a copy lands on the clipboard.
+func yankToast(what string) string {
+	return styleYankBox.Render(styleBrand.Render("yanked ") + styleDim.Render(what))
+}
+
+// overlayBottomRight splices toast into base's bottom-right corner, keeping
+// whatever styled text sits to its left on those rows.
+func overlayBottomRight(base, toast string, width int) string {
+	baseLines := strings.Split(base, "\n")
+	toastLines := strings.Split(toast, "\n")
+	top := len(baseLines) - len(toastLines)
+	if top < 0 {
+		return base
+	}
+	for i, tl := range toastLines {
+		idx := top + i
+		keep := max(0, width-lipgloss.Width(tl)-1)
+		left := ansi.Truncate(baseLines[idx], keep, "")
+		baseLines[idx] = left + strings.Repeat(" ", max(1, keep-lipgloss.Width(left)+1)) + tl
+	}
+	return strings.Join(baseLines, "\n")
 }
 
 func newPathPrompt(action pathAction, it downloadItem, prompt, value string) pathPrompt {
@@ -673,7 +718,7 @@ func (a *App) viewDownloads() string {
 		b.WriteString("\n" + rule(width) + "\n" + detail)
 	}
 
-	helpParts := []string{hint("↑↓", "move"), hint("p", "pause"), hint("s", "seed"), hint("v", "verify"), hint("m", "move"), hint("r", "relink"), hint("y", "copy path"), hint("x", "remove"), hint("d", "delete"), hint("H", "health"), hint("esc", "search")}
+	helpParts := []string{hint("↑↓", "move"), hint("p", "pause"), hint("s", "seed"), hint("v", "verify"), hint("m", "move"), hint("r", "relink"), hint("y/Y", "copy"), hint("x", "remove"), hint("d", "delete"), hint("H", "health"), hint("esc", "search")}
 	if finderRevealAvailable {
 		helpParts = append(helpParts, hint("o", "reveal"))
 	}
@@ -688,7 +733,11 @@ func (a *App) viewDownloads() string {
 	if d.prompt.action != pathActionNone {
 		help = d.prompt.input.View()
 	}
-	return a.chrome(a.downloadsContext(items), b.String(), help)
+	body := b.String()
+	if a.yanked != "" {
+		body = overlayBottomRight(padLines(body, a.bodyHeight()), yankToast(a.yanked), width)
+	}
+	return a.chrome(a.downloadsContext(items), body, help)
 }
 
 func (a *App) renderDownloadItem(it downloadItem, selected bool, width int) string {
@@ -740,7 +789,7 @@ func (a *App) downloadDetail(it downloadItem, width int) string {
 	if it.Seed {
 		seed = "on"
 	}
-	keys := "m move folder · r relink existing files · y copy full path · d delete data"
+	keys := "m move folder · r relink existing files · y copy full path · Y copy magnet · d delete data"
 	if finderRevealAvailable {
 		keys += " · o reveal in Finder"
 	}
@@ -749,7 +798,7 @@ func (a *App) downloadDetail(it downloadItem, width int) string {
 		styleFaint.Render("root  ") + styleDim.Render(truncate(it.DownloadDir, width-7)),
 		styleFaint.Render("seed  ") + styleDim.Render(seed) + styleFaint.Render("   status  ") + stateBadge(it.State),
 		styleFaint.Render("size  ") + styleDim.Render(fmt.Sprintf("%s selected", humanBytes(it.Length))),
-		styleFaint.Render("keys  ") + styleDim.Render(keys),
+		styleFaint.Render("keys  ") + styleDim.Render(truncate(keys, width-7)),
 	}
 	return strings.Join(lines, "\n")
 }
