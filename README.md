@@ -40,6 +40,22 @@ If Go on macOS is picking Nix's compiler, use Apple Clang for the install:
 CC=/usr/bin/clang CXX=/usr/bin/clang++ go install github.com/melqtx/tork/cmd/tork@latest
 ```
 
+## Build from source
+
+Building tork requires Go 1.26 or newer. From the repository root, run it
+directly without creating a binary:
+
+```sh
+go run ./cmd/tork
+```
+
+Or build and run a local binary:
+
+```sh
+go build -o ./bin/tork ./cmd/tork
+./bin/tork
+```
+
 Config lives in `~/.tork/`; downloads land in `~/Downloads/tork` (change with
 `tork -d DIR`).
 
@@ -138,7 +154,7 @@ manual check.
 - **home** type to search, `↑↓` pick a destination, `enter` go
 - **isos** `↑↓` browse, `enter` grab the latest official image
 - **results** `enter` preview/get, `D` grab now, `/` filter, `o` sort, `v` graph
-- **downloads** `p` pause/resume, `s` seed, `v` verify, `m` move, `r` relink, `x` remove, `d` delete data
+- **downloads** `p` pause/resume, `s` seed, `v` verify, `m` move, `r` relink, `y` copy full path, `x` remove, `d` delete data, `o` reveal in Finder (macOS)
 - `tab` cycle, `esc` back, `^c` quit
 
 ## Autopilot (WIP)
