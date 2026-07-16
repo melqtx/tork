@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aymanbagabas/go-osc52/v2"
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -46,6 +47,8 @@ type removeConfirm struct {
 }
 
 type revealDownloadMsg struct{ err error }
+
+type copyDownloadPathMsg struct{ err error }
 
 type pathAction int
 
@@ -140,6 +143,10 @@ func (a *App) updateDownloads(msg tea.Msg) (tea.Model, tea.Cmd) {
 			d.prompt = newPathPrompt(pathActionRelink, it, "existing path: ", it.DataPath)
 			return a, d.prompt.input.Focus()
 		}
+	case "y":
+		if it, ok := a.selectedDownload(items); ok {
+			return a, copyDownloadPath(it)
+		}
 	case "x":
 		if it, ok := a.selectedDownload(items); ok {
 			d.confirmRemove = &removeConfirm{item: it}
@@ -158,6 +165,33 @@ func (a *App) updateDownloads(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return a, nil
+}
+
+func copyDownloadPath(it downloadItem) tea.Cmd {
+	return func() tea.Msg {
+		path := strings.TrimSpace(it.DataPath)
+		if path == "" {
+			return copyDownloadPathMsg{err: fmt.Errorf("copy needs a known saved path")}
+		}
+
+		seq := pathClipboardSequence(path)
+		if _, err := seq.WriteTo(os.Stdout); err != nil {
+			return copyDownloadPathMsg{err: fmt.Errorf("copy path failed: %w", err)}
+		}
+		return copyDownloadPathMsg{}
+	}
+}
+
+func pathClipboardSequence(path string) osc52.Sequence {
+	seq := osc52.New(path)
+	switch {
+	case os.Getenv("TMUX") != "":
+		return seq.Tmux()
+	case os.Getenv("STY") != "":
+		return seq.Screen()
+	default:
+		return seq
+	}
 }
 
 func revealDownload(it downloadItem) tea.Cmd {
@@ -639,7 +673,7 @@ func (a *App) viewDownloads() string {
 		b.WriteString("\n" + rule(width) + "\n" + detail)
 	}
 
-	helpParts := []string{hint("↑↓", "move"), hint("p", "pause"), hint("s", "seed"), hint("v", "verify"), hint("m", "move"), hint("r", "relink"), hint("x", "remove"), hint("d", "delete"), hint("H", "health"), hint("esc", "search")}
+	helpParts := []string{hint("↑↓", "move"), hint("p", "pause"), hint("s", "seed"), hint("v", "verify"), hint("m", "move"), hint("r", "relink"), hint("y", "copy path"), hint("x", "remove"), hint("d", "delete"), hint("H", "health"), hint("esc", "search")}
 	if finderRevealAvailable {
 		helpParts = append(helpParts, hint("o", "reveal"))
 	}
@@ -706,7 +740,7 @@ func (a *App) downloadDetail(it downloadItem, width int) string {
 	if it.Seed {
 		seed = "on"
 	}
-	keys := "m move folder · r relink existing files · d delete data"
+	keys := "m move folder · r relink existing files · y copy full path · d delete data"
 	if finderRevealAvailable {
 		keys += " · o reveal in Finder"
 	}

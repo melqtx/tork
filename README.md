@@ -154,7 +154,7 @@ manual check.
 - **home** type to search, `↑↓` pick a destination, `enter` go
 - **isos** `↑↓` browse, `enter` grab the latest official image
 - **results** `enter` preview/get, `D` grab now, `/` filter, `o` sort, `v` graph
-- **downloads** `p` pause/resume, `s` seed, `v` verify, `m` move, `r` relink, `x` remove, `d` delete data, `o` reveal in Finder (macOS)
+- **downloads** `p` pause/resume, `s` seed, `v` verify, `m` move, `r` relink, `y` copy full path, `x` remove, `d` delete data, `o` reveal in Finder (macOS)
 - `tab` cycle, `esc` back, `^c` quit
 
 ## Autopilot (WIP)

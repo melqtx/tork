@@ -94,3 +94,14 @@ func TestMovePayloadMovesPartFileRoundTrip(t *testing.T) {
 		t.Fatalf("moved part = %q", got)
 	}
 }
+
+func TestPathClipboardSequenceCopiesFullPath(t *testing.T) {
+	t.Setenv("TMUX", "")
+	t.Setenv("STY", "")
+
+	got := pathClipboardSequence("/home/cat/Downloads/image.iso").String()
+	want := "\x1b]52;c;L2hvbWUvY2F0L0Rvd25sb2Fkcy9pbWFnZS5pc28=\x07"
+	if got != want {
+		t.Fatalf("clipboard sequence = %q, want %q", got, want)
+	}
+}

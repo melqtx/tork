@@ -146,6 +146,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
+	case copyDownloadPathMsg:
+		if msg.err != nil {
+			a.errText = msg.err.Error()
+			return a, clearErrCmd()
+		}
+		return a, nil
+
 	case healthDoneMsg:
 		return a, a.onHealthDone(msg)
 
