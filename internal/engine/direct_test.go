@@ -2,9 +2,11 @@ package engine
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -191,5 +193,154 @@ func TestAddDirectRejectsUnsafeName(t *testing.T) {
 	eng := newDirectTestEngine(t)
 	if _, err := eng.AddDirect("https://example.com/x.iso", "../../evil.iso", ""); err == nil {
 		t.Fatal("expected a path-traversal name to be rejected")
+	}
+}
+
+func TestVerifyDirectAcceptsValidCompletedFile(t *testing.T) {
+	payload := []byte("completed direct download")
+	ts := serveISO(t, payload, nil)
+	eng := newDirectTestEngine(t)
+
+	h, err := eng.AddDirect(ts.URL+"/image.iso", "image.iso", sumHex(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	awaitDirect(t, eng, func(s Snapshot) bool { return s.Hash == h && s.State == StateDone }, 10*time.Second)
+
+	result, err := eng.Verify(context.Background(), h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NeedsRepair || result.ChecksumMismatch {
+		t.Fatalf("Verify result = %+v, want valid", result)
+	}
+	if snap, ok := eng.Snapshot(h); !ok || snap.State != StateDone {
+		t.Fatalf("snapshot = %+v, ok=%v; want done", snap, ok)
+	}
+}
+
+func TestVerifyDirectRecognizesPersistedFileSynchronously(t *testing.T) {
+	payload := []byte("persisted direct download")
+	eng := newDirectTestEngine(t)
+	dest := filepath.Join(eng.cfg.DownloadDir, "image.iso")
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dest, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	h, err := eng.AddDirect("https://example.invalid/image.iso", "image.iso", sumHex(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap, ok := eng.Snapshot(h); !ok || snap.State != StateDone {
+		t.Fatalf("snapshot immediately after activation = %+v, ok=%v; want done", snap, ok)
+	}
+	if _, err := eng.Verify(context.Background(), h); err != nil {
+		t.Fatalf("verify persisted file: %v", err)
+	}
+}
+
+func TestVerifyDirectQuarantinesMismatchWithoutOverwritingExistingQuarantine(t *testing.T) {
+	payload := []byte("known-good direct download")
+	ts := serveISO(t, payload, nil)
+	eng := newDirectTestEngine(t)
+
+	h, err := eng.AddDirect(ts.URL+"/image.iso", "image.iso", sumHex(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	awaitDirect(t, eng, func(s Snapshot) bool { return s.Hash == h && s.State == StateDone }, 10*time.Second)
+	dest := filepath.Join(eng.cfg.DownloadDir, "image.iso")
+	if err := os.WriteFile(dest, []byte("corrupt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dest+".corrupt", []byte("older corrupt copy"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := eng.Verify(context.Background(), h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.NeedsRepair || !result.ChecksumMismatch || result.QuarantinePath != dest+".corrupt.1" {
+		t.Fatalf("Verify result = %+v", result)
+	}
+	if got, err := os.ReadFile(result.QuarantinePath); err != nil || string(got) != "corrupt" {
+		t.Fatalf("quarantine = %q, err=%v", got, err)
+	}
+	if got, err := os.ReadFile(dest + ".corrupt"); err != nil || string(got) != "older corrupt copy" {
+		t.Fatalf("existing quarantine changed: %q, err=%v", got, err)
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatalf("original corrupt path still exists: %v", err)
+	}
+	if snap, ok := eng.Snapshot(h); !ok || snap.State != StatePaused || snap.BytesCompleted != 0 || !strings.Contains(snap.Note, "checksum mismatch") {
+		t.Fatalf("snapshot = %+v, ok=%v; want paused checksum failure", snap, ok)
+	}
+}
+
+func TestVerifyDirectRequiresChecksum(t *testing.T) {
+	payload := []byte("unverified direct download")
+	ts := serveISO(t, payload, nil)
+	eng := newDirectTestEngine(t)
+
+	h, err := eng.AddDirect(ts.URL+"/image.iso", "image.iso", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	awaitDirect(t, eng, func(s Snapshot) bool { return s.Hash == h && s.State == StateDone }, 10*time.Second)
+	if _, err := eng.Verify(context.Background(), h); !errors.Is(err, ErrNoChecksum) {
+		t.Fatalf("Verify error = %v, want ErrNoChecksum", err)
+	}
+}
+
+func TestVerifyDirectReportsMissingFileWithoutChangingState(t *testing.T) {
+	payload := []byte("completed direct download")
+	ts := serveISO(t, payload, nil)
+	eng := newDirectTestEngine(t)
+
+	h, err := eng.AddDirect(ts.URL+"/image.iso", "image.iso", sumHex(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := awaitDirect(t, eng, func(s Snapshot) bool { return s.Hash == h && s.State == StateDone }, 10*time.Second)
+	if err := os.Remove(filepath.Join(eng.cfg.DownloadDir, "image.iso")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eng.Verify(context.Background(), h); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Verify error = %v, want missing file", err)
+	}
+	if after, ok := eng.Snapshot(h); !ok || after.State != StateDone || after.BytesCompleted != before.BytesCompleted || after.Length != before.Length {
+		t.Fatalf("snapshot after filesystem error = %+v, ok=%v; want %+v", after, ok, before)
+	}
+}
+
+func TestVerifyDirectHonorsCanceledContext(t *testing.T) {
+	payload := make([]byte, 1<<20)
+	if _, err := rand.Read(payload); err != nil {
+		t.Fatal(err)
+	}
+	ts := serveISO(t, payload, nil)
+	eng := newDirectTestEngine(t)
+
+	h, err := eng.AddDirect(ts.URL+"/image.iso", "image.iso", sumHex(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	awaitDirect(t, eng, func(s Snapshot) bool { return s.Hash == h && s.State == StateDone }, 10*time.Second)
+	before, _ := eng.Snapshot(h)
+	dest := filepath.Join(eng.cfg.DownloadDir, "image.iso")
+	if err := os.Truncate(dest, int64(len(payload)/2)); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := eng.Verify(ctx, h); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Verify error = %v, want context.Canceled", err)
+	}
+	if snap, ok := eng.Snapshot(h); !ok || snap.State != StateDone || snap.BytesCompleted != before.BytesCompleted || snap.Length != before.Length {
+		t.Fatalf("snapshot = %+v, ok=%v; canceled verification must restore %+v", snap, ok, before)
 	}
 }

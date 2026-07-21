@@ -33,12 +33,13 @@ type directItem struct {
 	downloadDir string
 	dataPath    string
 
-	length  int64 // total bytes; 0 until the server reports it
-	done    int64
-	state   TorrentState
-	note    string             // short human status, e.g. a checksum failure
-	cancel  context.CancelFunc // nil while paused
-	samples ring
+	length       int64 // total bytes; 0 until the server reports it
+	done         int64
+	state        TorrentState
+	note         string             // short human status, e.g. a checksum failure
+	cancel       context.CancelFunc // nil while paused
+	verifyCancel context.CancelFunc
+	samples      ring
 }
 
 // directClient has no overall timeout - an ISO download runs for minutes to
@@ -77,6 +78,10 @@ func (e *Engine) AddDirectWithOptions(url, name, sum string, opts AddOptions) (m
 	if !ok {
 		return metainfo.Hash{}, fmt.Errorf("unsafe file name %q", name)
 	}
+	existingSize, existingDone := int64(0), false
+	if fi, err := os.Stat(dataPath); err == nil && fi.Mode().IsRegular() {
+		existingSize, existingDone = fi.Size(), true
+	}
 	h := directHash(url)
 
 	e.mu.Lock()
@@ -95,6 +100,10 @@ func (e *Engine) AddDirectWithOptions(url, name, sum string, opts AddOptions) (m
 		state: StateDownloading,
 	}
 	e.direct[h] = it
+	if existingDone {
+		it.done, it.length, it.state = existingSize, existingSize, StateDone
+		return h, nil
+	}
 	e.startDirectLocked(it)
 	return h, nil
 }
@@ -127,6 +136,10 @@ func (e *Engine) runDirect(ctx context.Context, it *directItem) {
 	// already on disk from an earlier run (e.g. resumed from state.json)
 	if fi, err := os.Stat(dest); err == nil {
 		e.mu.Lock()
+		if it.state == StateVerifying {
+			e.mu.Unlock()
+			return
+		}
 		it.done, it.length, it.state, it.cancel = fi.Size(), fi.Size(), StateDone, nil
 		e.mu.Unlock()
 		return
@@ -372,4 +385,167 @@ func (e *Engine) removeDirect(h metainfo.Hash, it *directItem, deleteData bool) 
 		return err1
 	}
 	return nil
+}
+
+func (e *Engine) verifyDirectDownload(ctx context.Context, h metainfo.Hash) (result VerifyResult, err error) {
+	e.mu.Lock()
+	if e.closing {
+		e.mu.Unlock()
+		return result, errors.New("engine is closing")
+	}
+	it, ok := e.direct[h]
+	if !ok {
+		e.mu.Unlock()
+		return result, errors.New("unknown download")
+	}
+	if it.state == StateVerifying {
+		e.mu.Unlock()
+		return result, ErrVerificationInProgress
+	}
+	if it.state != StateDone {
+		e.mu.Unlock()
+		return result, ErrVerificationIncomplete
+	}
+	expected := strings.TrimSpace(strings.ToLower(it.sha256))
+	if expected == "" {
+		e.mu.Unlock()
+		return result, ErrNoChecksum
+	}
+	dest := it.dataPath
+	if dest == "" {
+		dest, ok = safeDataPath(it.downloadDir, it.name)
+		if !ok {
+			e.mu.Unlock()
+			return result, errors.New("download path is unavailable")
+		}
+	}
+	e.mu.Unlock()
+
+	fi, err := os.Stat(dest)
+	if err != nil {
+		return result, err
+	}
+	if !fi.Mode().IsRegular() {
+		return result, fmt.Errorf("verify %s: not a regular file", dest)
+	}
+
+	e.mu.Lock()
+	current, ok := e.direct[h]
+	if !ok || current != it {
+		e.mu.Unlock()
+		return result, errors.New("download changed during verification")
+	}
+	if it.state == StateVerifying {
+		e.mu.Unlock()
+		return result, ErrVerificationInProgress
+	}
+	if it.state != StateDone {
+		e.mu.Unlock()
+		return result, ErrVerificationIncomplete
+	}
+	if it.cancel != nil {
+		it.cancel()
+		it.cancel = nil
+	}
+	previousDone, previousLength, previousNote := it.done, it.length, it.note
+	verifyCtx, cancel := context.WithCancel(ctx)
+	it.state = StateVerifying
+	it.note = "checking SHA256"
+	it.verifyCancel = cancel
+	e.vwg.Add(1)
+	e.mu.Unlock()
+
+	defer func() {
+		cancel()
+		e.mu.Lock()
+		if current, exists := e.direct[h]; exists && current == it {
+			if it.state == StateVerifying {
+				it.done, it.length, it.state = previousDone, previousLength, StateDone
+				it.note = previousNote
+			}
+			it.verifyCancel = nil
+		}
+		e.mu.Unlock()
+		e.vwg.Done()
+	}()
+
+	return e.verifyDirectFile(verifyCtx, h, it, dest, expected, fi.Size())
+}
+
+func (e *Engine) verifyDirectFile(ctx context.Context, h metainfo.Hash, it *directItem, dest, expected string, size int64) (VerifyResult, error) {
+	var result VerifyResult
+	f, err := os.Open(dest)
+	if err != nil {
+		return result, err
+	}
+	defer f.Close()
+
+	hasher := sha256.New()
+	buf := make([]byte, 128<<10)
+	for {
+		select {
+		case <-ctx.Done():
+			return result, ctx.Err()
+		default:
+		}
+		n, readErr := f.Read(buf)
+		if n > 0 {
+			if _, err := hasher.Write(buf[:n]); err != nil {
+				return result, err
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return result, readErr
+		}
+	}
+
+	got := hex.EncodeToString(hasher.Sum(nil))
+	if got == expected {
+		e.mu.Lock()
+		if current, ok := e.direct[h]; ok && current == it {
+			it.done, it.length, it.state = size, size, StateDone
+			it.note = ""
+		}
+		e.mu.Unlock()
+		return result, nil
+	}
+
+	quarantine, err := nextQuarantinePath(dest)
+	if err != nil {
+		return result, err
+	}
+	if err := os.Rename(dest, quarantine); err != nil {
+		return result, fmt.Errorf("quarantine corrupt download: %w", err)
+	}
+
+	result.ChecksumMismatch = true
+	result.NeedsRepair = true
+	result.QuarantinePath = quarantine
+	e.mu.Lock()
+	if current, ok := e.direct[h]; ok && current == it {
+		it.done, it.length, it.state, it.cancel = 0, size, StatePaused, nil
+		it.note = "checksum mismatch - moved to " + filepath.Base(quarantine) + "; press p to retry"
+	}
+	e.mu.Unlock()
+	return result, nil
+}
+
+func nextQuarantinePath(dest string) (string, error) {
+	base := dest + ".corrupt"
+	for i := 0; ; i++ {
+		candidate := base
+		if i > 0 {
+			candidate = fmt.Sprintf("%s.%d", base, i)
+		}
+		_, err := os.Lstat(candidate)
+		switch {
+		case os.IsNotExist(err):
+			return candidate, nil
+		case err != nil:
+			return "", err
+		}
+	}
 }

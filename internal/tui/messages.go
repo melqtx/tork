@@ -7,6 +7,7 @@ import (
 
 	"github.com/anacrolix/torrent/metainfo"
 	"github.com/melqtx/tork/internal/aggregator"
+	"github.com/melqtx/tork/internal/engine"
 	"github.com/melqtx/tork/internal/provider"
 )
 
@@ -59,6 +60,15 @@ type proxyCheckMsg struct {
 // holds the new snapshot, so only the error travels.
 type healthDoneMsg struct{ err error }
 
+type verifyDoneMsg struct {
+	hash   metainfo.Hash
+	magnet string
+	result engine.VerifyResult
+	err    error
+}
+
+type clearVerifyNoticeMsg struct{ gen int }
+
 // waitForResult pumps one item off the search results channel into the tea
 // loop, then re-arms itself from Update - the idiomatic streaming pattern.
 func waitForResult(ch <-chan provider.Result) tea.Cmd {
@@ -101,4 +111,8 @@ func clearErrCmd() tea.Cmd {
 // confirmation needs less dwell time than an error.
 func clearYankCmd(gen int) tea.Cmd {
 	return tea.Tick(1500*time.Millisecond, func(time.Time) tea.Msg { return clearYankMsg{gen: gen} })
+}
+
+func clearVerifyNoticeCmd(gen int) tea.Cmd {
+	return tea.Tick(3*time.Second, func(time.Time) tea.Msg { return clearVerifyNoticeMsg{gen: gen} })
 }

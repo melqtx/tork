@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -110,6 +111,12 @@ func (a *App) updateDownloads(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	items := a.downloadItems()
 	rows := a.downloadListRows()
+	if verificationBlocksKey(key.String()) {
+		if it, ok := a.selectedDownload(items); ok && it.State == engine.StateVerifying {
+			a.errText = "verification in progress"
+			return a, clearErrCmd()
+		}
+	}
 	switch key.String() {
 	case "q":
 		return a, tea.Quit
@@ -178,6 +185,15 @@ func (a *App) updateDownloads(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
+func verificationBlocksKey(key string) bool {
+	switch key {
+	case "p", "s", "v", "m", "r", "x", "d":
+		return true
+	default:
+		return false
+	}
+}
+
 func yankDownloadValue(what, value string) tea.Cmd {
 	return func() tea.Msg {
 		text := strings.TrimSpace(value)
@@ -232,6 +248,17 @@ func revealDownload(it downloadItem) tea.Cmd {
 // after a copy lands on the clipboard.
 func yankToast(what string) string {
 	return styleYankBox.Render(styleBrand.Render("yanked ") + styleDim.Render(what))
+}
+
+func verifyNoticeToast(message string, warn bool) string {
+	color := colBrand
+	textStyle := styleOK
+	if warn {
+		color = colAmber
+		textStyle = styleBest
+	}
+	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(color).Padding(0, 2)
+	return box.Render(textStyle.Render(message))
 }
 
 // overlayBottomRight splices toast into base's bottom-right corner, keeping
@@ -421,7 +448,10 @@ func (a *App) toggleSeed(it downloadItem) tea.Cmd {
 	}
 	next := !it.Seed
 	if it.Live {
-		a.eng.SetSeeding(it.Hash, next)
+		if err := a.eng.SetSeeding(it.Hash, next); err != nil {
+			a.errText = "seed change failed: " + err.Error()
+			return clearErrCmd()
+		}
 		a.downloads.snaps = a.eng.Snapshots()
 	}
 	if e := a.st.Find(it.Magnet); e != nil {
@@ -437,7 +467,10 @@ func (a *App) togglePause(it downloadItem) tea.Cmd {
 		return clearErrCmd()
 	}
 	if it.Live && it.State != engine.StatePaused {
-		a.eng.Pause(it.Hash)
+		if err := a.eng.Pause(it.Hash); err != nil {
+			a.errText = "pause failed: " + err.Error()
+			return clearErrCmd()
+		}
 		if e := a.st.Find(it.Magnet); e != nil {
 			e.Paused = true
 		}
@@ -448,57 +481,129 @@ func (a *App) togglePause(it downloadItem) tea.Cmd {
 		a.errText = "resume failed: " + err.Error()
 		return clearErrCmd()
 	}
-	if e := a.st.Find(it.Magnet); e != nil {
-		e.Paused = false
+	if a.st != nil {
+		if e := a.st.Find(it.Magnet); e != nil {
+			e.Paused = false
+		}
 	}
 	a.downloads.snaps = a.eng.Snapshots()
 	return tea.Batch(a.saveState(), a.ensureTick())
 }
 
 func (a *App) verifyDownload(it downloadItem) tea.Cmd {
-	if it.State == engine.StateMissing {
+	switch it.State {
+	case engine.StateVerifying:
+		a.errText = "verification already in progress"
+		return clearErrCmd()
+	case engine.StateMissing:
 		a.errText = "missing data - relink to existing files first"
 		return clearErrCmd()
+	case engine.StateDone, engine.StateSeeding:
+	default:
+		a.errText = "verification is available after the download completes"
+		return clearErrCmd()
 	}
-	if it.Live {
-		if err := a.eng.Remove(it.Hash, false); err != nil {
+
+	h := it.Hash
+	if !it.Live {
+		var err error
+		h, err = a.activateDownload(it)
+		if err != nil {
 			a.errText = "verify failed: " + err.Error()
 			return clearErrCmd()
 		}
 	}
-	if err := a.resumeDownload(it); err != nil {
-		a.errText = "verify failed: " + err.Error()
-		return clearErrCmd()
-	}
-	if e := a.st.Find(it.Magnet); e != nil {
-		e.Paused = false
+	if a.st != nil {
+		if e := a.st.Find(it.Magnet); e != nil {
+			e.Paused = false
+		}
 	}
 	a.downloads.snaps = a.eng.Snapshots()
-	return tea.Batch(a.saveState(), a.ensureTick())
+	magnet := it.Magnet
+	return tea.Batch(a.saveState(), a.ensureTick(), func() tea.Msg {
+		result, err := a.eng.Verify(context.Background(), h)
+		return verifyDoneMsg{hash: h, magnet: magnet, result: result, err: err}
+	})
+}
+
+func (a *App) onVerifyDone(msg verifyDoneMsg) tea.Cmd {
+	a.downloads.snaps = a.eng.Snapshots()
+	var save tea.Cmd
+	if a.st != nil {
+		if entry := a.st.Find(msg.magnet); entry != nil && applyVerifyResultToEntry(entry, msg.result) {
+			save = a.saveState()
+		}
+	}
+	if msg.err != nil {
+		a.verifyNotice = ""
+		a.errText = "verify failed: " + msg.err.Error()
+		return tea.Batch(save, a.ensureTick(), clearErrCmd())
+	}
+
+	a.verifyNotice, a.verifyNoticeWarn = verificationNotice(msg.result)
+	a.verifyNoticeGen++
+	return tea.Batch(save, a.ensureTick(), clearVerifyNoticeCmd(a.verifyNoticeGen))
+}
+
+func applyVerifyResultToEntry(entry *state.Entry, result engine.VerifyResult) bool {
+	if !result.NeedsRepair && !result.ChecksumMismatch {
+		return false
+	}
+	changed := entry.Done || entry.CompletedAt != nil || entry.Paused != result.ChecksumMismatch
+	entry.Done = false
+	entry.CompletedAt = nil
+	entry.Paused = result.ChecksumMismatch
+	if result.ChecksumMismatch && entry.BytesCompleted != 0 {
+		entry.BytesCompleted = 0
+		changed = true
+	}
+	return changed
+}
+
+func verificationNotice(result engine.VerifyResult) (string, bool) {
+	switch {
+	case result.ChecksumMismatch:
+		return "checksum failed - moved to " + filepath.Base(result.QuarantinePath), true
+	case result.BadPieces == 1:
+		return "1 bad piece - redownloading", true
+	case result.BadPieces > 1:
+		return fmt.Sprintf("%d bad pieces - redownloading", result.BadPieces), true
+	case result.NeedsRepair:
+		return "incomplete data found - redownloading", true
+	default:
+		return "verified - all data is valid", false
+	}
 }
 
 func (a *App) resumeDownload(it downloadItem) error {
+	_, err := a.activateDownload(it)
+	return err
+}
+
+func (a *App) activateDownload(it downloadItem) (metainfo.Hash, error) {
 	downloadDir := it.DownloadDir
 	if downloadDir == "" {
 		downloadDir = a.cfg.DownloadDir
 	}
 	seed := it.Seed
 	opts := engine.AddOptions{DownloadDir: downloadDir, Seed: &seed}
-	if e := a.st.Find(it.Magnet); e != nil {
-		opts.Excluded = e.Excluded
+	if a.st != nil {
+		if e := a.st.Find(it.Magnet); e != nil {
+			opts.Excluded = e.Excluded
+		}
 	}
 	if strings.HasPrefix(it.Magnet, "http://") || strings.HasPrefix(it.Magnet, "https://") {
 		name := it.Name
 		sum := ""
-		if e := a.st.Find(it.Magnet); e != nil {
-			name = e.Name
-			sum = e.SHA256
+		if a.st != nil {
+			if e := a.st.Find(it.Magnet); e != nil {
+				name = e.Name
+				sum = e.SHA256
+			}
 		}
-		_, err := a.eng.AddDirectWithOptions(it.Magnet, name, sum, opts)
-		return err
+		return a.eng.AddDirectWithOptions(it.Magnet, name, sum, opts)
 	}
-	_, err := a.eng.AddWithOptions(it.Magnet, opts)
-	return err
+	return a.eng.AddWithOptions(it.Magnet, opts)
 }
 
 func (a *App) removeDownload(it downloadItem, deleteData bool) error {
@@ -734,7 +839,9 @@ func (a *App) viewDownloads() string {
 		help = d.prompt.input.View()
 	}
 	body := b.String()
-	if a.yanked != "" {
+	if a.verifyNotice != "" {
+		body = overlayBottomRight(padLines(body, a.bodyHeight()), verifyNoticeToast(a.verifyNotice, a.verifyNoticeWarn), width)
+	} else if a.yanked != "" {
 		body = overlayBottomRight(padLines(body, a.bodyHeight()), yankToast(a.yanked), width)
 	}
 	return a.chrome(a.downloadsContext(items), body, help)
@@ -837,6 +944,8 @@ func stateBadge(s engine.TorrentState) string {
 		return styleFaint.Render(s.String())
 	case engine.StateMissing:
 		return styleErr.Render(s.String())
+	case engine.StateVerifying:
+		return styleBest.Render(s.String())
 	case engine.StateFetchingMeta, engine.StatePreviewing:
 		return styleDim.Render(s.String())
 	}

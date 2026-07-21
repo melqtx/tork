@@ -1,12 +1,17 @@
 package tui
 
 import (
+	"context"
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/anacrolix/torrent/metainfo"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/melqtx/tork/internal/config"
 	"github.com/melqtx/tork/internal/engine"
 	"github.com/melqtx/tork/internal/state"
@@ -121,5 +126,124 @@ func TestOverlayBottomRightKeepsLeftContent(t *testing.T) {
 	}
 	if !strings.HasPrefix(got[4], "ee") || !strings.HasSuffix(got[4], "YY") {
 		t.Fatalf("toast row 2 = %q, want left content kept and YY right-aligned", got[4])
+	}
+}
+
+func TestVerificationGuardsDoNotPersistRefusedPauseOrSeed(t *testing.T) {
+	t.Setenv("XDG_DOWNLOAD_DIR", filepath.Join(t.TempDir(), "Downloads"))
+	cfg, err := config.LoadFrom(filepath.Join(t.TempDir(), ".tork"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng, err := engine.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Close()
+	magnet := "magnet:?xt=urn:btih:" + strings.Repeat("c", 40)
+	h, err := eng.Add(magnet, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	verifyErr := make(chan error, 1)
+	go func() {
+		_, err := eng.Verify(ctx, h)
+		verifyErr <- err
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if snap, ok := eng.Snapshot(h); ok && snap.State == engine.StateVerifying {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("verification did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	st := &state.State{}
+	st.Upsert(state.Entry{Magnet: magnet, Seed: state.Bool(false)})
+	app := &App{cfg: cfg, eng: eng, st: st}
+	stale := downloadItem{Hash: h, Magnet: magnet, State: engine.StateDone, Live: true}
+	app.togglePause(stale)
+	if st.Entries[0].Paused || !strings.Contains(app.errText, "verification") {
+		t.Fatalf("pause guard persisted=%v err=%q", st.Entries[0].Paused, app.errText)
+	}
+	app.toggleSeed(stale)
+	if *st.Entries[0].Seed || !strings.Contains(app.errText, "verification") {
+		t.Fatalf("seed guard persisted=%v err=%q", *st.Entries[0].Seed, app.errText)
+	}
+	cancel()
+	<-verifyErr
+}
+
+func TestVerifyPersistedDirectUsesActivatedHashAndShowsResult(t *testing.T) {
+	t.Setenv("XDG_DOWNLOAD_DIR", filepath.Join(t.TempDir(), "Downloads"))
+	cfg, err := config.LoadFrom(filepath.Join(t.TempDir(), ".tork"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng, err := engine.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Close()
+	payload := []byte("persisted ISO")
+	if err := os.MkdirAll(cfg.DownloadDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(cfg.DownloadDir, "image.iso")
+	if err := os.WriteFile(path, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	url := "https://example.invalid/image.iso"
+	st := &state.State{}
+	st.Upsert(state.Entry{Magnet: url, Name: "image.iso", SHA256: fmt.Sprintf("%x", sha256.Sum256(payload)), Done: true, DownloadDir: cfg.DownloadDir, DataPath: path})
+	app := New(cfg, eng, nil, st, nil)
+	it := app.itemFromEntry(&st.Entries[0], 0)
+	cmd := app.verifyDownload(it)
+	if cmd == nil {
+		t.Fatal("verify command is nil")
+	}
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("verify command message = %T, want tea.BatchMsg", msg)
+	}
+	var done verifyDoneMsg
+	found := false
+	for _, child := range batch {
+		if msg := child(); msg != nil {
+			if verifyMsg, ok := msg.(verifyDoneMsg); ok {
+				done, found = verifyMsg, true
+			}
+		}
+	}
+	if !found || done.err != nil || done.hash == (metainfo.Hash{}) {
+		t.Fatalf("verify result found=%v msg=%+v", found, done)
+	}
+	app.onVerifyDone(done)
+	if app.verifyNotice != "verified - all data is valid" || app.verifyNoticeWarn {
+		t.Fatalf("verify notice=%q warn=%v", app.verifyNotice, app.verifyNoticeWarn)
+	}
+}
+
+func TestApplyVerifyResultClearsCompletionState(t *testing.T) {
+	now := time.Now()
+	entry := state.Entry{Done: true, Paused: true, BytesCompleted: 42, CompletedAt: &now}
+	if !applyVerifyResultToEntry(&entry, engine.VerifyResult{NeedsRepair: true, BadPieces: 1}) {
+		t.Fatal("torrent repair did not report a state change")
+	}
+	if entry.Done || entry.CompletedAt != nil || entry.Paused || entry.BytesCompleted != 42 {
+		t.Fatalf("torrent repair entry = %+v", entry)
+	}
+	entry.Done, entry.BytesCompleted, entry.CompletedAt = true, 42, &now
+	if !applyVerifyResultToEntry(&entry, engine.VerifyResult{NeedsRepair: true, ChecksumMismatch: true}) {
+		t.Fatal("direct mismatch did not report a state change")
+	}
+	if entry.Done || entry.CompletedAt != nil || !entry.Paused || entry.BytesCompleted != 0 {
+		t.Fatalf("direct mismatch entry = %+v", entry)
 	}
 }

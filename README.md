@@ -154,8 +154,10 @@ manual check.
 - **home** type to search, `↑↓` pick a destination, `enter` go
 - **isos** `↑↓` browse, `enter` grab the latest official image
 - **results** `enter` preview/get, `D` grab now, `Y` copy magnet, `/` filter, `o` sort, `v` graph
-- **downloads** `p` pause/resume, `s` seed, `v` verify, `m` move, `r` relink, `y` copy full path, `Y` copy magnet, `x` remove, `d` delete data, `o` reveal in Finder (macOS)
+- **downloads** `p` pause/resume, `s` seed, `v` fully verify completed data, `m` move, `r` relink, `y` copy full path, `Y` copy magnet, `x` remove, `d` delete data, `o` reveal in Finder (macOS)
 - `tab` cycle, `esc` back, `^c` quit
+
+Verification rehashes completed torrent pieces. Direct downloads require a published SHA256; mismatches are moved aside as `.corrupt`, `.corrupt.1`, and so on before retrying.
 
 ## Autopilot (WIP)
 
