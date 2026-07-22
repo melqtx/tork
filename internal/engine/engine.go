@@ -37,6 +37,7 @@ const (
 	StateDone
 	StatePaused
 	StateMissing
+	StateVerifying
 )
 
 func (s TorrentState) String() string {
@@ -55,8 +56,27 @@ func (s TorrentState) String() string {
 		return "paused"
 	case StateMissing:
 		return "missing data"
+	case StateVerifying:
+		return "verifying"
 	}
 	return "unknown"
+}
+
+var (
+	ErrVerificationInProgress = errors.New("verification already in progress")
+	ErrVerificationIncomplete = errors.New("verification requires a completed download")
+	ErrNoChecksum             = errors.New("no checksum available for this download")
+)
+
+// VerifyResult describes data-integrity failures separately from operational
+// errors. Bad data is a successful verification result: torrents repair it
+// automatically, while direct downloads are quarantined for an explicit retry.
+type VerifyResult struct {
+	CheckedPieces    int
+	BadPieces        int
+	NeedsRepair      bool
+	ChecksumMismatch bool
+	QuarantinePath   string
 }
 
 // FileInfo describes one file inside a torrent, for the preview screen.
@@ -177,6 +197,8 @@ type item struct {
 	metadataStart  time.Time
 	trackerCount   int
 	samples        ring
+	verifying      bool
+	verifyCancel   context.CancelFunc
 }
 
 type Engine struct {
@@ -188,7 +210,9 @@ type Engine struct {
 	direct  map[metainfo.Hash]*directItem // plain-HTTPS downloads (see direct.go)
 	dwg     sync.WaitGroup                // running direct-download goroutines
 	mwg     sync.WaitGroup                // metadata-ready/cache goroutines
+	vwg     sync.WaitGroup                // manual verification calls
 	pcClose func()                        // bolt piece-completion closer
+	closing bool
 
 	torrentHTTP *http.Client
 	directHTTP  *http.Client
@@ -763,16 +787,22 @@ func (e *Engine) StartDownload(h metainfo.Hash, excluded []int) {
 
 // Pause drops the torrent from the client but keeps its entry; piece
 // completion makes resuming cheap. A direct download keeps its .part file.
-func (e *Engine) Pause(h metainfo.Hash) {
+func (e *Engine) Pause(h metainfo.Hash) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if d, ok := e.direct[h]; ok {
+		if d.state == StateVerifying {
+			return ErrVerificationInProgress
+		}
 		pauseDirectLocked(d)
-		return
+		return nil
 	}
 	it, ok := e.items[h]
 	if !ok || it.paused || it.t == nil {
-		return
+		return nil
+	}
+	if it.verifying {
+		return ErrVerificationInProgress
 	}
 	it.name = displayName(it)
 	it.length = torrentLength(it.t)
@@ -781,6 +811,7 @@ func (e *Engine) Pause(h metainfo.Hash) {
 	it.t = nil
 	it.paused = true
 	it.samples = ring{}
+	return nil
 }
 
 // Resume re-adds a paused torrent, or restarts a paused direct download from
@@ -788,6 +819,10 @@ func (e *Engine) Pause(h metainfo.Hash) {
 func (e *Engine) Resume(h metainfo.Hash) error {
 	e.mu.Lock()
 	if d, ok := e.direct[h]; ok {
+		if d.state == StateVerifying {
+			e.mu.Unlock()
+			return ErrVerificationInProgress
+		}
 		if d.state == StatePaused {
 			e.startDirectLocked(d)
 		}
@@ -798,6 +833,10 @@ func (e *Engine) Resume(h metainfo.Hash) error {
 	if !ok || !it.paused {
 		e.mu.Unlock()
 		return nil
+	}
+	if it.verifying {
+		e.mu.Unlock()
+		return ErrVerificationInProgress
 	}
 	magnet := it.magnet
 	excluded := it.excluded
@@ -810,34 +849,38 @@ func (e *Engine) Resume(h metainfo.Hash) error {
 
 // SetSeeding toggles uploading for a torrent by capping its connections.
 // Direct downloads have nothing to seed; the toggle is inert for them.
-func (e *Engine) SetSeeding(h metainfo.Hash, on bool) {
+func (e *Engine) SetSeeding(h metainfo.Hash, on bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	it, ok := e.items[h]
 	if !ok {
-		return
+		return nil
+	}
+	if it.verifying {
+		return ErrVerificationInProgress
 	}
 	it.seeding = on
 	if it.t == nil {
-		return
+		return nil
 	}
 	if on {
-		max := e.cfg.MaxConnections
-		if max <= 0 {
-			max = 50
-		}
-		it.t.SetMaxEstablishedConns(max)
+		it.t.SetMaxEstablishedConns(e.maxTorrentConnections())
 		it.noSeedApplied = false
 	} else {
 		it.t.SetMaxEstablishedConns(0)
 		it.noSeedApplied = true
 	}
+	return nil
 }
 
 // Remove drops the torrent and forgets it; optionally deletes downloaded data.
 func (e *Engine) Remove(h metainfo.Hash, deleteData bool) error {
 	e.mu.Lock()
 	if d, ok := e.direct[h]; ok {
+		if d.state == StateVerifying {
+			e.mu.Unlock()
+			return ErrVerificationInProgress
+		}
 		e.mu.Unlock()
 		return e.removeDirect(h, d, deleteData)
 	}
@@ -845,6 +888,10 @@ func (e *Engine) Remove(h metainfo.Hash, deleteData bool) error {
 	if !ok {
 		e.mu.Unlock()
 		return nil
+	}
+	if it.verifying {
+		e.mu.Unlock()
+		return ErrVerificationInProgress
 	}
 	var dataPath string
 	if deleteData {
@@ -867,6 +914,177 @@ func (e *Engine) Remove(h metainfo.Hash, deleteData bool) error {
 		return os.RemoveAll(dataPath)
 	}
 	return nil
+}
+
+// Verify re-hashes a completed download. Torrent hash failures are marked
+// incomplete by anacrolix and are made downloadable again before this method
+// returns. Direct checksum mismatches are quarantined and left paused for an
+// explicit retry. Bad data is reported in VerifyResult rather than as an error.
+func (e *Engine) Verify(ctx context.Context, h metainfo.Hash) (result VerifyResult, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	e.mu.Lock()
+	if e.closing {
+		e.mu.Unlock()
+		return result, errors.New("engine is closing")
+	}
+	if _, ok := e.direct[h]; ok {
+		e.mu.Unlock()
+		return e.verifyDirectDownload(ctx, h)
+	}
+	it, ok := e.items[h]
+	if !ok {
+		e.mu.Unlock()
+		return result, errors.New("unknown download")
+	}
+	if it.verifying {
+		e.mu.Unlock()
+		return result, ErrVerificationInProgress
+	}
+	if it.paused || it.t == nil {
+		e.mu.Unlock()
+		return result, ErrVerificationIncomplete
+	}
+	t := it.t
+	verifyCtx, cancel := context.WithCancel(ctx)
+	var badPieceIndexes []int
+	it.verifying = true
+	it.verifyCancel = cancel
+	e.vwg.Add(1)
+	e.mu.Unlock()
+
+	defer func() {
+		cancel()
+		e.mu.Lock()
+		if current, exists := e.items[h]; exists && current == it {
+			it.verifying = false
+			it.verifyCancel = nil
+			if result.NeedsRepair && it.t == t {
+				t.SetMaxEstablishedConns(e.maxTorrentConnections())
+				if spec, err := torrent.TorrentSpecFromMagnetUri(it.magnet); err == nil {
+					peers := make([]torrent.PeerInfo, 0, len(spec.PeerAddrs))
+					for _, addr := range spec.PeerAddrs {
+						peers = append(peers, torrent.PeerInfo{Addr: torrent.StringAddr(addr), Source: torrent.PeerSourceDirect, Trusted: true})
+					}
+					t.AddPeers(peers)
+				}
+				for _, index := range badPieceIndexes {
+					t.Piece(index).SetPriority(torrent.PiecePriorityNow)
+				}
+				it.noSeedApplied = false
+			}
+		}
+		e.mu.Unlock()
+		e.vwg.Done()
+	}()
+
+	select {
+	case <-verifyCtx.Done():
+		return result, verifyCtx.Err()
+	case <-t.Closed():
+		return result, errors.New("torrent closed during verification")
+	case <-t.GotInfo():
+	}
+	if t.Info() == nil {
+		return result, errors.New("torrent metadata unavailable")
+	}
+
+	e.mu.Lock()
+	if current, exists := e.items[h]; !exists || current != it || it.t != t {
+		e.mu.Unlock()
+		return result, errors.New("download changed during verification")
+	}
+	length := effectiveLength(it)
+	done := t.BytesCompleted()
+	excluded := append([]int(nil), it.excluded...)
+	e.mu.Unlock()
+	if length <= 0 || done < length {
+		return result, ErrVerificationIncomplete
+	}
+
+	desired := make([]bool, int(t.NumPieces()))
+	excludedSet := make(map[int]bool, len(excluded))
+	for _, index := range excluded {
+		excludedSet[index] = true
+	}
+	for fileIndex, file := range t.Files() {
+		if excludedSet[fileIndex] {
+			continue
+		}
+		for pieceIndex := file.BeginPieceIndex(); pieceIndex < file.EndPieceIndex(); pieceIndex++ {
+			desired[pieceIndex] = true
+		}
+	}
+	var pieces []int
+	for i := 0; i < int(t.NumPieces()); i++ {
+		if !desired[i] {
+			continue
+		}
+		state := t.PieceState(i)
+		if !state.Complete || state.Hashing || state.QueuedForHash || state.Marking {
+			return result, ErrVerificationIncomplete
+		}
+		pieces = append(pieces, i)
+	}
+	if len(pieces) == 0 {
+		return result, ErrVerificationIncomplete
+	}
+
+	for _, index := range pieces {
+		state, err := verifyTorrentPiece(verifyCtx, t, index)
+		if err != nil {
+			return result, fmt.Errorf("verify piece %d: %w", index, err)
+		}
+		result.CheckedPieces++
+		if !state.Complete {
+			result.BadPieces++
+			result.NeedsRepair = true
+			badPieceIndexes = append(badPieceIndexes, index)
+		}
+	}
+
+	e.mu.Lock()
+	if current, exists := e.items[h]; exists && current == it && it.t == t {
+		length = effectiveLength(it)
+		done = t.BytesCompleted()
+	}
+	e.mu.Unlock()
+	if length > 0 && done < length {
+		result.NeedsRepair = true
+	}
+	return result, nil
+}
+
+func verifyTorrentPiece(ctx context.Context, t *torrent.Torrent, index int) (torrent.PieceState, error) {
+	sub := t.SubscribePieceStateChanges()
+	defer sub.Close()
+	if err := t.Piece(index).VerifyDataContext(ctx); err != nil {
+		return torrent.PieceState{}, err
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return torrent.PieceState{}, ctx.Err()
+		case <-t.Closed():
+			return torrent.PieceState{}, errors.New("torrent closed")
+		case change, ok := <-sub.Values:
+			if !ok {
+				return torrent.PieceState{}, errors.New("piece-state subscription closed")
+			}
+			if change.Index == index && !change.Hashing && !change.QueuedForHash && !change.Marking {
+				return change.PieceState, nil
+			}
+		}
+	}
+}
+
+func (e *Engine) maxTorrentConnections() int {
+	if e.cfg.MaxConnections > 0 {
+		return e.cfg.MaxConnections
+	}
+	return 50
 }
 
 // safeDataPath resolves a torrent's data path under dir, refusing anything that
@@ -1007,6 +1225,11 @@ func (e *Engine) snapshot(h metainfo.Hash, it *item, now time.Time) Snapshot {
 
 	it.samples.push(sample{at: now, bytes: s.BytesCompleted})
 	s.SpeedBps = it.samples.speedBps()
+	if it.verifying {
+		s.State = StateVerifying
+		s.Note = "checking completed pieces"
+		return s
+	}
 
 	switch {
 	case t.Info() == nil:
@@ -1047,14 +1270,24 @@ func (e *Engine) ListenPort() int { return e.client.LocalPort() }
 // stopping direct downloads (their .part files resume on next start).
 func (e *Engine) Close() {
 	e.mu.Lock()
+	e.closing = true
 	for _, d := range e.direct {
 		if d.cancel != nil {
 			d.cancel()
 			d.cancel = nil
 		}
+		if d.verifyCancel != nil {
+			d.verifyCancel()
+		}
+	}
+	for _, it := range e.items {
+		if it.verifyCancel != nil {
+			it.verifyCancel()
+		}
 	}
 	e.mu.Unlock()
 	e.dwg.Wait()
+	e.vwg.Wait()
 
 	e.client.Close()
 	<-e.client.Closed()

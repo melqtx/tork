@@ -1,7 +1,10 @@
 package engine
 
 import (
+	"bytes"
+	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -96,7 +99,8 @@ func TestEngineDownloadsFromLocalSeeder(t *testing.T) {
 
 	magnet := fmt.Sprintf("magnet:?xt=urn:btih:%s&x.pe=127.0.0.1:%d",
 		mi.HashInfoBytes().HexString(), seederPort)
-	h, err := eng.Add(magnet, nil)
+	seed := false
+	h, err := eng.AddWithOptions(magnet, AddOptions{Seed: &seed})
 	if err != nil {
 		eng.Close()
 		t.Fatal(err)
@@ -110,6 +114,47 @@ func TestEngineDownloadsFromLocalSeeder(t *testing.T) {
 	if err != nil || len(got) != len(payload) {
 		eng.Close()
 		t.Fatalf("downloaded file: %d bytes, err=%v; want %d bytes", len(got), err, len(payload))
+	}
+
+	validResult, err := eng.Verify(context.Background(), h)
+	if err != nil {
+		eng.Close()
+		t.Fatalf("verify valid torrent: %v", err)
+	}
+	if validResult.CheckedPieces == 0 || validResult.BadPieces != 0 || validResult.NeedsRepair {
+		eng.Close()
+		t.Fatalf("valid Verify result = %+v", validResult)
+	}
+
+	payloadPath := filepath.Join(cfg.DownloadDir, "payload.dat")
+	// Repeat the non-seeding recovery transition so peer reconnection and piece
+	// reprioritization are exercised after every completed repair.
+	for attempt := 0; attempt < 5; attempt++ {
+		corrupt := append([]byte(nil), payload...)
+		corrupt[(attempt+1)*(len(corrupt)/6)] ^= 0xff
+		if err := os.Chmod(payloadPath, 0o644); err != nil {
+			eng.Close()
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(payloadPath, corrupt, 0o644); err != nil {
+			eng.Close()
+			t.Fatal(err)
+		}
+		badResult, err := eng.Verify(context.Background(), h)
+		if err != nil {
+			eng.Close()
+			t.Fatalf("verify corrupt torrent (attempt %d): %v", attempt, err)
+		}
+		if badResult.BadPieces == 0 || !badResult.NeedsRepair {
+			eng.Close()
+			t.Fatalf("corrupt Verify result (attempt %d) = %+v", attempt, badResult)
+		}
+		awaitComplete(t, eng, h, 60*time.Second)
+		repaired, err := os.ReadFile(payloadPath)
+		if err != nil || !bytes.Equal(repaired, payload) {
+			eng.Close()
+			t.Fatalf("repaired payload differs on attempt %d, err=%v", attempt, err)
+		}
 	}
 	eng.Close() // releases the bolt piece-completion lock
 
@@ -156,6 +201,56 @@ func TestAddWithOptionsRecordsDownloadDir(t *testing.T) {
 	}
 	if snap.DownloadDir != dir {
 		t.Fatalf("DownloadDir = %q, want %q", snap.DownloadDir, dir)
+	}
+}
+
+func TestVerifyWaitsForMetadataAndHonorsContext(t *testing.T) {
+	cfg := strictProxyConfig(t, "127.0.0.1:1")
+	eng, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Close()
+
+	h, err := eng.Add("magnet:?xt=urn:btih:"+strings.Repeat("b", 40), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	verifyErr := make(chan error, 1)
+	go func() {
+		_, err := eng.Verify(ctx, h)
+		verifyErr <- err
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if snap, ok := eng.Snapshot(h); ok && snap.State == StateVerifying {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("verification did not enter verifying state")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := eng.Verify(context.Background(), h); !errors.Is(err, ErrVerificationInProgress) {
+		t.Fatalf("duplicate Verify error = %v, want ErrVerificationInProgress", err)
+	}
+	if err := eng.Pause(h); !errors.Is(err, ErrVerificationInProgress) {
+		t.Fatalf("Pause error = %v, want ErrVerificationInProgress", err)
+	}
+	if err := eng.SetSeeding(h, true); !errors.Is(err, ErrVerificationInProgress) {
+		t.Fatalf("SetSeeding error = %v, want ErrVerificationInProgress", err)
+	}
+	if err := eng.Remove(h, false); !errors.Is(err, ErrVerificationInProgress) {
+		t.Fatalf("Remove error = %v, want ErrVerificationInProgress", err)
+	}
+	cancel()
+	if err := <-verifyErr; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Verify error = %v, want context canceled", err)
+	}
+	if snap, ok := eng.Snapshot(h); !ok || snap.State != StateFetchingMeta {
+		t.Fatalf("snapshot = %+v, ok=%v; want metadata fetch restored", snap, ok)
 	}
 }
 

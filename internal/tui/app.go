@@ -46,10 +46,13 @@ type App struct {
 	proxyCheck proxyChecker
 	startup    tea.Cmd // optional one-shot action requested on the command line
 
-	errText      string
-	yanked       string    // field just copied ("path", "magnet"); drives the toast
-	yankGen      int       // invalidates stale toast-clear timers when yanks overlap
-	lastTickSave time.Time // throttles progress-only state.json writes on the tick
+	errText          string
+	yanked           string // field just copied ("path", "magnet"); drives the toast
+	yankGen          int    // invalidates stale toast-clear timers when yanks overlap
+	verifyNotice     string
+	verifyNoticeWarn bool
+	verifyNoticeGen  int
+	lastTickSave     time.Time // throttles progress-only state.json writes on the tick
 }
 
 func New(cfg *config.Config, eng *engine.Engine, agg *aggregator.Aggregator, st *state.State, hs *health.Store) *App {
@@ -166,6 +169,15 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case healthDoneMsg:
 		return a, a.onHealthDone(msg)
 
+	case verifyDoneMsg:
+		return a, a.onVerifyDone(msg)
+
+	case clearVerifyNoticeMsg:
+		if msg.gen == a.verifyNoticeGen {
+			a.verifyNotice = ""
+		}
+		return a, nil
+
 	case proxyCheckMsg:
 		a.onProxyCheck(msg)
 		return a, nil
@@ -212,7 +224,7 @@ func (a *App) tickShouldContinue() bool {
 	}
 	for _, s := range a.downloads.snaps {
 		switch s.State {
-		case engine.StateFetchingMeta, engine.StatePreviewing, engine.StateDownloading, engine.StateSeeding:
+		case engine.StateFetchingMeta, engine.StatePreviewing, engine.StateDownloading, engine.StateSeeding, engine.StateVerifying:
 			return true
 		}
 	}
