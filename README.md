@@ -153,9 +153,22 @@ manual check.
 
 - **home** type to search, `↑↓` pick a destination, `enter` go
 - **isos** `↑↓` browse, `enter` grab the latest official image
-- **results** `enter` preview/get, `D` grab now, `Y` copy magnet, `/` filter, `o` sort, `v` graph
+- **results** `enter` preview/get, `D` grab now, `Y` copy magnet, `/` smart filter, `o` sort, `v` graph
 - **downloads** `p` pause/resume, `s` seed, `v` fully verify completed data, `m` move, `r` relink, `y` copy full path, `Y` copy magnet, `x` remove, `d` delete data, `o` reveal in Finder (macOS)
 - `tab` cycle, `esc` back, `^c` quit
+
+Result filters compose with ordinary fuzzy title matching. Press `/` and try:
+
+```text
+res:1080p seeders:>20 size:<8gb
+linux codec:x265 -source:cam
+provider:nyaa category:anime is:trusted
+is:hdr -is:dv
+```
+
+Available fields are `res`, `seeders`, `size`, `source`, `codec`, `provider`,
+and `category`. Attributes include `is:trusted`, `is:hdr`, `is:dv`, and
+`is:pack`; prefix any structured filter with `-` to negate it.
 
 Verification rehashes completed torrent pieces. Direct downloads require a published SHA256; mismatches are moved aside as `.corrupt`, `.corrupt.1`, and so on before retrying.
 
