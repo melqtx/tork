@@ -52,6 +52,7 @@ type resultsModel struct {
 	win       listWindow      // cursor over visible (flat mode)
 	filtering bool
 	filterIn  textinput.Model
+	filterErr string
 	status    map[string]aggregator.StatusEvent
 	searching bool
 	resolving bool
@@ -75,6 +76,7 @@ type resultsModel struct {
 func newResultsModel(w rank.Weights) resultsModel {
 	fi := textinput.New()
 	fi.Prompt = "/"
+	fi.Placeholder = "title · res:1080p · seeders:>20 · size:<8gb"
 	fi.CharLimit = 100
 	return resultsModel{
 		seen:        make(map[string]bool),
@@ -397,6 +399,11 @@ func (r *resultsModel) resort() {
 // refreshFilter recomputes visible rows and match highlights.
 func (r *resultsModel) refreshFilter() {
 	term := strings.TrimSpace(r.filterIn.Value())
+	filter := parseResultFilter(term)
+	r.filterErr = ""
+	if filter.err != nil {
+		r.filterErr = filter.err.Error()
+	}
 	r.matched = make(map[int][]int)
 	if term == "" {
 		r.visible = r.visible[:0]
@@ -404,15 +411,23 @@ func (r *resultsModel) refreshFilter() {
 			r.visible = append(r.visible, i)
 		}
 	} else {
-		titles := make([]string, len(r.rows))
+		var eligible []int
+		var titles []string
 		for i, row := range r.rows {
-			titles[i] = row.res.Title
+			if filter.matches(row) {
+				eligible = append(eligible, i)
+				titles = append(titles, row.res.Title)
+			}
 		}
-		matches := fuzzy.Find(term, titles)
 		r.visible = r.visible[:0]
-		for _, m := range matches {
-			r.visible = append(r.visible, m.Index)
-			r.matched[m.Index] = m.MatchedIndexes
+		if filter.text == "" {
+			r.visible = append(r.visible, eligible...)
+		} else {
+			for _, match := range fuzzy.Find(filter.text, titles) {
+				idx := eligible[match.Index]
+				r.visible = append(r.visible, idx)
+				r.matched[idx] = match.MatchedIndexes
+			}
 		}
 	}
 	if r.win.cursor >= len(r.visible) {
@@ -511,12 +526,17 @@ func (a *App) viewResults() string {
 	switch {
 	case r.filtering:
 		help = r.filterIn.View()
+		if r.filterErr != "" {
+			help += "  " + styleErr.Render(r.filterErr)
+		} else {
+			help += "  " + styleFaint.Render("try res:1080p  seeders:>20  size:<8gb  is:trusted")
+		}
 	case r.resolving:
 		help = styleDim.Render("resolving magnet…")
 	case r.grouped:
-		help = hints(hint("↑↓", "move"), hint("←→/space", "fold"), hint("enter", "get"), hint("D", "direct"), hint("o", r.sort.String()), hint("v", "flat"), hint("/", "filter"), hint("esc", "back"))
+		help = hints(hint("↑↓", "move"), hint("←→/space", "fold"), hint("enter", "get"), hint("D", "direct"), hint("o", r.sort.String()), hint("v", "flat"), hint("/", "smart filter"), hint("esc", "back"))
 	default:
-		help = hints(hint("↑↓", "move"), hint("enter", "get"), hint("Y", "magnet"), hint("/", "filter"), hint("o", r.sort.String()), hint("v", "graph"), hint("esc", "back"))
+		help = hints(hint("↑↓", "move"), hint("enter", "get"), hint("Y", "magnet"), hint("/", "smart filter"), hint("o", r.sort.String()), hint("v", "graph"), hint("esc", "back"))
 	}
 
 	ctx := "results"
@@ -588,7 +608,11 @@ func (r *resultsModel) statusLine(agg *aggregator.Aggregator) string {
 	var head string
 	switch n := len(r.rows); {
 	case n > 0:
-		head = styleOK.Render(fmt.Sprintf("%d results", n))
+		if strings.TrimSpace(r.filterIn.Value()) != "" {
+			head = styleOK.Render(fmt.Sprintf("%d/%d results", len(r.visible), n))
+		} else {
+			head = styleOK.Render(fmt.Sprintf("%d results", n))
+		}
 	case r.searching:
 		head = styleDim.Render("searching…")
 	case hidden > 0:
