@@ -119,6 +119,109 @@ func TestEnterQueuesMagnetBeforeMetadataArrives(t *testing.T) {
 	}
 }
 
+// The common torrent is one folder holding the payload, so the cursor opens on
+// a folder row with everything already selected. Enter there must download, not
+// fold, or every download costs an extra hop onto a file row first.
+func TestPreviewEnterOnFolderStartsDownload(t *testing.T) {
+	t.Setenv("XDG_DOWNLOAD_DIR", filepath.Join(t.TempDir(), "Downloads"))
+	cfg, err := config.LoadFrom(filepath.Join(t.TempDir(), ".tork"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng, err := engine.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Close()
+
+	magnet := "magnet:?xt=urn:btih:2222222222222222222222222222222222222222"
+	h, owned, err := eng.AddForPreview(magnet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &App{
+		cfg: cfg, eng: eng, st: &state.State{}, screen: screenPreview,
+		preview: newPreviewModel(h, magnet, "Movie", screenResults, owned),
+	}
+	p := &a.preview
+	p.files = []engine.FileInfo{
+		{Index: 0, Path: "Movie/movie.mp4", Length: 1 << 30},
+		{Index: 1, Path: "Movie/poster.jpg", Length: 52 << 10},
+	}
+	p.tree = buildFileTree(p.files)
+	p.rebuildRows()
+	p.ready = true
+
+	if n := p.currentNode(); n == nil || n.fileIdx >= 0 {
+		t.Fatalf("cursor opened on %+v, want the folder row", n)
+	}
+	if _, cmd := a.updatePreview(tea.KeyMsg{Type: tea.KeyEnter}); cmd == nil {
+		t.Fatal("enter on a folder returned no download command")
+	}
+	if p.rows[0].collapsed {
+		t.Fatal("enter folded the folder instead of downloading it")
+	}
+	if len(a.st.Entries) != 1 {
+		t.Fatalf("state = %+v; want the whole folder queued", a.st.Entries)
+	}
+	// Queuing returns to the list the preview was opened from, so the next
+	// result is one keypress away rather than a trip through downloads.
+	if a.screen != screenResults {
+		t.Fatalf("screen = %v, want a return to the results list", a.screen)
+	}
+	if a.toast.text == "" {
+		t.Fatal("queuing gave no confirmation toast")
+	}
+	if snap, ok := eng.Snapshot(h); !ok || snap.State == engine.StatePreviewing {
+		t.Fatalf("snapshot = %+v, ok=%v; torrent never left preview", snap, ok)
+	}
+}
+
+func TestJunkFilesSkipsExtrasButKeepsPayload(t *testing.T) {
+	const gib = 1 << 30
+	movie := []engine.FileInfo{
+		{Index: 0, Path: "Movie/movie.mkv", Length: 2 * gib},
+		{Index: 1, Path: "Movie/www.YTS.MX.jpg", Length: 52 << 10},
+		{Index: 2, Path: "Movie/RARBG.txt", Length: 30},
+		{Index: 3, Path: "Movie/movie.nfo", Length: 4 << 10},
+		{Index: 4, Path: "Movie/Sample/sample.mkv", Length: 40 << 20},
+		{Index: 5, Path: "Movie/movie.en.srt", Length: 60 << 10},
+		{Index: 6, Path: "Movie/cover.jpg", Length: 900 << 10},
+	}
+	skip := junkFiles(movie)
+	for _, idx := range []int{1, 2, 3, 4} {
+		if !skip[idx] {
+			t.Errorf("%s stayed selected, want it skipped as an extra", movie[idx].Path)
+		}
+	}
+	// Subtitles and artwork are things people actually want; only names that
+	// advertise a tracker or a sample are fair game.
+	for _, idx := range []int{0, 5, 6} {
+		if skip[idx] {
+			t.Errorf("%s was skipped, want it kept", movie[idx].Path)
+		}
+	}
+
+	// A torrent that is nothing but images is a photo set, not a pile of ads.
+	photos := []engine.FileInfo{
+		{Index: 0, Path: "set/www.host.com-01.jpg", Length: 2 << 20},
+		{Index: 1, Path: "set/www.host.com-02.jpg", Length: 2 << 20},
+	}
+	if got := junkFiles(photos); len(got) != 0 {
+		t.Errorf("junkFiles skipped %d of %d files in an all-extras torrent", len(got), len(photos))
+	}
+
+	// Size is a veto, never a reason: a big file keeps its selection even when
+	// its name looks like an extra.
+	bigSample := []engine.FileInfo{
+		{Index: 0, Path: "pack/sample.mkv", Length: gib},
+		{Index: 1, Path: "pack/feature.mkv", Length: gib},
+	}
+	if junkFiles(bigSample)[0] {
+		t.Error("skipped a sample that is half the torrent")
+	}
+}
+
 func TestPreviewCancelDoesNotRemoveNonOwnedTorrent(t *testing.T) {
 	t.Setenv("XDG_DOWNLOAD_DIR", filepath.Join(t.TempDir(), "Downloads"))
 	cfg, err := config.LoadFrom(filepath.Join(t.TempDir(), ".tork"))

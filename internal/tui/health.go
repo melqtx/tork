@@ -213,7 +213,7 @@ func (a *App) viewHealth() string {
 		}
 	}))
 
-	help := hints(hint("↑↓", "move"), hint("r", "re-check"), hint("esc", "back"), hint("q", "quit"))
+	help := a.keyStrip(a.helpBudget(a.contentWidth()))
 	if a.compass.probing {
 		help = styleDim.Render("checking providers and swarms…")
 	}

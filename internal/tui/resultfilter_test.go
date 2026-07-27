@@ -132,3 +132,24 @@ func TestRefreshFilterSurfacesErrorAndShowsNoRows(t *testing.T) {
 		t.Fatalf("visible = %v, want none", model.visible)
 	}
 }
+
+// A merged row fronts one index but represents several. Filtering by any of
+// them must find it, or cross-index merging would quietly make provider:
+// filters lie about which indexes carry a torrent.
+func TestProviderFilterMatchesMergedSources(t *testing.T) {
+	row := scoredRow{res: provider.Result{
+		Title:    "Some Release 1080p",
+		Provider: "yts",
+		AlsoOn:   []string{"1337x", "knaben"},
+	}}
+
+	for _, name := range []string{"yts", "knaben", "1337x", "KNABEN"} {
+		if !parseResultFilter("provider:" + name).matches(row) {
+			t.Errorf("provider:%s did not match a row merged from %v + %s",
+				name, row.res.AlsoOn, row.res.Provider)
+		}
+	}
+	if parseResultFilter("provider:nyaa").matches(row) {
+		t.Error("provider:nyaa matched a row no nyaa listing contributed to")
+	}
+}

@@ -7,6 +7,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/melqtx/tork/internal/provider"
 )
 
 // Palette - a restrained, cozy dark theme: one soft green accent, layered
@@ -93,6 +95,30 @@ func providerTag(name string) string {
 // providerBracket renders a provider as a small tag: [knaben].
 func providerBracket(name string) string {
 	return styleFaint.Render("[") + providerTag(name) + styleFaint.Render("]")
+}
+
+// sourceTag names the index a row came from, with a faint "+N" when other
+// indexes listed the same infohash. The count reads as corroboration rather
+// than clutter: a release three indexes agree on is rarely the risky pick, and
+// its magnet is carrying all three tracker sets.
+func sourceTag(res provider.Result, plain bool) string {
+	tag := providerTag(res.Provider)
+	if plain {
+		tag = res.Provider
+	}
+	return tag + mergeSuffix(res, plain)
+}
+
+// sourceCol is sourceTag in the graph view's bracketed form: [knaben]+2.
+func sourceCol(res provider.Result, plain bool) string {
+	return providerCol(res.Provider, plain) + mergeSuffix(res, plain)
+}
+
+func mergeSuffix(res provider.Result, plain bool) string {
+	if len(res.AlsoOn) == 0 {
+		return ""
+	}
+	return colorize(plain, styleFaint, fmt.Sprintf("+%d", len(res.AlsoOn)))
 }
 
 // torkLogo is a clean, flat half-block wordmark - minimal and calm, in the

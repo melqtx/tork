@@ -71,7 +71,20 @@ func parseFilterToken(token string) (func(scoredRow) bool, bool, error) {
 			err = fmt.Errorf("%s needs a provider name", key)
 		} else {
 			predicate = func(row scoredRow) bool {
-				return strings.EqualFold(row.res.Provider, value)
+				// A merged row fronts one index but stands for several, so it
+				// has to answer for every index that listed it. Matching only
+				// the keeper would make provider:knaben hide a torrent knaben
+				// really does carry, just because a better-scoring listing of
+				// the same infohash fronts the row.
+				if strings.EqualFold(row.res.Provider, value) {
+					return true
+				}
+				for _, also := range row.res.AlsoOn {
+					if strings.EqualFold(also, value) {
+						return true
+					}
+				}
+				return false
 			}
 		}
 	case "category", "cat":

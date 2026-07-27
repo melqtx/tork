@@ -23,7 +23,44 @@ import (
 	"github.com/melqtx/tork/internal/state"
 )
 
-const finderRevealAvailable = runtime.GOOS == "darwin"
+// Desktop handoff. "reveal" shows a download in the platform's file manager;
+// "open" hands it to whatever normally opens that file type, which is the
+// natural last step of a finished download and saves a trip to a file manager.
+var revealAvailable = runtime.GOOS == "darwin" || runtime.GOOS == "linux" || runtime.GOOS == "windows"
+
+// revealLabel names the action in the platform's own words.
+var revealLabel = func() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "reveal in Finder"
+	case "windows":
+		return "show in Explorer"
+	default:
+		return "open the containing folder"
+	}
+}()
+
+func revealCommand(path string) (string, []string) {
+	switch runtime.GOOS {
+	case "darwin":
+		return "open", []string{"-R", path}
+	case "windows":
+		return "explorer", []string{"/select," + path}
+	default:
+		return "xdg-open", []string{filepath.Dir(path)}
+	}
+}
+
+func openCommand(path string) (string, []string) {
+	switch runtime.GOOS {
+	case "windows":
+		return "explorer", []string{path}
+	case "darwin":
+		return "open", []string{path}
+	default:
+		return "xdg-open", []string{path}
+	}
+}
 
 type downloadItem struct {
 	Hash           metainfo.Hash
@@ -173,8 +210,12 @@ func (a *App) updateDownloads(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if it, ok := a.selectedDownload(items); ok {
 			d.confirmRemove = &removeConfirm{item: it, deleteData: true}
 		}
+	case "enter":
+		if it, ok := a.selectedDownload(items); ok {
+			return a, openDownload(it)
+		}
 	case "o":
-		if finderRevealAvailable {
+		if revealAvailable {
 			it, ok := a.selectedDownload(items)
 			if !ok {
 				break
@@ -232,33 +273,34 @@ func clipboardSequence(text string) osc52.Sequence {
 }
 
 func revealDownload(it downloadItem) tea.Cmd {
+	return desktopHandoff("reveal", it.DataPath, false, revealCommand)
+}
+
+func openDownload(it downloadItem) tea.Cmd {
+	return desktopHandoff("open", it.DataPath, true, openCommand)
+}
+
+// desktopHandoff shells out to the platform's file manager or opener.
+// mustExist guards the open case: handing the desktop a path that is not on
+// disk yet pops an error dialog outside the terminal, which is a confusing way
+// to find out a download has not finished.
+func desktopHandoff(verb, path string, mustExist bool, command func(string) (string, []string)) tea.Cmd {
 	return func() tea.Msg {
-		path := strings.TrimSpace(it.DataPath)
+		path = strings.TrimSpace(path)
 		if path == "" {
-			return revealDownloadMsg{err: fmt.Errorf("reveal needs a known saved path")}
+			return revealDownloadMsg{err: fmt.Errorf("%s needs a known saved path", verb)}
 		}
-		if err := exec.Command("open", "-R", path).Run(); err != nil {
-			return revealDownloadMsg{err: fmt.Errorf("reveal failed: %w", err)}
+		if mustExist {
+			if _, err := os.Stat(path); err != nil {
+				return revealDownloadMsg{err: fmt.Errorf("nothing to open yet at %s", filepath.Base(path))}
+			}
+		}
+		name, args := command(path)
+		if err := exec.Command(name, args...).Run(); err != nil {
+			return revealDownloadMsg{err: fmt.Errorf("%s failed: %w", verb, err)}
 		}
 		return revealDownloadMsg{}
 	}
-}
-
-// yankToast is the small confirmation box flashed in the bottom-right corner
-// after a copy lands on the clipboard.
-func yankToast(what string) string {
-	return styleYankBox.Render(styleBrand.Render("yanked ") + styleDim.Render(what))
-}
-
-func verifyNoticeToast(message string, warn bool) string {
-	color := colBrand
-	textStyle := styleOK
-	if warn {
-		color = colAmber
-		textStyle = styleBest
-	}
-	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(color).Padding(0, 2)
-	return box.Render(textStyle.Render(message))
 }
 
 // overlayBottomRight splices toast into base's bottom-right corner, keeping
@@ -535,14 +577,17 @@ func (a *App) onVerifyDone(msg verifyDoneMsg) tea.Cmd {
 		}
 	}
 	if msg.err != nil {
-		a.verifyNotice = ""
+		a.toast.text = ""
 		a.errText = "verify failed: " + msg.err.Error()
 		return tea.Batch(save, a.ensureTick(), clearErrCmd())
 	}
 
-	a.verifyNotice, a.verifyNoticeWarn = verificationNotice(msg.result)
-	a.verifyNoticeGen++
-	return tea.Batch(save, a.ensureTick(), clearVerifyNoticeCmd(a.verifyNoticeGen))
+	notice, warn := verificationNotice(msg.result)
+	tone := toastOK
+	if warn {
+		tone = toastWarn
+	}
+	return tea.Batch(save, a.ensureTick(), a.showToast(notice, tone, toastLong))
 }
 
 func applyVerifyResultToEntry(entry *state.Entry, result engine.VerifyResult) bool {
@@ -823,11 +868,7 @@ func (a *App) viewDownloads() string {
 		b.WriteString("\n" + rule(width) + "\n" + detail)
 	}
 
-	helpParts := []string{hint("↑↓", "move"), hint("p", "pause"), hint("s", "seed"), hint("v", "verify"), hint("m", "move"), hint("r", "relink"), hint("y/Y", "copy"), hint("x", "remove"), hint("d", "delete"), hint("H", "health"), hint("esc", "search")}
-	if finderRevealAvailable {
-		helpParts = append(helpParts, hint("o", "reveal"))
-	}
-	help := hints(helpParts...)
+	help := a.keyStrip(a.helpBudget(width))
 	if d.confirmRemove != nil {
 		verb := "remove from list"
 		if d.confirmRemove.deleteData {
@@ -838,13 +879,7 @@ func (a *App) viewDownloads() string {
 	if d.prompt.action != pathActionNone {
 		help = d.prompt.input.View()
 	}
-	body := b.String()
-	if a.verifyNotice != "" {
-		body = overlayBottomRight(padLines(body, a.bodyHeight()), verifyNoticeToast(a.verifyNotice, a.verifyNoticeWarn), width)
-	} else if a.yanked != "" {
-		body = overlayBottomRight(padLines(body, a.bodyHeight()), yankToast(a.yanked), width)
-	}
-	return a.chrome(a.downloadsContext(items), body, help)
+	return a.chrome(a.downloadsContext(items), b.String(), help)
 }
 
 func (a *App) renderDownloadItem(it downloadItem, selected bool, width int) string {
@@ -896,10 +931,13 @@ func (a *App) downloadDetail(it downloadItem, width int) string {
 	if it.Seed {
 		seed = "on"
 	}
-	keys := "m move folder · r relink existing files · y copy full path · Y copy magnet · d delete data"
-	if finderRevealAvailable {
-		keys += " · o reveal in Finder"
+	// The full list lives in the `?` card now, so this line stays short and
+	// cannot drift out of step with what the keys actually do.
+	keys := "enter open"
+	if revealAvailable {
+		keys += " · o " + revealLabel
 	}
+	keys += " · ? all keys"
 	lines := []string{
 		styleFaint.Render("path  ") + styleDim.Render(truncate(path, width-7)),
 		styleFaint.Render("root  ") + styleDim.Render(truncate(it.DownloadDir, width-7)),
@@ -918,19 +956,67 @@ func (a *App) downloadListRows() int {
 	return max(1, body/4)
 }
 
+// downloadsContext summarises the list in the header: what is moving, what is
+// waiting on you, and what is finished, so the shape of the queue is readable
+// without counting rows.
 func (a *App) downloadsContext(items []downloadItem) string {
-	ctx := "downloads"
-	allDone := true
+	var active, paused, done, missing int
 	for _, it := range items {
-		if it.State != engine.StateSeeding && it.State != engine.StateDone {
-			allDone = false
-			break
+		switch it.State {
+		case engine.StateDownloading, engine.StateFetchingMeta, engine.StateVerifying:
+			active++
+		case engine.StatePaused:
+			paused++
+		case engine.StateSeeding, engine.StateDone:
+			done++
+		case engine.StateMissing:
+			missing++
 		}
 	}
-	if allDone {
-		ctx = "downloads · all done"
+	if active == 0 && paused == 0 && missing == 0 && done > 0 {
+		return "downloads · all done"
 	}
-	return ctx
+	parts := []string{}
+	if active > 0 {
+		parts = append(parts, fmt.Sprintf("%d active", active))
+	}
+	if paused > 0 {
+		parts = append(parts, fmt.Sprintf("%d paused", paused))
+	}
+	if missing > 0 {
+		parts = append(parts, fmt.Sprintf("%d missing", missing))
+	}
+	if done > 0 {
+		parts = append(parts, fmt.Sprintf("%d done", done))
+	}
+	if len(parts) == 0 {
+		return "downloads"
+	}
+	return "downloads · " + strings.Join(parts, " · ")
+}
+
+// activityChip is the header's live transfer summary. It exists because
+// queuing a download no longer jumps to the downloads screen: without it, a
+// download started from the results list would vanish from view entirely.
+func (a *App) activityChip() string {
+	active, seeding, speed := 0, 0, 0.0
+	for _, s := range a.downloads.snaps {
+		switch s.State {
+		case engine.StateDownloading, engine.StateFetchingMeta:
+			active++
+			speed += s.SpeedBps
+		case engine.StateSeeding:
+			seeding++
+		}
+	}
+	switch {
+	case active > 0:
+		return styleOK.Render(fmt.Sprintf("↓ %d", active)) + styleDim.Render("  "+humanSpeed(speed))
+	case seeding > 0:
+		return styleFaint.Render(fmt.Sprintf("↑ %d seeding", seeding))
+	default:
+		return ""
+	}
 }
 
 // stateBadge renders a torrent state with a state-appropriate color.

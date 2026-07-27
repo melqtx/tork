@@ -32,6 +32,24 @@ func TestGraphLeafAligns(t *testing.T) {
 	}
 }
 
+// TestGraphLeafAlignsWithMergedSources keeps the provider column wide enough
+// for the "+N" a merged row carries: the longest provider tag plus a merge
+// suffix must still fit the cell, or every column right of it shifts on the
+// rows that were folded together.
+func TestGraphLeafAlignsWithMergedSources(t *testing.T) {
+	r := &resultsModel{rows: []scoredRow{
+		{res: provider.Result{Provider: "knaben", Size: "1 GiB", Seeders: 1, Magnet: "magnet:?x"}},
+		{res: provider.Result{Provider: "tpb-movies", Size: "12.3 GiB", Seeders: 1200, Magnet: "magnet:?x",
+			AlsoOn: []string{"yts", "knaben"}}},
+		{res: provider.Result{Provider: "yts", Size: "1.0 GiB", Seeders: 5, Magnet: "magnet:?x"}},
+	}}
+	g := &group{rowIdx: []int{0, 1, 2}}
+	plain := lipgloss.Width(r.graphLeaf(g, 0, 100, false))
+	if merged := lipgloss.Width(r.graphLeaf(g, 1, 100, false)); merged != plain {
+		t.Fatalf("merged leaf width %d, plain leaf %d (the +N pushed the columns)", merged, plain)
+	}
+}
+
 // TestGroupsDefaultCollapsed locks in the "collapse harder" behavior: a
 // multi-source group arrives collapsed (one nav line), and a user's expand is
 // preserved across the streaming rebuild.

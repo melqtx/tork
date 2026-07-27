@@ -30,8 +30,9 @@ type Result struct {
 	Magnet    string // empty when only a detail page is known
 	DetailURL string // set by providers that resolve magnets lazily
 	Provider  string
-	Trusted   bool   // provider flagged this as a trusted/verified release
-	Category  string // provider's category label when known (e.g. "Movies", "XXX")
+	Trusted   bool     // provider flagged this as a trusted/verified release
+	Category  string   // provider's category label when known (e.g. "Movies", "XXX")
+	AlsoOn    []string // other providers that listed this same infohash (see Merge)
 }
 
 // Key identifies a result for deduplication across retries.

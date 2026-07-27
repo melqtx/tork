@@ -217,7 +217,15 @@ func (d Deps) gather(ctx context.Context, query string) []provider.Result {
 			}
 		}
 	}
-	return out
+	// Collapse listings of the same torrent from different indexes before
+	// anything is ranked or capped, so a release carried by four providers
+	// competes for one slot instead of four - and the magnet finally queued
+	// announces to every tracker those four listings knew about.
+	merged := provider.MergeAll(out)
+	if n := len(out) - len(merged); n > 0 {
+		fmt.Fprintf(d.Out, "  %-10s · %d duplicate listings merged\n", "dedupe", n)
+	}
+	return merged
 }
 
 // resolve returns a usable magnet, resolving a detail-page result on demand.

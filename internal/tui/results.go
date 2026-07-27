@@ -20,6 +20,7 @@ import (
 // scoredRow is a search result with its parsed tags and computed score cached.
 type scoredRow struct {
 	res   provider.Result
+	hash  string // cached res.InfoHash(); "" for detail-page rows (see insertRow)
 	tags  rank.Tags
 	score float64
 	noisy bool // display-only: dead/cam/off-topic/language-variant, dimmed in the list
@@ -47,6 +48,8 @@ type resultsModel struct {
 	query     string
 	rows      []scoredRow     // sorted by the active sort mode
 	seen      map[string]bool // dedupe across providers/retries
+	hashes    map[string]bool // infohashes already on a row, for cross-provider merging
+	merged    int             // duplicate listings folded into an existing row
 	visible   []int           // indices into rows after fuzzy filter
 	matched   map[int][]int   // row index -> matched rune positions in title
 	win       listWindow      // cursor over visible (flat mode)
@@ -59,11 +62,12 @@ type resultsModel struct {
 	weights   rank.Weights
 	sort      sortMode
 
-	grouped  bool // source-graph view toggle (see graphview.go)
-	groups   []group
-	gwin     listWindow // cursor over the flattened grouped view
-	bestIdx  int        // r.rows index of the single best pick, or -1 (see recomputeBest)
-	meterMax int        // max seeders among visible rows: one shared meter scale
+	grouped       bool // source-graph view toggle (see graphview.go)
+	groups        []group
+	gwin          listWindow // cursor over the flattened grouped view
+	bestIdx       int        // r.rows index of the single best pick, or -1 (see recomputeBest)
+	meterMax      int        // max seeders among visible rows: one shared meter scale
+	resortPending bool       // a merge changed a row's sort key; refreshFilter re-orders
 
 	resultCh <-chan provider.Result
 	statusCh <-chan aggregator.StatusEvent
@@ -80,6 +84,7 @@ func newResultsModel(w rank.Weights) resultsModel {
 	fi.CharLimit = 100
 	return resultsModel{
 		seen:        make(map[string]bool),
+		hashes:      make(map[string]bool),
 		matched:     make(map[int][]int),
 		status:      make(map[string]aggregator.StatusEvent),
 		filterIn:    fi,
@@ -372,17 +377,26 @@ func (a *App) addTorrentCmd(magnet, name string) tea.Cmd {
 	}
 }
 
-// insertRow adds a result keeping rows sorted by the active mode, skipping
-// dupes. It does NOT refresh the view - callers batch a refresh after draining
-// a burst of streamed results, so the O(n) re-filter/re-group runs once per
-// Update rather than once per result.
+// insertRow adds a result keeping rows sorted by the active mode. Two kinds of
+// duplicate are dropped here: the same listing arriving twice (a provider
+// retry), and the same torrent listed by a second index, which is folded into
+// the row that already holds that infohash instead of taking a line of its own.
+//
+// It does NOT refresh the view - callers batch a refresh after draining a burst
+// of streamed results, so the O(n) re-filter/re-group runs once per Update
+// rather than once per result.
 func (r *resultsModel) insertRow(res provider.Result) {
 	if r.seen[res.Key()] {
 		return
 	}
 	r.seen[res.Key()] = true
-	tags := rank.Parse(res.Title)
-	row := scoredRow{res: res, tags: tags, score: rank.Score(res, tags, r.weights), noisy: rank.Noisy(r.query, res.Title, tags, res.Seeders)}
+	row := r.newRow(res)
+	if row.hash != "" && r.hashes[row.hash] && r.mergeRow(row) {
+		return
+	}
+	if row.hash != "" {
+		r.hashes[row.hash] = true
+	}
 	// first position where the existing row is not better than the new one
 	pos := sort.Search(len(r.rows), func(i int) bool { return !r.betterThan(r.rows[i], row) })
 	r.rows = append(r.rows, scoredRow{})
@@ -390,14 +404,65 @@ func (r *resultsModel) insertRow(res provider.Result) {
 	r.rows[pos] = row
 }
 
+// newRow caches everything derived from a result: its infohash identity, parsed
+// tags, score, and noise verdict. Called again after a merge, because folding
+// in another index changes the seeder count and trust flag the score reads.
+func (r *resultsModel) newRow(res provider.Result) scoredRow {
+	tags := rank.Parse(res.Title)
+	return scoredRow{
+		res:   res,
+		hash:  res.InfoHash(),
+		tags:  tags,
+		score: rank.Score(res, tags, r.weights),
+		noisy: rank.Noisy(r.query, res.Title, tags, res.Seeders),
+	}
+}
+
+// mergeRow folds a second index's listing of a torrent already on the list into
+// the existing row, so one torrent occupies one line however many indexes
+// carry it - and, more usefully, so the magnet we hand the engine announces to
+// every tracker any of those indexes knew about.
+//
+// The better-scoring of the two listings keeps the title, which is what the
+// tag parser, the group label, and the ranker all read: whichever index
+// answered first should not get to name the release. Rows are scanned rather
+// than indexed by hash because a sorted insert shifts every position after it,
+// and this only runs on an actual duplicate.
+//
+// Reports whether a row was found. A false means the hash index and the rows
+// disagreed, which nothing can currently cause; the caller then adds the
+// listing as its own row, because showing one torrent twice is a far better
+// failure than dropping a search result on the floor.
+func (r *resultsModel) mergeRow(incoming scoredRow) bool {
+	for i := range r.rows {
+		if r.rows[i].hash != incoming.hash {
+			continue
+		}
+		keep, other := r.rows[i], incoming
+		if other.score > keep.score {
+			keep, other = other, keep
+		}
+		r.rows[i] = r.newRow(provider.Merge(keep.res, other.res))
+		r.merged++
+		r.resortPending = true // a higher seeder count can outrank the row above
+		return true
+	}
+	return false
+}
+
 // resort re-orders all rows after a sort-mode change and rebuilds the view.
 func (r *resultsModel) resort() {
-	sort.SliceStable(r.rows, func(i, j int) bool { return r.betterThan(r.rows[i], r.rows[j]) })
+	r.resortPending = true
 	r.refreshFilter()
 }
 
-// refreshFilter recomputes visible rows and match highlights.
+// refreshFilter recomputes visible rows and match highlights, first re-ordering
+// rows when a merge (or a sort-mode change) invalidated their position.
 func (r *resultsModel) refreshFilter() {
+	if r.resortPending {
+		r.resortPending = false
+		sort.SliceStable(r.rows, func(i, j int) bool { return r.betterThan(r.rows[i], r.rows[j]) })
+	}
 	term := strings.TrimSpace(r.filterIn.Value())
 	filter := parseResultFilter(term)
 	r.filterErr = ""
@@ -512,7 +577,7 @@ func (a *App) viewResults() string {
 				styleSeeders.Render(fmt.Sprintf("%*d", lay.seedW, row.res.Seeders)),
 				styleLeechers.Render(fmt.Sprintf("%*d", lay.leechW, row.res.Leechers)),
 				styleFaint.Render(fmt.Sprintf("%*s", lay.resW, row.tags.Resolution.String())),
-				providerTag(row.res.Provider),
+				sourceTag(row.res, false),
 			)
 			if !selected && row.noisy {
 				line = styleFaint.Render(line)
@@ -533,21 +598,19 @@ func (a *App) viewResults() string {
 		}
 	case r.resolving:
 		help = styleDim.Render("resolving magnet…")
-	case r.grouped:
-		help = hints(hint("↑↓", "move"), hint("←→/space", "fold"), hint("enter", "get"), hint("D", "direct"), hint("o", r.sort.String()), hint("v", "flat"), hint("/", "smart filter"), hint("esc", "back"))
 	default:
-		help = hints(hint("↑↓", "move"), hint("enter", "get"), hint("Y", "magnet"), hint("/", "smart filter"), hint("o", r.sort.String()), hint("v", "graph"), hint("esc", "back"))
+		// Both hand-written hint rows are gone: the strip is generated from the
+		// one keymap table now, so the grouped/flat split lives there. The
+		// "smart filter" rename that landed with the filter syntax moved into
+		// that table with them.
+		help = a.keyStrip(a.helpBudget(width))
 	}
 
 	ctx := "results"
 	if r.query != "" {
 		ctx = "results · " + r.query
 	}
-	body := b.String()
-	if a.yanked != "" {
-		body = overlayBottomRight(padLines(body, a.bodyHeight()), yankToast(a.yanked), width)
-	}
-	return a.chrome(ctx, body, help)
+	return a.chrome(ctx, b.String(), help)
 }
 
 // renderTitle pads/truncates and highlights fuzzy-matched runes.
@@ -626,6 +689,9 @@ func (r *resultsModel) statusLine(agg *aggregator.Aggregator) string {
 	line := head
 	if r.grouped && len(r.groups) > 0 {
 		line += styleFaint.Render(fmt.Sprintf("  · %d groups", len(r.groups)))
+	}
+	if r.merged > 0 {
+		line += styleFaint.Render(fmt.Sprintf("  · %d merged", r.merged))
 	}
 	if hidden > 0 {
 		line += styleFaint.Render(fmt.Sprintf("  · %d hidden", hidden))
