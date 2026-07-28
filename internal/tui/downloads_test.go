@@ -225,8 +225,8 @@ func TestVerifyPersistedDirectUsesActivatedHashAndShowsResult(t *testing.T) {
 		t.Fatalf("verify result found=%v msg=%+v", found, done)
 	}
 	app.onVerifyDone(done)
-	if app.verifyNotice != "verified - all data is valid" || app.verifyNoticeWarn {
-		t.Fatalf("verify notice=%q warn=%v", app.verifyNotice, app.verifyNoticeWarn)
+	if app.toast.text != "verified - all data is valid" || app.toast.tone != toastOK {
+		t.Fatalf("verify toast=%q tone=%v", app.toast.text, app.toast.tone)
 	}
 }
 

@@ -14,6 +14,8 @@ actual swarm, and keep downloads in one calm little terminal app.
 ## What it does
 
 - Search Knaben, YTS, Nyaa, plus your own RSS or Torznab feeds.
+- Fold the same torrent listed on several indexes into a single row, and grab it
+  with every tracker those indexes knew about between them.
 - Group duplicate releases, rank the useful ones, and surface seeders, size,
   source, and noisy results before you download.
 - Preview a magnet, queue it with one key, then pause, verify, seed, move, or
@@ -70,9 +72,12 @@ tork 'https://example.org/linux.iso.torrent'
 tork --torrent-url 'https://example.org/download?id=123'
 ```
 
-Nothing starts downloading until you confirm it. If a bare hash is still
-finding metadata peers, wait to choose individual files or press enter to queue
-the whole torrent immediately. Once metadata arrives, tork keeps a private
+Nothing starts downloading until you confirm it. `enter` takes whatever is
+selected, from wherever the cursor happens to be. Tracker adverts, NFO and
+checksum files, and sample clips start deselected — the header says how many
+were skipped, and `a` puts them back. If a bare hash is still finding metadata
+peers, wait to choose individual files or press enter to queue the whole
+torrent immediately. Once metadata arrives, tork keeps a private
 bounded copy under `~/.tork/metainfo/`, so reopening or resuming that magnet no
 longer depends on finding a metadata peer.
 
@@ -151,11 +156,29 @@ manual check.
 
 ## Keys
 
+Press `?` anywhere for the full list of keys on the current screen. The
+highlights:
+
 - **home** type to search, `↑↓` pick a destination, `enter` go
 - **isos** `↑↓` browse, `enter` grab the latest official image
 - **results** `enter` preview/get, `D` grab now, `Y` copy magnet, `/` smart filter, `o` sort, `v` graph
-- **downloads** `p` pause/resume, `s` seed, `v` fully verify completed data, `m` move, `r` relink, `y` copy full path, `Y` copy magnet, `x` remove, `d` delete data, `o` reveal in Finder (macOS)
-- `tab` cycle, `esc` back, `^c` quit
+- **preview** `enter` download what's selected, `space` toggle a file or folder, `←→` fold, `a`/`n` select all or none
+- **downloads** `enter` open the file, `o` show it in your file manager, `p` pause/resume, `s` seed, `v` fully verify completed data, `m` move, `r` relink, `y` copy full path, `Y` copy magnet, `x` remove, `d` delete data
+- `tab` cycle, `^d` jump to downloads, `esc` back, `^c` quit
+
+Queuing a download leaves you where you are and confirms with a small toast, so
+you can grab several things from one search. The header shows live transfer
+count and speed from every screen.
+
+A result tagged `yts+2` is one torrent that three indexes listed. Rather than
+spend three lines on it, tork keeps the fullest release name, the best swarm
+numbers any of them reported, and — the part that matters once the download
+starts — the combined tracker list, so it announces to every swarm all three
+knew about instead of the slice one listing happened to carry. The status line
+counts how many listings were folded away; press `v` and the detail panel names
+the sources and the tracker total. Results that only link to a details page keep
+their own row: without a magnet there is no infohash to compare, and tork will
+not fetch every page just to find out.
 
 Result filters compose with ordinary fuzzy title matching. Press `/` and try:
 

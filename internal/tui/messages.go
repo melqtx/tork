@@ -44,9 +44,10 @@ type previewReadyMsg struct {
 type tickMsg time.Time
 type clearErrMsg struct{}
 
-// clearYankMsg hides the yank toast; gen must match the App's current yank
-// generation so a timer from an earlier yank can't cut a newer toast short.
-type clearYankMsg struct{ gen int }
+// clearToastMsg hides the transient confirmation box; gen must match the App's
+// current toast generation so a timer from an earlier toast can't cut a newer
+// one short.
+type clearToastMsg struct{ gen int }
 
 // proxyCheckMsg is produced by the bounded, SOCKS-routed egress check. It
 // deliberately carries no egress IP because the status bar only needs to show
@@ -67,7 +68,6 @@ type verifyDoneMsg struct {
 	err    error
 }
 
-type clearVerifyNoticeMsg struct{ gen int }
 
 // waitForResult pumps one item off the search results channel into the tea
 // loop, then re-arms itself from Update - the idiomatic streaming pattern.
@@ -107,12 +107,8 @@ func clearErrCmd() tea.Cmd {
 	return tea.Tick(4*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
 }
 
-// clearYankCmd hides the yank toast; shorter than clearErrCmd because a
-// confirmation needs less dwell time than an error.
-func clearYankCmd(gen int) tea.Cmd {
-	return tea.Tick(1500*time.Millisecond, func(time.Time) tea.Msg { return clearYankMsg{gen: gen} })
-}
-
-func clearVerifyNoticeCmd(gen int) tea.Cmd {
-	return tea.Tick(3*time.Second, func(time.Time) tea.Msg { return clearVerifyNoticeMsg{gen: gen} })
+// clearToastCmd hides a confirmation after its dwell time, which is shorter
+// than clearErrCmd's because a confirmation needs less reading than an error.
+func clearToastCmd(gen int, dwell time.Duration) tea.Cmd {
+	return tea.Tick(dwell, func(time.Time) tea.Msg { return clearToastMsg{gen: gen} })
 }

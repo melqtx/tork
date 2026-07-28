@@ -25,10 +25,11 @@ type previewModel struct {
 	files     []engine.FileInfo
 	tree      *fileNode
 	rows      []*fileNode
-	ready     bool
-	startedAt time.Time
-	excluded  map[int]bool // keyed by FileInfo.Index
-	win       listWindow
+	ready       bool
+	startedAt   time.Time
+	excluded    map[int]bool // keyed by FileInfo.Index
+	autoSkipped int          // extras deselected on arrival, reported in the header
+	win         listWindow
 }
 
 func newPreviewModel(h metainfo.Hash, magnet, name string, from screen, owned bool) previewModel {
@@ -46,6 +47,8 @@ func (p *previewModel) refresh(eng *engine.Engine) {
 	if files, ok := eng.Files(p.hash); ok {
 		p.files = files
 		p.tree = buildFileTree(files)
+		p.excluded = junkFiles(files)
+		p.autoSkipped = len(p.excluded)
 		p.rebuildRows()
 		if inferred := p.inferredName(); inferred != "" && strings.HasPrefix(p.name, "magnet · ") {
 			p.name = inferred
@@ -148,12 +151,10 @@ func (a *App) updatePreview(msg tea.Msg) (tea.Model, tea.Cmd) {
 			p.excluded[f.Index] = true
 		}
 	case "enter":
-		if n := p.currentNode(); n != nil && n.fileIdx < 0 {
-			n.collapsed = !n.collapsed
-			p.rebuildRows()
-			p.win.clamp(len(p.rows), rows)
-			return a, nil
-		}
+		// enter always means "get what is selected", wherever the cursor sits.
+		// Folding is ←→ only: enter on a folder used to fold it, which made the
+		// common case (everything already selected, cursor on the root folder)
+		// need an extra hop onto a file row before the download would start.
 		if p.selectedBytes() == 0 {
 			a.errText = "select at least one file"
 			return a, clearErrCmd()
@@ -161,6 +162,68 @@ func (a *App) updatePreview(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.startPreviewDownload()
 	}
 	return a, nil
+}
+
+// junkFiles picks out the extras that ride along with a release - the tracker's
+// ad image, NFO and checksum files, sample clips - so the common case is one
+// keypress instead of hunting down a 52 KiB advert to untick.
+//
+// The rules are deliberately name-driven and narrow. A cover image, a subtitle
+// track, or a torrent that is genuinely a pile of images must never be caught,
+// so nothing is skipped on size alone, nothing over a twentieth of the torrent
+// is skipped at all, and if every file looks like junk the whole judgement is
+// abandoned. `a` re-selects everything either way.
+func junkFiles(files []engine.FileInfo) map[int]bool {
+	var total int64
+	for _, f := range files {
+		total += f.Length
+	}
+	skip := map[int]bool{}
+	for _, f := range files {
+		if total > 0 && f.Length*20 > total {
+			continue // too big a share of the payload to be an extra
+		}
+		if isJunkPath(f.Path) {
+			skip[f.Index] = true
+		}
+	}
+	if len(skip) == len(files) {
+		return map[int]bool{} // the "extras" are the whole torrent; leave it alone
+	}
+	return skip
+}
+
+// junkExt are formats that only ever describe a release, never contain it.
+var junkExt = map[string]bool{
+	".nfo": true, ".sfv": true, ".srr": true, ".md5": true, ".url": true,
+}
+
+// adNames are the substrings tracker advert files are built from.
+var adNames = []string{"rarbg", "yts.mx", "yts.am", "1337x", "torrent downloaded from", "downloaded from"}
+
+func isJunkPath(p string) bool {
+	lower := strings.ToLower(strings.ReplaceAll(p, "\\", "/"))
+	base := pathBase(lower)
+	if junkExt[pathExt(base)] {
+		return true
+	}
+	for _, segment := range strings.Split(lower, "/") {
+		if segment == "sample" || segment == "samples" || segment == "screens" || segment == "proof" {
+			return true
+		}
+	}
+	if strings.HasPrefix(base, "sample") || strings.Contains(base, "-sample.") {
+		return true
+	}
+	if strings.HasPrefix(base, "www.") {
+		return true
+	}
+	for _, ad := range adNames {
+		if strings.Contains(base, ad) {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *previewModel) toggleNode(n *fileNode) {
@@ -249,9 +312,17 @@ func (a *App) startPreviewDownload() tea.Cmd {
 		applySnapshotToEntry(&entry, snap)
 	}
 	a.st.Upsert(entry)
-	a.screen = screenDownloads
 	a.downloads.snaps = a.eng.Snapshots()
-	return tea.Batch(a.saveState(), a.ensureTick())
+	// Hand the user back to whatever they were browsing, so queuing several
+	// torrents out of one search costs one keypress each. A preview opened from
+	// home (or from the command line) has no list to return to, so the downloads
+	// screen is the only useful destination there.
+	if p.from == screenSearch {
+		a.screen = screenDownloads
+	} else {
+		a.screen = p.from
+	}
+	return tea.Batch(a.saveState(), a.ensureTick(), a.showToast(queuedToast(p.name), toastOK, toastQuick))
 }
 
 func (a *App) viewPreview() string {
@@ -299,8 +370,16 @@ func (a *App) viewPreview() string {
 	if n := p.flaggedCount(); n > 0 {
 		flagged = styleFaint.Render(" · ") + styleHealthMid.Render(fmt.Sprintf("⚠ %d flagged", n))
 	}
+	skipped := ""
+	if p.autoSkipped > 0 {
+		noun := "extras"
+		if p.autoSkipped == 1 {
+			noun = "extra"
+		}
+		skipped = styleFaint.Render(fmt.Sprintf(" · skipped %d %s (a for all)", p.autoSkipped, noun))
+	}
 	b.WriteString(" " + styleOK.Render(fmt.Sprintf("selected %d of %d", p.selectedFiles(), len(p.files))) +
-		styleFaint.Render(" · ") + styleDim.Render(humanBytes(p.selectedBytes())) + flagged + "\n\n")
+		styleFaint.Render(" · ") + styleDim.Render(humanBytes(p.selectedBytes())) + flagged + skipped + "\n\n")
 
 	lay := newPreviewLayout(width)
 	maxFile := p.largestFile()
@@ -308,12 +387,7 @@ func (a *App) viewPreview() string {
 		return p.renderNode(p.rows[i], lay, maxFile)
 	}))
 
-	toggle := "toggle"
-	if n := p.currentNode(); n != nil && n.fileIdx < 0 {
-		toggle = "toggle dir"
-	}
-	help := hints(hint("space", toggle), hint("←→", "expand/collapse"), hint("a", "all"), hint("n", "none"), hint("enter", "download"), hint("esc", "cancel"))
-	return a.chrome("preview", b.String(), help)
+	return a.chrome("preview", b.String(), a.keyStrip(a.helpBudget(width)))
 }
 
 func (p *previewModel) flaggedCount() int {
@@ -380,10 +454,13 @@ func (p *previewModel) renderNode(n *fileNode, lay previewLayout, maxFile int64)
 			}
 		}
 	} else {
+		// Fold arrows are tinted and folder names carry a trailing slash: the
+		// video icon is also a right-pointing triangle, so an unmarked ▸ next to
+		// a file name reads as "a folder you have not opened yet".
 		if n.collapsed {
-			icon = "▸"
+			icon = styleKey.Render("▸")
 		} else {
-			icon = "▾"
+			icon = styleKey.Render("▾")
 		}
 		bar = styleFaint.Render(strings.Repeat("░", lay.barW))
 	}
@@ -391,7 +468,11 @@ func (p *previewModel) renderNode(n *fileNode, lay previewLayout, maxFile int64)
 	if nameW < 8 {
 		nameW = 8
 	}
-	name := strings.Repeat("  ", n.depth) + icon + " " + truncate(n.name, nameW)
+	label := truncate(n.name, nameW)
+	if n.fileIdx < 0 {
+		label = truncate(n.name, nameW-1) + styleKey.Render("/")
+	}
+	name := strings.Repeat("  ", n.depth) + icon + " " + label
 	line := fmt.Sprintf("%s  %s %s %s %*s",
 		p.checkbox(n),
 		padRight(name, lay.nameW),

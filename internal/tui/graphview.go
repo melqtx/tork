@@ -298,7 +298,7 @@ func (r *resultsModel) graphHeader(g *group, width int, selected bool) string {
 	}
 	cols := lay.cols(
 		fmt.Sprintf("×%d", len(g.rowIdx)),
-		providerCol(best.res.Provider, plain),
+		sourceCol(best.res, plain),
 		seedPill(best.res.Seeders, plain),
 		seederMeter(best.res.Seeders, r.meterMax, lay.meterW, plain),
 		size,
@@ -340,7 +340,7 @@ func (r *resultsModel) graphLeaf(g *group, leaf, width int, selected bool) strin
 	}
 	cols := lay.cols(
 		"",
-		providerCol(row.res.Provider, plain),
+		sourceCol(row.res, plain),
 		seedPill(row.res.Seeders, plain),
 		seederMeter(row.res.Seeders, r.meterMax, lay.meterW, plain),
 		truncate(row.res.Size, lay.sizeW),
@@ -398,7 +398,7 @@ func (r *resultsModel) graphFlatLeaf(idx, width int, selected bool) string {
 	title := titleCell(row.res.Title, lay.titleW, badges)
 	cols := lay.cols(
 		"",
-		providerCol(row.res.Provider, plain),
+		sourceCol(row.res, plain),
 		seedPill(row.res.Seeders, plain),
 		seederMeter(row.res.Seeders, r.meterMax, lay.meterW, plain),
 		truncate(row.res.Size, lay.sizeW),
@@ -427,6 +427,21 @@ func sourceBadges(row scoredRow, plain bool) string {
 		badges = append(badges, colorize(plain, styleFaint, "noisy"))
 	}
 	return strings.Join(badges, " ")
+}
+
+// magnetCell reports whether a source can be downloaded right now, and how
+// wide a net its magnet casts. The tracker count is the visible payoff of
+// merging: a row folded from three indexes announces to all three tracker
+// sets, so it finds peers none of those listings would have reached alone.
+func magnetCell(res provider.Result) string {
+	if res.Magnet == "" {
+		return styleFaint.Render("needs resolve")
+	}
+	n := len(res.Trackers())
+	if n == 0 {
+		return styleOK.Render("magnet ready")
+	}
+	return styleOK.Render("magnet ready") + styleFaint.Render(" · "+plural(n, "tracker"))
 }
 
 // seedPill renders S<n> colored by swarm health (faint when dead); plain drops
@@ -470,18 +485,33 @@ func (r *resultsModel) bestGroupRow(g *group) (scoredRow, bool) {
 	return r.rows[idx], true
 }
 
+// groupProviderNames lists the distinct indexes behind a group, best row
+// first. Merged rows contribute the indexes folded into them as well, so the
+// count keeps telling the truth about how many sources back this content once
+// duplicate listings stop taking a row each.
+func groupProviderNames(r *resultsModel, g *group) []string {
+	seen := map[string]bool{}
+	var names []string
+	add := func(p string) {
+		if p == "" || seen[p] {
+			return
+		}
+		seen[p] = true
+		names = append(names, p)
+	}
+	for _, idx := range g.rowIdx {
+		add(r.rows[idx].res.Provider)
+		for _, also := range r.rows[idx].res.AlsoOn {
+			add(also)
+		}
+	}
+	return names
+}
+
 // groupProviders lists a group's distinct providers as bracketed tags, capped
 // at three with a faint "+N" for the rest.
 func groupProviders(r *resultsModel, g *group, plain bool) string {
-	seen := map[string]bool{}
-	var names []string
-	for _, idx := range g.rowIdx {
-		p := r.rows[idx].res.Provider
-		if !seen[p] {
-			seen[p] = true
-			names = append(names, p)
-		}
-	}
+	names := groupProviderNames(r, g)
 	const cap = 3
 	extra := 0
 	if len(names) > cap {
@@ -533,10 +563,7 @@ func (a *App) graphDetail(width int) string {
 	}
 	row := r.rows[g.rowIdx[it.leaf]]
 	median, spread := groupSizeSpread(r.rows, g.rowIdx)
-	magnet := styleOK.Render("magnet ready")
-	if row.res.Magnet == "" {
-		magnet = styleFaint.Render("needs resolve")
-	}
+	magnet := magnetCell(row.res)
 	trusted := styleFaint.Render("untrusted")
 	if row.res.Trusted {
 		trusted = styleOK.Render("trusted")
@@ -551,7 +578,7 @@ func (a *App) graphDetail(width int) string {
 	}
 	lines = append(lines,
 		styleFg.Render(truncate(row.res.Title, width)),
-		fmt.Sprintf("%s  %s  %s  %s", providerBracket(row.res.Provider), trusted, magnet, styleDim.Render(pos)),
+		fmt.Sprintf("%s  %s  %s  %s", sourceCol(row.res, false), trusted, magnet, styleDim.Render(pos)),
 		fmt.Sprintf("%s %d   %s %d   %s", styleSeeders.Render("S"), row.res.Seeders, styleLeechers.Render("L"), row.res.Leechers, styleDim.Render(row.res.Size)),
 		formatSizeSpread(median, spread)+styleFaint.Render(" · ")+styleDim.Render(noise),
 	)
@@ -567,11 +594,7 @@ func groupTotalSeeders(r *resultsModel, g *group) int {
 }
 
 func groupProviderCount(r *resultsModel, g *group) int {
-	seen := map[string]bool{}
-	for _, idx := range g.rowIdx {
-		seen[r.rows[idx].res.Provider] = true
-	}
-	return len(seen)
+	return len(groupProviderNames(r, g))
 }
 
 func groupWarnings(r *resultsModel, g *group) string {

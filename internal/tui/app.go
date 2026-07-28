@@ -3,6 +3,7 @@
 package tui
 
 import (
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -46,13 +47,10 @@ type App struct {
 	proxyCheck proxyChecker
 	startup    tea.Cmd // optional one-shot action requested on the command line
 
-	errText          string
-	yanked           string // field just copied ("path", "magnet"); drives the toast
-	yankGen          int    // invalidates stale toast-clear timers when yanks overlap
-	verifyNotice     string
-	verifyNoticeWarn bool
-	verifyNoticeGen  int
-	lastTickSave     time.Time // throttles progress-only state.json writes on the tick
+	errText      string
+	toast        toastState
+	showHelp     bool      // the `?` key card, drawn over whichever screen is active
+	lastTickSave time.Time // throttles progress-only state.json writes on the tick
 }
 
 func New(cfg *config.Config, eng *engine.Engine, agg *aggregator.Aggregator, st *state.State, hs *health.Store) *App {
@@ -103,9 +101,33 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c":
+		if msg.String() == "ctrl+c" {
 			return a, tea.Quit
+		}
+		// Downloads is the one screen worth reaching mid-task - you queue
+		// something, keep searching, and want to glance at progress without
+		// walking the tab cycle. A chord rather than a letter is what makes
+		// "from anywhere" true: it needs none of the guards a single key does,
+		// so it still works while a query or a filter is being typed, where
+		// every letter has to stay a letter. Preview stays inert, like tab: it
+		// is a modal you leave with esc, not a stop on the cycle.
+		if msg.String() == "ctrl+d" && a.screen != screenPreview {
+			a.showHelp = false
+			a.screen = screenDownloads
+			return a, nil
+		}
+		if a.showHelp {
+			// The card is a reference, not a mode: any key puts it away, so
+			// there is no wrong guess at how to get out of it.
+			a.showHelp = false
+			return a, nil
+		}
+		switch msg.String() {
+		case "?":
+			if a.helpKeyAvailable() {
+				a.showHelp = true
+				return a, nil
+			}
 		case "tab":
 			// tab always cycles screens (it means nothing inside a search box);
 			// only the preview modal keeps it inert.
@@ -156,13 +178,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.errText = msg.err.Error()
 			return a, clearErrCmd()
 		}
-		a.yanked = msg.what
-		a.yankGen++
-		return a, clearYankCmd(a.yankGen)
+		return a, a.showToast("yanked "+msg.what, toastOK, toastQuick)
 
-	case clearYankMsg:
-		if msg.gen == a.yankGen {
-			a.yanked = ""
+	case clearToastMsg:
+		if msg.gen == a.toast.gen {
+			a.toast.text = ""
 		}
 		return a, nil
 
@@ -171,12 +191,6 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case verifyDoneMsg:
 		return a, a.onVerifyDone(msg)
-
-	case clearVerifyNoticeMsg:
-		if msg.gen == a.verifyNoticeGen {
-			a.verifyNotice = ""
-		}
-		return a, nil
 
 	case proxyCheckMsg:
 		a.onProxyCheck(msg)
@@ -200,6 +214,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (a *App) View() string {
+	if a.showHelp {
+		return a.viewHelp()
+	}
 	switch a.screen {
 	case screenSearch:
 		return a.viewSearch()
@@ -286,8 +303,11 @@ func (a *App) cycleScreen() {
 	}
 }
 
-// onTorrentAdded records the new download in state.json and jumps to the
-// downloads screen, starting the stats tick if idle.
+// onTorrentAdded records the new download in state.json and confirms it with a
+// toast, starting the stats tick if idle. It deliberately stays on the current
+// screen: queuing used to jump to the downloads list, which made grabbing three
+// things off one search a round trip through three screens. The header's
+// activity chip is what keeps the new download visible from wherever you are.
 func (a *App) onTorrentAdded(msg torrentAddedMsg) tea.Cmd {
 	a.isos.resolving = false
 	if msg.err != nil {
@@ -306,9 +326,24 @@ func (a *App) onTorrentAdded(msg torrentAddedMsg) tea.Cmd {
 		applySnapshotToEntry(&entry, snap)
 	}
 	a.st.Upsert(entry)
-	a.screen = screenDownloads
 	a.downloads.snaps = a.eng.Snapshots()
-	return tea.Batch(a.saveState(), a.ensureTick(), a.startProxyCheck(time.Now()))
+	return tea.Batch(
+		a.saveState(),
+		a.ensureTick(),
+		a.startProxyCheck(time.Now()),
+		a.showToast(queuedToast(entry.Name), toastOK, toastQuick),
+	)
+}
+
+// helpKeyAvailable keeps `?` inert while a text field owns the keyboard, with
+// one exception: an empty home search box, because the front page is exactly
+// where someone goes looking for the key list. Type anything and `?` is a
+// literal question mark again.
+func (a *App) helpKeyAvailable() bool {
+	if a.screen == screenSearch {
+		return strings.TrimSpace(a.search.input.Value()) == ""
+	}
+	return !a.typing()
 }
 
 // syncCompletedToState marks finished torrents done in state.json and keeps

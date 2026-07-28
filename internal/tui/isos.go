@@ -153,7 +153,7 @@ func (a *App) viewISOs() string {
 	if m.resolving {
 		help = styleDim.Render("fetching the latest " + m.active + " torrent…")
 	} else {
-		help = hints(hint("↑↓", "move"), hint("enter", "download"), hint("tab", "screens"), hint("esc", "home"))
+		help = a.keyStrip(a.helpBudget(width))
 	}
 	return a.chrome("linux isos", body, help)
 }

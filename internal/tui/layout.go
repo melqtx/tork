@@ -95,14 +95,20 @@ func padLines(s string, n int) string {
 	return strings.Join(lines, "\n")
 }
 
-// headerBar is the wordmark + context line plus an underline rule.
+// headerBar is the wordmark + context line plus an underline rule, with the
+// live activity chip right-aligned so transfers stay visible from every screen.
 func (a *App) headerBar(context string) string {
 	w := a.contentWidth()
 	left := styleBrand.Render("tork")
 	if context != "" {
 		left += styleFaint.Render("  ·  ") + styleDim.Render(context)
 	}
-	return padRight(left, w) + "\n" + rule(w)
+	right := a.activityChip()
+	gap := w - lipgloss.Width(left) - lipgloss.Width(right)
+	if right == "" || gap < 2 {
+		return padRight(left, w) + "\n" + rule(w)
+	}
+	return left + strings.Repeat(" ", gap) + right + "\n" + rule(w)
 }
 
 // footerLine renders one status row: help text (an error, when present, takes
@@ -126,9 +132,14 @@ func (a *App) footerBar(help string) string {
 }
 
 // chrome composes a full screen: centered column, header on top, body filling
-// the middle, footer pinned to the bottom.
+// the middle, footer pinned to the bottom. Any pending toast is spliced into
+// the body's bottom-right corner here, so every screen confirms actions the
+// same way instead of each view remembering to do it.
 func (a *App) chrome(context, body, help string) string {
 	body = padLines(body, a.bodyHeight())
+	if a.toast.text != "" {
+		body = overlayBottomRight(body, toastBox(a.toast), a.contentWidth())
+	}
 	col := a.headerBar(context) + "\n" + body + "\n" + a.footerBar(help)
 	return a.center(col)
 }
@@ -181,8 +192,9 @@ type graphLayout struct {
 }
 
 func newGraphLayout(width int) graphLayout {
-	// provW holds a bracketed tag [tpb-movies] (10 + 2 brackets).
-	l := graphLayout{srcW: 3, provW: 12, seedW: 6, sizeW: 9}
+	// provW holds a bracketed tag [tpb-movies] (10 + 2 brackets) plus room for
+	// the "+N" merge suffix when other indexes carried the same infohash.
+	l := graphLayout{srcW: 3, provW: 14, seedW: 6, sizeW: 9}
 	l.meterW = graphBarCells(width) // 5, or 0 on narrow terminals
 	// Each row is drawn after renderWindow's 1-col selection gutter, so reserve
 	// it here: gutter ' ' arrow ' ' title ' ' cols; cols joins cells with spaces.
