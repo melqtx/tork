@@ -92,6 +92,12 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "daemon" {
+		if err := runDaemon(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "tork:", err)
+			os.Exit(1)
+		}
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "tork:", err)
 		os.Exit(1)
@@ -111,6 +117,7 @@ Usage:
 
 Commands:
   autopilot   search, explain the best choices, then queue them
+  daemon      TODO
   doctor      read-only config, disk, state, and provider diagnostic
   proxy       configure or inspect strict SOCKS5 routing
 
@@ -125,6 +132,11 @@ Flags:
 The interactive UI stores config and state under ~/.tork and downloads into
 your OS Downloads folder by default. Press H inside it for the health screen.
 `)
+}
+
+// runDaemon... TODO
+func runDaemon(args []string) error {
+	return nil
 }
 
 // runDoctor prints a read-only diagnostic of the local setup and the provider
