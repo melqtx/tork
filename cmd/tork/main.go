@@ -24,6 +24,7 @@ import (
 	"github.com/melqtx/tork/internal/engine"
 	"github.com/melqtx/tork/internal/health"
 	"github.com/melqtx/tork/internal/intake"
+	"github.com/melqtx/tork/internal/paths"
 	"github.com/melqtx/tork/internal/provider"
 	"github.com/melqtx/tork/internal/proxy"
 	"github.com/melqtx/tork/internal/state"
@@ -136,6 +137,12 @@ your OS Downloads folder by default. Press H inside it for the health screen.
 
 // runDaemon... TODO
 func runDaemon(args []string) error {
+	sa, err := paths.SocketAddr("tork")
+	if err != nil {
+		return err
+	}
+	fmt.Println(sa.String())
+	fmt.Println(sa.Network())
 	return nil
 }
 
