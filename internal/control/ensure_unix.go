@@ -1,6 +1,6 @@
 //go:build unix
 
-package paths
+package control
 
 import (
 	"errors"

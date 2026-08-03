@@ -1,6 +1,6 @@
 //go:build !linux && !darwin
 
-package paths
+package control
 
 import (
 	"fmt"

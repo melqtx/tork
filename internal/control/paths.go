@@ -1,6 +1,4 @@
-// Package paths resolves the control socket location. Both the daemon and the
-// client link this so they cannot disagree about where the socket lives.
-package paths
+package control
 
 import "net"
 
