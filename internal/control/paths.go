@@ -4,7 +4,7 @@ import "net"
 
 // SocketAddr returns a *net.Addr for the control socket.
 func SocketAddr(name string) (net.Addr, error) {
-	dir, err := RuntimeDir(name)
+	dir, err := runtimeDir(name)
 	if err != nil {
 		return nil, err
 	}

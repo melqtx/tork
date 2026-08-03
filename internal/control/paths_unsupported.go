@@ -8,7 +8,7 @@ import (
 	"runtime"
 )
 
-func RuntimeDir(string) (string, error) {
+func runtimeDir(string) (string, error) {
 	return "", fmt.Errorf("%s daemon unsupported", runtime.GOOS)
 }
 

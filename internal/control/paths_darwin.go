@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 )
 
-// RuntimeDir returns a 0700 directory owned by the current euid.
-func RuntimeDir(name string) (string, error) {
+// runtimeDir returns a 0700 directory owned by the current euid.
+func runtimeDir(name string) (string, error) {
 	if os.Geteuid() == 0 {
 		return ensureDir(filepath.Join("/var/run", name))
 	}

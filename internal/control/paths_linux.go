@@ -7,8 +7,8 @@ import (
 	"strings"
 )
 
-// RuntimeDir returns a 0700 directory owned by the current euid.
-func RuntimeDir(name string) (string, error) {
+// runtimeDir returns a 0700 directory owned by the current euid.
+func runtimeDir(name string) (string, error) {
 	// systemd `RuntimeDirectory=` (colon-separated)
 	if v := os.Getenv("RUNTIME_DIRECTORY"); v != "" {
 		return ensureDir(strings.Split(v, ":")[0])
