@@ -163,6 +163,62 @@ func TestLoadFromReadsMetadataCacheSettings(t *testing.T) {
 	}
 }
 
+func TestLoadFromReadsTorrentTuning(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".tork")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yaml := `torrent_tuning:
+  half_open_conns_per_torrent: 30
+  total_half_open_conns: 120
+  piece_hashers_per_torrent: 4
+  max_unverified_bytes: 134217728
+  dial_rate_limit: 15
+  peer_high_water: 600
+  peer_low_water: 60
+  download_rate_limit: 5242880
+  upload_rate_limit: 1048576
+  disable_aggressive_upload: true
+  no_upload: true
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadFrom(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tuning := cfg.TorrentTuning
+	if tuning.HalfOpenConnsPerTorrent != 30 || tuning.TotalHalfOpenConns != 120 ||
+		tuning.PieceHashersPerTorrent != 4 || tuning.MaxUnverifiedBytes != 134217728 ||
+		tuning.DialRateLimit != 15 || tuning.PeerHighWater != 600 || tuning.PeerLowWater != 60 ||
+		tuning.DownloadRateLimit != 5242880 || tuning.UploadRateLimit != 1048576 ||
+		!tuning.DisableAggressiveUpload || !tuning.NoUpload {
+		t.Fatalf("torrent tuning = %+v", tuning)
+	}
+}
+
+func TestTorrentTuningDefaultsAndPartialConfigStayZero(t *testing.T) {
+	cfg := Default(t.TempDir())
+	if cfg.TorrentTuning != (TorrentTuningConfig{}) {
+		t.Fatalf("default tuning changes library behavior: %+v", cfg.TorrentTuning)
+	}
+	dir := filepath.Join(t.TempDir(), ".tork")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("torrent_tuning:\n  dial_rate_limit: 8\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadFrom(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TorrentTuning.DialRateLimit != 8 || cfg.TorrentTuning.HalfOpenConnsPerTorrent != 0 || cfg.TorrentTuning.NoUpload {
+		t.Fatalf("partial tuning populated omitted values: %+v", cfg.TorrentTuning)
+	}
+}
+
 func TestOverrideDownloadDir(t *testing.T) {
 	cfg := Default(t.TempDir())
 	target := filepath.Join(t.TempDir(), "custom", "dl")

@@ -61,6 +61,22 @@ type MetadataCacheConfig struct {
 	MaxEntries int  `yaml:"max_entries"`
 }
 
+// TorrentTuningConfig overrides anacrolix client defaults. Numeric zero means
+// "leave the library default unchanged". Byte rates are client-wide bytes/s.
+type TorrentTuningConfig struct {
+	HalfOpenConnsPerTorrent int   `yaml:"half_open_conns_per_torrent,omitempty"`
+	TotalHalfOpenConns      int   `yaml:"total_half_open_conns,omitempty"`
+	PieceHashersPerTorrent  int   `yaml:"piece_hashers_per_torrent,omitempty"`
+	MaxUnverifiedBytes      int64 `yaml:"max_unverified_bytes,omitempty"`
+	DialRateLimit           int   `yaml:"dial_rate_limit,omitempty"`
+	PeerHighWater           int   `yaml:"peer_high_water,omitempty"`
+	PeerLowWater            int   `yaml:"peer_low_water,omitempty"`
+	DownloadRateLimit       int64 `yaml:"download_rate_limit,omitempty"`
+	UploadRateLimit         int64 `yaml:"upload_rate_limit,omitempty"`
+	DisableAggressiveUpload bool  `yaml:"disable_aggressive_upload,omitempty"`
+	NoUpload                bool  `yaml:"no_upload,omitempty"`
+}
+
 // Interval is the gap between automatic health checks. A missing or nonsensical
 // interval_hours falls back to the daily default rather than turning every
 // launch into a provider probe.
@@ -84,6 +100,7 @@ type Config struct {
 	Health                HealthConfig              `yaml:"health"`
 	Proxy                 ProxyConfig               `yaml:"proxy"`
 	MetadataCache         MetadataCacheConfig       `yaml:"metadata_cache"`
+	TorrentTuning         TorrentTuningConfig       `yaml:"torrent_tuning,omitempty"`
 	Providers             map[string]ProviderConfig `yaml:"providers"`
 
 	dir          string // ~/.tork, resolved at load time
