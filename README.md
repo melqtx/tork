@@ -113,6 +113,22 @@ Transfer rates are client-wide bytes per second; dial rate is dials per second.
 does not expose its webseed concurrency as a runtime client setting, so tork
 does not claim to configure it here.
 
+Direct HTTP ISO downloads use verified byte ranges when the server supports
+them:
+
+```yaml
+direct:
+  max_connections: 4
+  min_chunk_size: "10MB"
+  enable_chunking: true
+```
+
+The connection limit is per direct download. tork confirms range support and a
+stable resource before splitting; small, unknown-length, or incompatible
+responses automatically use one sequential connection. Paused segmented
+transfers resume from an internal `.part.meta` sidecar, and the final filename
+still appears only after SHA256 verification when a checksum is available.
+
 ## SOCKS5 proxy
 
 For the usual local Tor setup, one command is enough:

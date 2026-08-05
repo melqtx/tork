@@ -219,6 +219,53 @@ func TestTorrentTuningDefaultsAndPartialConfigStayZero(t *testing.T) {
 	}
 }
 
+func TestDirectConfigDefaultsAndParsing(t *testing.T) {
+	cfg := Default(t.TempDir())
+	if !cfg.Direct.EnableChunking || cfg.Direct.MaxConnections != 4 || cfg.Direct.MinChunkSize != "10MB" {
+		t.Fatalf("direct defaults = %+v", cfg.Direct)
+	}
+	got, err := cfg.DirectMinChunkBytes()
+	if err != nil || got != 10<<20 {
+		t.Fatalf("DirectMinChunkBytes = %d, %v", got, err)
+	}
+	cfg.Direct.MinChunkSize = "1.5 GiB"
+	if got, err = cfg.DirectMinChunkBytes(); err != nil || got != 1536<<20 {
+		t.Fatalf("DirectMinChunkBytes GiB = %d, %v", got, err)
+	}
+}
+
+func TestDirectConfigRejectsUnsafeValues(t *testing.T) {
+	for _, direct := range []DirectConfig{
+		{MaxConnections: -1, MinChunkSize: "10MB"},
+		{MaxConnections: MaxDirectConnections + 1, MinChunkSize: "10MB"},
+		{MaxConnections: 4, MinChunkSize: "zero"},
+		{MaxConnections: 4, MinChunkSize: "0MB"},
+	} {
+		cfg := Default(t.TempDir())
+		cfg.Direct = direct
+		if _, err := cfg.DirectMinChunkBytes(); err == nil {
+			t.Fatalf("accepted invalid direct config: %+v", direct)
+		}
+	}
+}
+
+func TestLoadFromReadsPartialDirectConfig(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".tork")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("direct:\n  enable_chunking: false\n  max_connections: 2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadFrom(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Direct.EnableChunking || cfg.Direct.MaxConnections != 2 || cfg.Direct.MinChunkSize != "10MB" {
+		t.Fatalf("partial direct config = %+v", cfg.Direct)
+	}
+}
+
 func TestOverrideDownloadDir(t *testing.T) {
 	cfg := Default(t.TempDir())
 	target := filepath.Join(t.TempDir(), "custom", "dl")

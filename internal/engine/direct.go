@@ -38,6 +38,7 @@ type directItem struct {
 	state        TorrentState
 	note         string             // short human status, e.g. a checksum failure
 	cancel       context.CancelFunc // nil while paused
+	runDone      chan struct{}      // closed after the current transfer releases its files
 	verifyCancel context.CancelFunc
 	samples      ring
 }
@@ -111,14 +112,21 @@ func (e *Engine) AddDirectWithOptions(url, name, sum string, opts AddOptions) (m
 // startDirectLocked launches the download goroutine. Caller holds e.mu.
 func (e *Engine) startDirectLocked(it *directItem) {
 	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
 	it.cancel = cancel
+	it.runDone = done
 	it.state = StateDownloading
 	it.note = ""
 	it.samples = ring{}
 	e.dwg.Add(1)
 	go func() {
 		defer e.dwg.Done()
-		defer func() { _ = recover() }() // a download must never crash the app
+		defer close(done)
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				e.failDirect(ctx, it, fmt.Errorf("internal transfer failure: %v", recovered))
+			}
+		}()
 		e.runDirect(ctx, it)
 	}()
 }
@@ -144,6 +152,17 @@ func (e *Engine) runDirect(ctx context.Context, it *directItem) {
 		e.mu.Unlock()
 		return
 	}
+
+	if e.cfg.Direct.EnableChunking && e.directMaxConnections >= 2 {
+		handled, err := e.runDirectParallel(ctx, it, dest)
+		if handled {
+			if err != nil {
+				e.failDirect(ctx, it, err)
+			}
+			return
+		}
+	}
+	_ = os.Remove(part + ".meta")
 
 	hasher := sha256.New()
 	offset := hashExistingPart(part, hasher)
@@ -357,10 +376,14 @@ func (e *Engine) removeDirect(h metainfo.Hash, it *directItem, deleteData bool) 
 		it.cancel = nil
 	}
 	delete(e.direct, h)
+	done := it.runDone
 	name := it.name
 	dataPath := it.dataPath
 	downloadDir := it.downloadDir
 	e.mu.Unlock()
+	if done != nil {
+		<-done
+	}
 
 	if !deleteData {
 		return nil
@@ -376,6 +399,7 @@ func (e *Engine) removeDirect(h metainfo.Hash, it *directItem, deleteData bool) 
 	if !safePathWithin(downloadDir, dest) {
 		return fmt.Errorf("delete data refused: unknown or unsafe path")
 	}
+	err0 := os.Remove(dest + ".part.meta")
 	err1 := os.Remove(dest + ".part")
 	err2 := os.Remove(dest)
 	if err2 != nil && !os.IsNotExist(err2) {
@@ -383,6 +407,9 @@ func (e *Engine) removeDirect(h metainfo.Hash, it *directItem, deleteData bool) 
 	}
 	if err1 != nil && !os.IsNotExist(err1) {
 		return err1
+	}
+	if err0 != nil && !os.IsNotExist(err0) {
+		return err0
 	}
 	return nil
 }

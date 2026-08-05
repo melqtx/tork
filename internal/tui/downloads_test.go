@@ -85,6 +85,9 @@ func TestMovePayloadMovesPartFileRoundTrip(t *testing.T) {
 	if err := os.WriteFile(oldPath+".part", []byte("partial"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(oldPath+".part.meta", []byte("manifest"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := movePayload(oldPath, newPath); err != nil {
 		t.Fatal(err)
 	}
@@ -97,6 +100,28 @@ func TestMovePayloadMovesPartFileRoundTrip(t *testing.T) {
 	}
 	if string(got) != "partial" {
 		t.Fatalf("moved part = %q", got)
+	}
+	got, err = os.ReadFile(newPath + ".part.meta")
+	if err != nil || string(got) != "manifest" {
+		t.Fatalf("moved manifest = %q, %v", got, err)
+	}
+}
+
+func TestDeleteDownloadDataRemovesDirectSidecars(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "image.iso")
+	for _, suffix := range []string{"", ".part", ".part.meta"} {
+		if err := os.WriteFile(path+suffix, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := deleteDownloadData(downloadItem{DownloadDir: dir, DataPath: path}); err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{"", ".part", ".part.meta"} {
+		if _, err := os.Stat(path + suffix); !os.IsNotExist(err) {
+			t.Fatalf("%s remained: %v", path+suffix, err)
+		}
 	}
 }
 

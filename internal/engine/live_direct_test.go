@@ -3,11 +3,13 @@
 package engine
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/melqtx/tork/internal/config"
+	"github.com/melqtx/tork/internal/isos"
 )
 
 // temporary live smoke test - deleted after verification. Starts a real
@@ -25,8 +27,20 @@ func TestLiveDirectDownloadStarts(t *testing.T) {
 	}
 	defer eng.Close()
 
-	url := "https://distfiles.gentoo.org/releases/amd64/autobuilds/current-install-amd64-minimal/install-amd64-minimal-20260705T170105Z.iso"
-	h, err := eng.AddDirect(url, "gentoo-test.iso", "")
+	var gentoo isos.Distro
+	for _, distro := range isos.Catalog() {
+		if distro.ID == "gentoo" {
+			gentoo = distro
+			break
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	image, err := isos.ResolveWithClient(ctx, gentoo, cfg.ProxyHTTPClient())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := eng.AddDirect(image.DirectURL, "gentoo-test.iso", image.SHA256)
 	if err != nil {
 		t.Fatal(err)
 	}

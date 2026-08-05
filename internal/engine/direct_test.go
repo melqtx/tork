@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -138,6 +139,7 @@ func TestDirectChecksumMismatchDiscardsData(t *testing.T) {
 	}
 	ts := serveISO(t, payload, nil)
 	eng := newDirectTestEngine(t)
+	eng.directMinChunkSize = 16 << 10
 
 	wrong := strings.Repeat("ab", 32)
 	if _, err := eng.AddDirect(ts.URL+"/image.iso", "image.iso", wrong); err != nil {
@@ -153,6 +155,12 @@ func TestDirectChecksumMismatchDiscardsData(t *testing.T) {
 	}
 	if _, err := os.Stat(dest + ".part"); !os.IsNotExist(err) {
 		t.Fatal("partial data must be discarded after a checksum mismatch")
+	}
+	if _, err := os.Stat(dest + ".part.meta"); !os.IsNotExist(err) {
+		t.Fatal("resume manifest must be discarded after a checksum mismatch")
+	}
+	if snap.BytesCompleted != 0 {
+		t.Fatalf("checksum mismatch progress = %d, want 0", snap.BytesCompleted)
 	}
 }
 
@@ -186,6 +194,232 @@ func TestDirectResumesFromPartFileWithRange(t *testing.T) {
 	}
 	if !bytes.Equal(got, payload) {
 		t.Fatal("resumed bytes differ from payload (checksum should have caught this)")
+	}
+}
+
+func TestParallelDirectDownloadUsesBoundedRangeWorkers(t *testing.T) {
+	payload := make([]byte, 2<<20)
+	if _, err := rand.Read(payload); err != nil {
+		t.Fatal(err)
+	}
+	var active, peak, ranges, badHeaders atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Deliberately omit Accept-Ranges and reject HEAD: the 0-0 GET probe is
+		// authoritative and must still enable segmented downloading.
+		w.Header().Set("ETag", `"fixed"`)
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var start, end int
+		if _, err := fmt.Sscanf(r.Header.Get("Range"), "bytes=%d-%d", &start, &end); err != nil {
+			w.Write(payload)
+			return
+		}
+		ranges.Add(1)
+		if r.Header.Get("Accept-Encoding") != "identity" || r.Header.Get("User-Agent") != directUserAgent ||
+			(r.Header.Get("Range") != "bytes=0-0" && r.Header.Get("If-Range") != `"fixed"`) {
+			badHeaders.Add(1)
+		}
+		now := active.Add(1)
+		for {
+			old := peak.Load()
+			if now <= old || peak.CompareAndSwap(old, now) {
+				break
+			}
+		}
+		defer active.Add(-1)
+		time.Sleep(10 * time.Millisecond)
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(payload)))
+		w.WriteHeader(http.StatusPartialContent)
+		w.Write(payload[start : end+1])
+	}))
+	defer ts.Close()
+
+	eng := newDirectTestEngine(t)
+	eng.directMinChunkSize = 64 << 10
+	eng.directMaxConnections = 4
+	h, err := eng.AddDirect(ts.URL+"/image.iso", "image.iso", sumHex(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	awaitDirect(t, eng, func(s Snapshot) bool { return s.Hash == h && s.State == StateDone }, 10*time.Second)
+	if ranges.Load() < 3 || peak.Load() < 2 || peak.Load() > 4 || badHeaders.Load() != 0 {
+		t.Fatalf("range requests=%d, peak concurrency=%d, bad headers=%d", ranges.Load(), peak.Load(), badHeaders.Load())
+	}
+	got, err := os.ReadFile(filepath.Join(eng.cfg.DownloadDir, "image.iso"))
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("parallel payload mismatch: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(eng.cfg.DownloadDir, "image.iso.part.meta")); !os.IsNotExist(err) {
+		t.Fatalf("manifest remained after completion: %v", err)
+	}
+}
+
+func TestParallelDirectFallsBackWhenRangesUnsupported(t *testing.T) {
+	payload := bytes.Repeat([]byte("fallback"), 1<<15)
+	var rangeAttempts atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") != "" {
+			rangeAttempts.Add(1)
+		}
+		w.Header().Set("Content-Length", fmt.Sprint(len(payload)))
+		if r.Method != http.MethodHead {
+			w.Write(payload)
+		}
+	}))
+	defer ts.Close()
+	eng := newDirectTestEngine(t)
+	eng.directMinChunkSize = 32 << 10
+	h, err := eng.AddDirect(ts.URL+"/image.iso", "image.iso", sumHex(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	awaitDirect(t, eng, func(s Snapshot) bool { return s.Hash == h && s.State == StateDone }, 10*time.Second)
+	if rangeAttempts.Load() == 0 {
+		t.Fatal("range capability was not probed")
+	}
+	got, err := os.ReadFile(filepath.Join(eng.cfg.DownloadDir, "image.iso"))
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("fallback payload mismatch: %v", err)
+	}
+}
+
+func TestParallelPauseWaitsAndResumeCompletes(t *testing.T) {
+	payload := make([]byte, 512<<10)
+	if _, err := rand.Read(payload); err != nil {
+		t.Fatal(err)
+	}
+	var active atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"fixed"`)
+		w.Header().Set("Content-Length", fmt.Sprint(len(payload)))
+		if r.Method == http.MethodHead {
+			return
+		}
+		var start, end int
+		if _, err := fmt.Sscanf(r.Header.Get("Range"), "bytes=%d-%d", &start, &end); err != nil {
+			w.Write(payload)
+			return
+		}
+		active.Add(1)
+		defer active.Add(-1)
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(payload)))
+		w.WriteHeader(http.StatusPartialContent)
+		for offset := start; offset <= end; {
+			next := min(end+1, offset+(4<<10))
+			if _, err := w.Write(payload[offset:next]); err != nil {
+				return
+			}
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			offset = next
+			time.Sleep(time.Millisecond)
+		}
+	}))
+	defer ts.Close()
+	eng := newDirectTestEngine(t)
+	eng.directMinChunkSize = 64 << 10
+	h, err := eng.AddDirect(ts.URL+"/image.iso", "image.iso", sumHex(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	awaitDirect(t, eng, func(s Snapshot) bool { return s.Hash == h && s.BytesCompleted > 0 }, 5*time.Second)
+	if err := eng.Pause(h); err != nil {
+		t.Fatal(err)
+	}
+	if active.Load() != 0 {
+		t.Fatalf("Pause returned with %d active requests", active.Load())
+	}
+	if err := eng.Resume(h); err != nil {
+		t.Fatal(err)
+	}
+	awaitDirect(t, eng, func(s Snapshot) bool { return s.Hash == h && s.State == StateDone }, 10*time.Second)
+	got, err := os.ReadFile(filepath.Join(eng.cfg.DownloadDir, "image.iso"))
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("resumed payload mismatch: %v", err)
+	}
+}
+
+func TestParallelProtocolViolationRestartsSequentially(t *testing.T) {
+	payload := bytes.Repeat([]byte("restart"), 1<<15)
+	var probes, sequential atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"fixed"`)
+		w.Header().Set("Content-Length", fmt.Sprint(len(payload)))
+		if r.Method == http.MethodHead {
+			return
+		}
+		if r.Header.Get("Range") == "bytes=0-0" && probes.Add(1) == 1 {
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes 0-0/%d", len(payload)))
+			w.WriteHeader(http.StatusPartialContent)
+			w.Write(payload[:1])
+			return
+		}
+		if r.Header.Get("Range") != "" {
+			// A server that lied during discovery. The engine must discard all
+			// segmented bytes and restart with a clean non-range request.
+			w.WriteHeader(http.StatusOK)
+			w.Write(payload)
+			return
+		}
+		sequential.Add(1)
+		w.Write(payload)
+	}))
+	defer ts.Close()
+	eng := newDirectTestEngine(t)
+	eng.directMinChunkSize = 32 << 10
+	h, err := eng.AddDirect(ts.URL+"/image.iso", "image.iso", sumHex(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	awaitDirect(t, eng, func(s Snapshot) bool { return s.Hash == h && s.State == StateDone }, 10*time.Second)
+	if sequential.Load() != 1 {
+		t.Fatalf("clean sequential retries = %d, want 1", sequential.Load())
+	}
+	got, err := os.ReadFile(filepath.Join(eng.cfg.DownloadDir, "image.iso"))
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("restart payload mismatch: %v", err)
+	}
+}
+
+func TestDirectManifestRejectsStaleAndOverlappingRanges(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "image.iso.part.meta")
+	m := directManifest{Version: directManifestVersion, URL: "https://example/x", Total: 100,
+		Validator: `"v1"`, Completed: []byteRange{{Start: 0, End: 60}, {Start: 50, End: 90}}}
+	if err := saveDirectManifest(path, m); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadDirectManifest(path, m.URL, m.Total, m.Validator); err == nil {
+		t.Fatal("overlapping manifest was accepted")
+	}
+	m.Completed = []byteRange{{Start: 0, End: 49}}
+	if err := saveDirectManifest(path, m); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadDirectManifest(path, m.URL, m.Total+1, m.Validator); err == nil {
+		t.Fatal("stale manifest total was accepted")
+	}
+}
+
+func TestDirectRangeHelpersRejectInvalidCoverage(t *testing.T) {
+	if _, _, _, ok := parseContentRange("bytes 5-2/10"); ok {
+		t.Fatal("accepted reversed content range")
+	}
+	got := missingDirectRanges(10, []byteRange{{Start: 0, End: 2}, {Start: 7, End: 9}}, 2)
+	want := []byteRange{{Start: 3, End: 4}, {Start: 5, End: 6}}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("missing ranges = %+v, want %+v", got, want)
+	}
+	scheduler := newDirectRangeScheduler(100, []byteRange{{Start: 40, End: 59}})
+	first, ok := scheduler.claim(10)
+	if !ok || first != (byteRange{Start: 20, End: 39}) {
+		t.Fatalf("first adaptive claim = %+v, %v", first, ok)
+	}
+	second, ok := scheduler.claim(10)
+	if !ok || second != (byteRange{Start: 80, End: 99}) {
+		t.Fatalf("second adaptive claim = %+v, %v", second, ok)
 	}
 }
 

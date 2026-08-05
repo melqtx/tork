@@ -760,31 +760,31 @@ func movePayload(oldPath, newPath string) error {
 	if oldPath == "" || newPath == "" || oldPath == newPath {
 		return nil
 	}
-	movedAny := false
-	if _, err := os.Stat(oldPath); err == nil {
-		if _, err := os.Stat(newPath); err == nil {
-			return fmt.Errorf("target already exists: %s", newPath)
-		}
-		if err := os.Rename(oldPath, newPath); err != nil {
+	type move struct{ old, new string }
+	var moves []move
+	for _, suffix := range []string{"", ".part", ".part.meta"} {
+		old, target := oldPath+suffix, newPath+suffix
+		if _, err := os.Stat(old); err == nil {
+			if _, err := os.Stat(target); err == nil {
+				return fmt.Errorf("target already exists: %s", target)
+			} else if !os.IsNotExist(err) {
+				return err
+			}
+			moves = append(moves, move{old, target})
+		} else if !os.IsNotExist(err) {
 			return err
 		}
-		movedAny = true
-	} else if !os.IsNotExist(err) {
-		return err
 	}
-	if _, err := os.Stat(oldPath + ".part"); err == nil {
-		if _, err := os.Stat(newPath + ".part"); err == nil {
-			return fmt.Errorf("target already exists: %s", newPath+".part")
-		}
-		if err := os.Rename(oldPath+".part", newPath+".part"); err != nil {
-			return err
-		}
-		movedAny = true
-	} else if !os.IsNotExist(err) {
-		return err
-	}
-	if !movedAny {
+	if len(moves) == 0 {
 		return fmt.Errorf("nothing to move at %s", oldPath)
+	}
+	for i, candidate := range moves {
+		if err := os.Rename(candidate.old, candidate.new); err != nil {
+			for j := i - 1; j >= 0; j-- {
+				_ = os.Rename(moves[j].new, moves[j].old)
+			}
+			return err
+		}
 	}
 	return nil
 }
@@ -798,11 +798,15 @@ func deleteDownloadData(it downloadItem) error {
 	}
 	err1 := os.RemoveAll(it.DataPath)
 	err2 := os.Remove(it.DataPath + ".part")
+	err3 := os.Remove(it.DataPath + ".part.meta")
 	if err1 != nil && !os.IsNotExist(err1) {
 		return err1
 	}
 	if err2 != nil && !os.IsNotExist(err2) {
 		return err2
+	}
+	if err3 != nil && !os.IsNotExist(err3) {
+		return err3
 	}
 	return nil
 }
