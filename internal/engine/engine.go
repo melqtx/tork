@@ -203,17 +203,19 @@ type item struct {
 }
 
 type Engine struct {
-	client  *torrent.Client
-	cfg     *config.Config
-	pc      storage.PieceCompletion
-	mu      sync.Mutex
-	items   map[metainfo.Hash]*item
-	direct  map[metainfo.Hash]*directItem // plain-HTTPS downloads (see direct.go)
-	dwg     sync.WaitGroup                // running direct-download goroutines
-	mwg     sync.WaitGroup                // metadata-ready/cache goroutines
-	vwg     sync.WaitGroup                // manual verification calls
-	pcClose func()                        // bolt piece-completion closer
-	closing bool
+	client               *torrent.Client
+	cfg                  *config.Config
+	directMaxConnections int
+	directMinChunkSize   int64
+	pc                   storage.PieceCompletion
+	mu                   sync.Mutex
+	items                map[metainfo.Hash]*item
+	direct               map[metainfo.Hash]*directItem // plain-HTTPS downloads (see direct.go)
+	dwg                  sync.WaitGroup                // running direct-download goroutines
+	mwg                  sync.WaitGroup                // metadata-ready/cache goroutines
+	vwg                  sync.WaitGroup                // manual verification calls
+	pcClose              func()                        // bolt piece-completion closer
+	closing              bool
 
 	torrentHTTP *http.Client
 	directHTTP  *http.Client
@@ -288,6 +290,10 @@ func applyTorrentTuning(cc *torrent.ClientConfig, tuning config.TorrentTuningCon
 }
 
 func New(cfg *config.Config) (*Engine, error) {
+	directMinChunkSize, err := cfg.DirectMinChunkBytes()
+	if err != nil {
+		return nil, err
+	}
 	dbPath := filepath.Join(cfg.PieceCompletionDir(), ".torrent.bolt.db")
 	pc, err := storage.NewBoltPieceCompletion(cfg.PieceCompletionDir())
 	if err != nil {
@@ -357,16 +363,18 @@ func New(cfg *config.Config) (*Engine, error) {
 		client.AddDialer(runtime)
 	}
 	return &Engine{
-		client:      client,
-		cfg:         cfg,
-		pc:          pc,
-		items:       make(map[metainfo.Hash]*item),
-		direct:      make(map[metainfo.Hash]*directItem),
-		pcClose:     func() { pc.Close() },
-		torrentHTTP: torrentHTTP,
-		directHTTP:  directHTTP,
-		strictProxy: strictProxy,
-		metainfo:    metacache.New(cfg),
+		client:               client,
+		cfg:                  cfg,
+		directMaxConnections: cfg.Direct.MaxConnections,
+		directMinChunkSize:   directMinChunkSize,
+		pc:                   pc,
+		items:                make(map[metainfo.Hash]*item),
+		direct:               make(map[metainfo.Hash]*directItem),
+		pcClose:              func() { pc.Close() },
+		torrentHTTP:          torrentHTTP,
+		directHTTP:           directHTTP,
+		strictProxy:          strictProxy,
+		metainfo:             metacache.New(cfg),
 	}, nil
 }
 
@@ -860,14 +868,20 @@ func (e *Engine) StartDownload(h metainfo.Hash, excluded []int) {
 // completion makes resuming cheap. A direct download keeps its .part file.
 func (e *Engine) Pause(h metainfo.Hash) error {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	if d, ok := e.direct[h]; ok {
 		if d.state == StateVerifying {
+			e.mu.Unlock()
 			return ErrVerificationInProgress
 		}
 		pauseDirectLocked(d)
+		done := d.runDone
+		e.mu.Unlock()
+		if done != nil {
+			<-done
+		}
 		return nil
 	}
+	defer e.mu.Unlock()
 	it, ok := e.items[h]
 	if !ok || it.paused || it.t == nil {
 		return nil
@@ -894,7 +908,13 @@ func (e *Engine) Resume(h metainfo.Hash) error {
 			e.mu.Unlock()
 			return ErrVerificationInProgress
 		}
-		if d.state == StatePaused {
+		done := d.runDone
+		e.mu.Unlock()
+		if done != nil {
+			<-done
+		}
+		e.mu.Lock()
+		if current, exists := e.direct[h]; exists && current == d && d.state == StatePaused {
 			e.startDirectLocked(d)
 		}
 		e.mu.Unlock()

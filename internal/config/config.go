@@ -77,6 +77,12 @@ type TorrentTuningConfig struct {
 	NoUpload                bool  `yaml:"no_upload,omitempty"`
 }
 
+type DirectConfig struct {
+	MaxConnections int    `yaml:"max_connections"`
+	MinChunkSize   string `yaml:"min_chunk_size"`
+	EnableChunking bool   `yaml:"enable_chunking"`
+}
+
 // Interval is the gap between automatic health checks. A missing or nonsensical
 // interval_hours falls back to the daily default rather than turning every
 // launch into a provider probe.
@@ -101,6 +107,7 @@ type Config struct {
 	Proxy                 ProxyConfig               `yaml:"proxy"`
 	MetadataCache         MetadataCacheConfig       `yaml:"metadata_cache"`
 	TorrentTuning         TorrentTuningConfig       `yaml:"torrent_tuning,omitempty"`
+	Direct                DirectConfig              `yaml:"direct"`
 	Providers             map[string]ProviderConfig `yaml:"providers"`
 
 	dir          string // ~/.tork, resolved at load time
@@ -210,6 +217,7 @@ func Default(dir string) *Config {
 		Autopilot:             AutopilotConfig{MaxDownloads: 10, MinSeeders: 5},
 		Health:                HealthConfig{Enabled: false, IntervalHours: 24},
 		MetadataCache:         MetadataCacheConfig{Enabled: true, MaxMB: 256, MaxEntries: 512},
+		Direct:                DirectConfig{MaxConnections: 4, MinChunkSize: "10MB", EnableChunking: true},
 		Providers: map[string]ProviderConfig{
 			"knaben": {Enabled: true, Type: "knaben", Mirror: "https://knaben.org"},
 			"yts":    {Enabled: true, Type: "yts", Mirror: "https://yts.mx"},
