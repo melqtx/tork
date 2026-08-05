@@ -21,6 +21,7 @@ import (
 	"github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/metainfo"
 	"github.com/anacrolix/torrent/storage"
+	"golang.org/x/time/rate"
 
 	"github.com/melqtx/tork/internal/config"
 	"github.com/melqtx/tork/internal/intake"
@@ -220,6 +221,72 @@ type Engine struct {
 	metainfo    *metacache.Cache
 }
 
+func applyTorrentTuning(cc *torrent.ClientConfig, tuning config.TorrentTuningConfig) error {
+	intValues := []struct {
+		name  string
+		value int
+	}{
+		{"half_open_conns_per_torrent", tuning.HalfOpenConnsPerTorrent},
+		{"total_half_open_conns", tuning.TotalHalfOpenConns},
+		{"piece_hashers_per_torrent", tuning.PieceHashersPerTorrent},
+		{"dial_rate_limit", tuning.DialRateLimit},
+		{"peer_high_water", tuning.PeerHighWater},
+		{"peer_low_water", tuning.PeerLowWater},
+	}
+	for _, field := range intValues {
+		if field.value < 0 {
+			return fmt.Errorf("torrent_tuning.%s cannot be negative", field.name)
+		}
+	}
+	int64Values := []struct {
+		name  string
+		value int64
+	}{
+		{"max_unverified_bytes", tuning.MaxUnverifiedBytes},
+		{"download_rate_limit", tuning.DownloadRateLimit},
+		{"upload_rate_limit", tuning.UploadRateLimit},
+	}
+	for _, field := range int64Values {
+		if field.value < 0 {
+			return fmt.Errorf("torrent_tuning.%s cannot be negative", field.name)
+		}
+	}
+	if tuning.HalfOpenConnsPerTorrent > 0 {
+		cc.HalfOpenConnsPerTorrent = tuning.HalfOpenConnsPerTorrent
+	}
+	if tuning.TotalHalfOpenConns > 0 {
+		cc.TotalHalfOpenConns = tuning.TotalHalfOpenConns
+	}
+	if tuning.PieceHashersPerTorrent > 0 {
+		cc.PieceHashersPerTorrent = tuning.PieceHashersPerTorrent
+	}
+	if tuning.MaxUnverifiedBytes > 0 {
+		cc.MaxUnverifiedBytes = tuning.MaxUnverifiedBytes
+	}
+	if tuning.DialRateLimit > 0 {
+		cc.DialRateLimiter = rate.NewLimiter(rate.Limit(tuning.DialRateLimit), tuning.DialRateLimit)
+	}
+	if tuning.PeerHighWater > 0 {
+		cc.TorrentPeersHighWater = tuning.PeerHighWater
+	}
+	if tuning.PeerLowWater > 0 {
+		cc.TorrentPeersLowWater = tuning.PeerLowWater
+	}
+	if cc.TorrentPeersLowWater > cc.TorrentPeersHighWater {
+		return fmt.Errorf("torrent_tuning peer_low_water (%d) exceeds peer_high_water (%d)", cc.TorrentPeersLowWater, cc.TorrentPeersHighWater)
+	}
+	const transferBurst = 1 << 20
+	if tuning.DownloadRateLimit > 0 {
+		cc.DownloadRateLimiter = rate.NewLimiter(rate.Limit(tuning.DownloadRateLimit), transferBurst)
+	}
+	if tuning.UploadRateLimit > 0 {
+		cc.UploadRateLimiter = rate.NewLimiter(rate.Limit(tuning.UploadRateLimit), transferBurst)
+	}
+	cc.DisableAggressiveUpload = tuning.DisableAggressiveUpload
+	cc.NoUpload = tuning.NoUpload
+	return nil
+}
+
 func New(cfg *config.Config) (*Engine, error) {
 	dbPath := filepath.Join(cfg.PieceCompletionDir(), ".torrent.bolt.db")
 	pc, err := storage.NewBoltPieceCompletion(cfg.PieceCompletionDir())
@@ -247,6 +314,10 @@ func New(cfg *config.Config) (*Engine, error) {
 	cc.DefaultStorage = storage.NewFileWithCompletion(cfg.DownloadDir, pc)
 	if cfg.MaxConnections > 0 {
 		cc.EstablishedConnsPerTorrent = cfg.MaxConnections
+	}
+	if err := applyTorrentTuning(cc, cfg.TorrentTuning); err != nil {
+		pc.Close()
+		return nil, err
 	}
 	runtime := cfg.ProxyRuntime()
 	strictProxy := runtime != nil && runtime.Enabled()

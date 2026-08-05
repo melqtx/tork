@@ -85,6 +85,29 @@ metadata_cache:
   max_entries: 512
 ```
 
+Advanced torrent-client limits are optional; zero or omitted values retain the
+anacrolix defaults:
+
+```yaml
+torrent_tuning:
+  half_open_conns_per_torrent: 25
+  total_half_open_conns: 100
+  piece_hashers_per_torrent: 2
+  max_unverified_bytes: 67108864
+  dial_rate_limit: 10
+  peer_high_water: 500
+  peer_low_water: 50
+  download_rate_limit: 0
+  upload_rate_limit: 0
+  disable_aggressive_upload: false
+  no_upload: false
+```
+
+Transfer rates are client-wide bytes per second; dial rate is dials per second.
+`no_upload` prevents all torrent uploads, including seeding. The torrent library
+does not expose its webseed concurrency as a runtime client setting, so tork
+does not claim to configure it here.
+
 ## SOCKS5 proxy
 
 For the usual local Tor setup, one command is enough:
