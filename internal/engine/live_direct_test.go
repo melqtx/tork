@@ -16,6 +16,7 @@ import (
 // download from Gentoo's CDN, waits for the first bytes, then pauses and
 // shuts down; verifies UA/redirect/Range handling against real infrastructure.
 func TestLiveDirectDownloadStarts(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_DOWNLOAD_DIR", filepath.Join(t.TempDir(), "Downloads"))
 	cfg, err := config.LoadFrom(filepath.Join(t.TempDir(), ".tork"))
 	if err != nil {

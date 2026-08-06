@@ -473,21 +473,6 @@ func writeYAMLAtomic(path string, doc *yaml.Node, mode os.FileMode) (err error) 
 	return os.Rename(tmpName, path)
 }
 
-// defaultDownloadDir resolves the OS "Downloads" folder, so torrents land
-// where people already expect their downloads, tucked into a tork/ subfolder
-// so they never get lost among browser files. Honors XDG_DOWNLOAD_DIR when set
-// (the Linux convention, and a convenient override anywhere); otherwise
-// ~/Downloads. Falls back to a relative path only if home can't be resolved.
-func defaultDownloadDir() string {
-	if xdg := strings.TrimSpace(os.Getenv("XDG_DOWNLOAD_DIR")); xdg != "" {
-		return filepath.Join(expandHome(xdg), "tork")
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, "Downloads", "tork")
-	}
-	return "downloads"
-}
-
 // LoadFrom is Load with an explicit base dir (used by tests).
 func LoadFrom(dir string) (*Config, error) {
 	cfg := Default(dir)

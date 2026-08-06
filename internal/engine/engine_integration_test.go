@@ -86,6 +86,7 @@ func TestEngineDownloadsFromLocalSeeder(t *testing.T) {
 	}
 
 	// --- engine under test: download to completion
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_DOWNLOAD_DIR", filepath.Join(t.TempDir(), "Downloads"))
 	dir := filepath.Join(t.TempDir(), ".tork")
 	cfg, err := config.LoadFrom(dir)
@@ -464,6 +465,7 @@ func TestPreviewAndExcludeFiles(t *testing.T) {
 		t.Fatal("seeder has no TCP listen addr")
 	}
 
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_DOWNLOAD_DIR", filepath.Join(t.TempDir(), "Downloads"))
 	cfg, err := config.LoadFrom(filepath.Join(t.TempDir(), ".tork"))
 	if err != nil {
@@ -611,6 +613,7 @@ func TestNoSeedDropsConnectionsOnCompletion(t *testing.T) {
 		t.Fatal("seeder has no TCP listen addr")
 	}
 
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_DOWNLOAD_DIR", filepath.Join(t.TempDir(), "Downloads"))
 	cfg, err := config.LoadFrom(filepath.Join(t.TempDir(), ".tork"))
 	if err != nil {

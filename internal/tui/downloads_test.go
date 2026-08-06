@@ -155,6 +155,7 @@ func TestOverlayBottomRightKeepsLeftContent(t *testing.T) {
 }
 
 func TestVerificationGuardsDoNotPersistRefusedPauseOrSeed(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_DOWNLOAD_DIR", filepath.Join(t.TempDir(), "Downloads"))
 	cfg, err := config.LoadFrom(filepath.Join(t.TempDir(), ".tork"))
 	if err != nil {
@@ -205,6 +206,7 @@ func TestVerificationGuardsDoNotPersistRefusedPauseOrSeed(t *testing.T) {
 }
 
 func TestVerifyPersistedDirectUsesActivatedHashAndShowsResult(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_DOWNLOAD_DIR", filepath.Join(t.TempDir(), "Downloads"))
 	cfg, err := config.LoadFrom(filepath.Join(t.TempDir(), ".tork"))
 	if err != nil {

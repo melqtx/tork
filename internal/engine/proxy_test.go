@@ -22,6 +22,7 @@ import (
 
 func strictProxyConfig(t *testing.T, endpoint string) *config.Config {
 	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_DOWNLOAD_DIR", filepath.Join(t.TempDir(), "Downloads"))
 	dir := filepath.Join(t.TempDir(), ".tork")
 	if err := os.MkdirAll(dir, 0o755); err != nil {

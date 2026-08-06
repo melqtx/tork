@@ -23,6 +23,7 @@ import (
 // newDirectTestEngine builds an engine downloading into a temp dir.
 func newDirectTestEngine(t *testing.T) *Engine {
 	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_DOWNLOAD_DIR", filepath.Join(t.TempDir(), "Downloads"))
 	cfg, err := config.LoadFrom(filepath.Join(t.TempDir(), ".tork"))
 	if err != nil {

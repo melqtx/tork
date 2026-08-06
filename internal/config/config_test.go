@@ -9,6 +9,7 @@ import (
 )
 
 func TestLoadFromWritesDefaultsOnFirstRun(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_DOWNLOAD_DIR", filepath.Join(t.TempDir(), "Downloads"))
 	dir := filepath.Join(t.TempDir(), ".tork")
 	cfg, err := LoadFrom(dir)
@@ -289,6 +290,7 @@ func TestProviderBaseURLs(t *testing.T) {
 }
 
 func TestLoadFromRecoversFromCorruptConfig(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_DOWNLOAD_DIR", filepath.Join(t.TempDir(), "Downloads"))
 	dir := filepath.Join(t.TempDir(), ".tork")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -312,6 +314,7 @@ func TestLoadFromRecoversFromCorruptConfig(t *testing.T) {
 }
 
 func TestLoadFromConfiguresAndSecuresSOCKS5Credentials(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_DOWNLOAD_DIR", filepath.Join(t.TempDir(), "Downloads"))
 	dir := filepath.Join(t.TempDir(), ".tork")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -338,6 +341,7 @@ func TestLoadFromConfiguresAndSecuresSOCKS5Credentials(t *testing.T) {
 }
 
 func TestLoadReadOnlyProxyCredentialsDoNotMutatePermissions(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_DOWNLOAD_DIR", filepath.Join(t.TempDir(), "Downloads"))
 	dir := filepath.Join(t.TempDir(), ".tork")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -376,6 +380,7 @@ func TestLoadReadOnlyProxyCredentialsDoNotMutatePermissions(t *testing.T) {
 }
 
 func TestLoadReadOnlyReportsInvalidSOCKS5AndBlocksHTTP(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_DOWNLOAD_DIR", filepath.Join(t.TempDir(), "Downloads"))
 	dir := filepath.Join(t.TempDir(), ".tork")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -410,6 +415,7 @@ func TestLoadRejectsCredentialBearingConfigSymlink(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink permissions are not a supported credential-store contract on Windows")
 	}
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_DOWNLOAD_DIR", filepath.Join(t.TempDir(), "Downloads"))
 	dir := filepath.Join(t.TempDir(), ".tork")
 	if err := os.MkdirAll(dir, 0o755); err != nil {

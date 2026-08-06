@@ -29,6 +29,7 @@ func (p planProvider) Search(ctx context.Context, _ string, out chan<- provider.
 
 func TestExecuteDryRunExplainsAndRecordsWithoutQueueing(t *testing.T) {
 	downloads := filepath.Join(t.TempDir(), "Downloads")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_DOWNLOAD_DIR", downloads)
 	cfg, err := config.LoadFrom(filepath.Join(t.TempDir(), ".tork"))
 	if err != nil {
@@ -67,6 +68,7 @@ func TestExecuteDryRunExplainsAndRecordsWithoutQueueing(t *testing.T) {
 }
 
 func TestExecuteCancelledPlanNeverTouchesEngine(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_DOWNLOAD_DIR", filepath.Join(t.TempDir(), "Downloads"))
 	cfg, err := config.LoadFrom(filepath.Join(t.TempDir(), ".tork"))
 	if err != nil {

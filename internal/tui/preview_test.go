@@ -85,6 +85,7 @@ func TestPreviewCheckboxDoesNotDuplicateISOIcon(t *testing.T) {
 }
 
 func TestEnterQueuesMagnetBeforeMetadataArrives(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_DOWNLOAD_DIR", filepath.Join(t.TempDir(), "Downloads"))
 	cfg, err := config.LoadFrom(filepath.Join(t.TempDir(), ".tork"))
 	if err != nil {
@@ -123,6 +124,7 @@ func TestEnterQueuesMagnetBeforeMetadataArrives(t *testing.T) {
 // a folder row with everything already selected. Enter there must download, not
 // fold, or every download costs an extra hop onto a file row first.
 func TestPreviewEnterOnFolderStartsDownload(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_DOWNLOAD_DIR", filepath.Join(t.TempDir(), "Downloads"))
 	cfg, err := config.LoadFrom(filepath.Join(t.TempDir(), ".tork"))
 	if err != nil {
@@ -223,6 +225,7 @@ func TestJunkFilesSkipsExtrasButKeepsPayload(t *testing.T) {
 }
 
 func TestPreviewCancelDoesNotRemoveNonOwnedTorrent(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_DOWNLOAD_DIR", filepath.Join(t.TempDir(), "Downloads"))
 	cfg, err := config.LoadFrom(filepath.Join(t.TempDir(), ".tork"))
 	if err != nil {
@@ -259,6 +262,7 @@ func TestPreviewCancelDoesNotRemoveNonOwnedTorrent(t *testing.T) {
 }
 
 func TestPreviewExistingPausedTorrentDoesNotMutateIt(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_DOWNLOAD_DIR", filepath.Join(t.TempDir(), "Downloads"))
 	cfg, err := config.LoadFrom(filepath.Join(t.TempDir(), ".tork"))
 	if err != nil {
