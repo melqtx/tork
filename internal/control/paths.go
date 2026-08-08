@@ -2,11 +2,20 @@ package control
 
 import "net"
 
-// SocketAddr returns a *net.Addr for the control socket.
-func SocketAddr(name string) (net.Addr, error) {
-	dir, err := runtimeDir(name)
+type Paths struct {
+	Dir    string
+	Socket net.Addr
+	Lock   string
+}
+
+func ResolvePaths() (*Paths, error) {
+	dir, err := runtimeDir("tork")
 	if err != nil {
 		return nil, err
 	}
-	return socketAddr(name, dir)
+	sock, err := socketAddr("tork", dir)
+	if err != nil {
+		return nil, err
+	}
+	return &Paths{Dir: dir, Socket: sock}, nil
 }

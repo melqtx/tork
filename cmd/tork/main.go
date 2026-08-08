@@ -21,6 +21,7 @@ import (
 	"github.com/melqtx/tork/internal/aggregator"
 	"github.com/melqtx/tork/internal/autopilot"
 	"github.com/melqtx/tork/internal/config"
+	"github.com/melqtx/tork/internal/control"
 	"github.com/melqtx/tork/internal/engine"
 	"github.com/melqtx/tork/internal/health"
 	"github.com/melqtx/tork/internal/intake"
@@ -136,6 +137,11 @@ your OS Downloads folder by default. Press H inside it for the health screen.
 
 // runDaemon... TODO
 func runDaemon(args []string) error {
+	p, err := control.ResolvePaths()
+	if err != nil {
+		return err
+	}
+	fmt.Println(p)
 	return nil
 }
 
