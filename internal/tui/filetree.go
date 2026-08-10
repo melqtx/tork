@@ -15,6 +15,7 @@ type fileNode struct {
 	length    int64
 	depth     int
 	collapsed bool
+	leaves    []int // cached descendant file indices for checkbox/toggle rendering
 }
 
 func buildFileTree(files []engine.FileInfo) *fileNode {
@@ -59,7 +60,20 @@ func buildFileTree(files []engine.FileInfo) *fileNode {
 		}
 	}
 	sortFileTree(root, -1)
+	cacheLeaves(root)
 	return root
+}
+
+func cacheLeaves(n *fileNode) []int {
+	if n.fileIdx >= 0 {
+		n.leaves = []int{n.fileIdx}
+		return n.leaves
+	}
+	n.leaves = n.leaves[:0]
+	for _, child := range n.children {
+		n.leaves = append(n.leaves, cacheLeaves(child)...)
+	}
+	return n.leaves
 }
 
 func splitTorrentPath(p string) []string {
@@ -101,12 +115,18 @@ func (n *fileNode) flatten(out *[]*fileNode) {
 }
 
 func (n *fileNode) leafIndices(out *[]int) {
+	if len(n.leaves) > 0 {
+		*out = append(*out, n.leaves...)
+		return
+	}
+	// Keep hand-built nodes useful in tests and callers that have not gone
+	// through buildFileTree. Production trees take the cached path above.
 	if n.fileIdx >= 0 {
 		*out = append(*out, n.fileIdx)
 		return
 	}
-	for _, c := range n.children {
-		c.leafIndices(out)
+	for _, child := range n.children {
+		child.leafIndices(out)
 	}
 }
 
@@ -119,8 +139,10 @@ const (
 )
 
 func nodeCheck(n *fileNode, excluded map[int]bool) checkState {
-	var leaves []int
-	n.leafIndices(&leaves)
+	leaves := n.leaves
+	if len(leaves) == 0 {
+		n.leafIndices(&leaves)
+	}
 	if len(leaves) == 0 {
 		return checkNone
 	}
@@ -141,6 +163,9 @@ func nodeCheck(n *fileNode, excluded map[int]bool) checkState {
 }
 
 func countDirs(n *fileNode) int {
+	if n == nil {
+		return 0
+	}
 	total := 0
 	for _, c := range n.children {
 		if c.fileIdx < 0 {

@@ -82,9 +82,7 @@ func (r *resultsModel) rebuildGroups() {
 	sort.SliceStable(r.groups, func(i, j int) bool {
 		return !groupAllNoisy(r, &r.groups[i]) && groupAllNoisy(r, &r.groups[j])
 	})
-	if n := len(r.navItems()); r.gwin.cursor >= n {
-		r.gwin.cursor = max(0, n-1)
-	}
+	r.restoreGraphSelection()
 }
 
 func (r *resultsModel) navItems() []navItem {
@@ -170,7 +168,88 @@ func (a *App) updateGraphKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return a, a.yankResult(res)
 	}
+	r.syncGraphSelection()
 	return a, nil
+}
+
+func (r *resultsModel) navIdentity(it navItem) string {
+	if it.group < 0 || it.group >= len(r.groups) {
+		return ""
+	}
+	g := &r.groups[it.group]
+	if it.leaf < 0 {
+		return "group:" + g.key
+	}
+	if it.leaf >= len(g.rowIdx) {
+		return ""
+	}
+	idx := g.rowIdx[it.leaf]
+	if idx < 0 || idx >= len(r.rows) {
+		return ""
+	}
+	return rowIdentity(r.rows[idx])
+}
+
+func (r *resultsModel) syncGraphSelection() {
+	items := r.navItems()
+	if r.gwin.cursor < 0 || r.gwin.cursor >= len(items) {
+		r.graphSelectedKey = ""
+		return
+	}
+	it := items[r.gwin.cursor]
+	r.graphSelectedKey = r.navIdentity(it)
+	if it.group < 0 || it.group >= len(r.groups) {
+		return
+	}
+	g := &r.groups[it.group]
+	leaf := it.leaf
+	if leaf < 0 {
+		leaf = 0
+	}
+	if leaf >= 0 && leaf < len(g.rowIdx) {
+		idx := g.rowIdx[leaf]
+		if idx >= 0 && idx < len(r.rows) {
+			r.selectedKey = rowIdentity(r.rows[idx])
+		}
+	}
+}
+
+func (r *resultsModel) restoreGraphSelection() {
+	items := r.navItems()
+	key := r.graphSelectedKey
+	if key == "" && r.selectedKey != "" {
+		// Prefer the group containing the flat selection. A collapsed multi-row
+		// group exposes its header; a single-source group exposes the row itself.
+		for gi := range r.groups {
+			g := &r.groups[gi]
+			for _, idx := range g.rowIdx {
+				if rowIdentity(r.rows[idx]) != r.selectedKey {
+					continue
+				}
+				key = "group:" + g.key
+				if len(g.rowIdx) == 1 {
+					key = r.selectedKey
+				}
+				break
+			}
+			if key != "" {
+				break
+			}
+		}
+	}
+	if key != "" {
+		for i, it := range items {
+			if r.navIdentity(it) == key {
+				r.gwin.cursor = i
+				r.syncGraphSelection()
+				return
+			}
+		}
+	}
+	if r.gwin.cursor >= len(items) {
+		r.gwin.cursor = max(0, len(items)-1)
+	}
+	r.syncGraphSelection()
 }
 
 func currentItem(items []navItem, cursor int) (navItem, bool) {

@@ -7,12 +7,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/atotto/clipboard"
 	"github.com/aymanbagabas/go-osc52/v2"
-	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -74,11 +74,39 @@ type downloadItem struct {
 	ETA            time.Duration
 	PeersActive    int
 	PeersTotal     int
+	Seeders        int
+	Trackers       int
+	MetadataSource engine.MetadataSource
+	DHTEnabled     bool
+	ProxyStrict    bool
 	State          engine.TorrentState
 	Note           string
 	Seed           bool
 	Live           bool
 	EntryIndex     int
+}
+
+// downloadMetrics is computed once with the cached list projection, then used
+// by the header, overview and detail panel without rescanning on every View.
+type downloadMetrics struct {
+	Total, Active, Paused, Done, Missing, Seeding, Verifying int
+	BytesCompleted, Length, ActiveRemaining                  int64
+	SpeedBps                                                 float64
+	PeersActive, PeersTotal, Seeders                         int
+}
+
+func (m downloadMetrics) Progress() float64 {
+	if m.Length <= 0 {
+		return 0
+	}
+	return clampProgress(float64(m.BytesCompleted) / float64(m.Length))
+}
+
+func (m downloadMetrics) ETA() time.Duration {
+	if m.SpeedBps <= 0 || m.ActiveRemaining <= 0 {
+		return 0
+	}
+	return time.Duration(float64(m.ActiveRemaining) / m.SpeedBps * float64(time.Second))
 }
 
 type removeConfirm struct {
@@ -110,21 +138,72 @@ type pathPrompt struct {
 }
 
 type downloadsModel struct {
-	snaps   []engine.Snapshot
-	win     listWindow
-	bar     progress.Model
-	ticking bool
+	snaps           []engine.Snapshot
+	items           []downloadItem
+	metrics         downloadMetrics
+	itemsReady      bool
+	selectedKey     string
+	selectionPinned bool // false follows the most actionable item until the user moves
+	win             listWindow
+	ticking         bool
+	pathExists      map[string]bool
+	pathCheckID     uint64
+	checkingPaths   bool
+	pathsChecked    time.Time
 
 	confirmRemove *removeConfirm
 	prompt        pathPrompt
 }
 
 func newDownloadsModel() downloadsModel {
-	bar := progress.New(progress.WithSolidFill(string(colBrand)))
-	bar.EmptyColor = string(colBorder)
-	bar.Width = 40
-	bar.ShowPercentage = false
-	return downloadsModel{bar: bar}
+	return downloadsModel{pathExists: map[string]bool{}}
+}
+
+const downloadPathCheckInterval = 30 * time.Second
+
+// startDownloadPathCheck snapshots the paths on the update goroutine and does
+// the potentially slow filesystem work in a command. This matters for network
+// mounts in particular: View can run many times per second and must be pure.
+func (a *App) startDownloadPathCheck(force bool) tea.Cmd {
+	d := &a.downloads
+	if d.checkingPaths || a.st == nil {
+		return nil
+	}
+	if !force && !d.pathsChecked.IsZero() && time.Since(d.pathsChecked) < downloadPathCheckInterval {
+		return nil
+	}
+	paths := make([]string, 0, len(a.st.Entries))
+	seen := make(map[string]bool, len(a.st.Entries))
+	for _, entry := range a.st.Entries {
+		path := strings.TrimSpace(entry.DataPath)
+		if !entry.Done || entry.NeedsRelink || path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		paths = append(paths, path)
+	}
+	d.pathCheckID++
+	checkID := d.pathCheckID
+	d.checkingPaths = true
+	return func() tea.Msg {
+		exists := make(map[string]bool, len(paths))
+		for _, path := range paths {
+			_, err := os.Stat(path)
+			exists[path] = err == nil
+		}
+		return downloadPathsMsg{checkID: checkID, exists: exists}
+	}
+}
+
+func (a *App) onDownloadPaths(msg downloadPathsMsg) {
+	d := &a.downloads
+	if msg.checkID != d.pathCheckID {
+		return
+	}
+	d.pathExists = msg.exists
+	d.checkingPaths = false
+	d.pathsChecked = time.Now()
+	a.refreshDownloadItems()
 }
 
 func (a *App) updateDownloads(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -150,8 +229,7 @@ func (a *App) updateDownloads(msg tea.Msg) (tea.Model, tea.Cmd) {
 	rows := a.downloadListRows()
 	if verificationBlocksKey(key.String()) {
 		if it, ok := a.selectedDownload(items); ok && it.State == engine.StateVerifying {
-			a.errText = "verification in progress"
-			return a, clearErrCmd()
+			return a, a.showError("verification in progress")
 		}
 	}
 	switch key.String() {
@@ -161,16 +239,22 @@ func (a *App) updateDownloads(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.screen = screenSearch
 		return a, a.search.input.Focus()
 	case "up", "k":
+		d.selectionPinned = true
 		d.win.move(-1, len(items), rows)
 	case "down", "j":
+		d.selectionPinned = true
 		d.win.move(1, len(items), rows)
 	case "pgup":
+		d.selectionPinned = true
 		d.win.move(-rows, len(items), rows)
 	case "pgdown":
+		d.selectionPinned = true
 		d.win.move(rows, len(items), rows)
 	case "g", "home":
+		d.selectionPinned = true
 		d.win.home()
 	case "G", "end":
+		d.selectionPinned = true
 		d.win.end(len(items), rows)
 	case "s":
 		if it, ok := a.selectedDownload(items); ok {
@@ -223,6 +307,7 @@ func (a *App) updateDownloads(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, revealDownload(it)
 		}
 	}
+	d.syncSelection(items)
 	return a, nil
 }
 
@@ -349,8 +434,7 @@ func (a *App) updatePathPrompt(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		d.prompt = pathPrompt{}
 		it, ok := a.downloadItemByMagnet(a.downloadItems(), magnet)
 		if !ok {
-			a.errText = "download is no longer in the list"
-			return a, clearErrCmd()
+			return a, a.showError("download is no longer in the list")
 		}
 		var err error
 		if action == pathActionMove {
@@ -359,8 +443,7 @@ func (a *App) updatePathPrompt(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			err = a.relinkDownload(it, target)
 		}
 		if err != nil {
-			a.errText = err.Error()
-			return a, clearErrCmd()
+			return a, a.showError(err.Error())
 		}
 		return a, tea.Batch(a.saveState(), a.ensureTick())
 	}
@@ -378,11 +461,10 @@ func (a *App) updateRemoveConfirm(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	case "y", "enter":
 		if err := a.removeDownload(conf.item, conf.deleteData); err != nil {
-			a.errText = "remove failed: " + err.Error()
-			return a, clearErrCmd()
+			return a, a.showError("remove failed: " + err.Error())
 		}
 		d.snaps = a.eng.Snapshots()
-		d.win.clamp(len(a.downloadItems()), a.downloadListRows())
+		a.refreshDownloadItems()
 		return a, a.saveState()
 	}
 	return a, nil
@@ -405,6 +487,44 @@ func (a *App) downloadItemByMagnet(items []downloadItem, magnet string) (downloa
 }
 
 func (a *App) downloadItems() []downloadItem {
+	if a.downloads.itemsReady {
+		return a.downloads.items
+	}
+	return a.buildDownloadItems()
+}
+
+// refreshDownloadItems builds the state+engine projection once per update,
+// sorts actionable transfers above history, computes dashboard totals, and
+// restores the cursor by identity if an item's state moved it in the queue.
+func (a *App) refreshDownloadItems() {
+	d := &a.downloads
+	selected := d.selectedKey
+	if selected == "" && d.win.cursor >= 0 && d.win.cursor < len(d.items) {
+		selected = downloadItemKey(d.items[d.win.cursor])
+	}
+	items := a.buildDownloadItems()
+	sort.SliceStable(items, func(i, j int) bool {
+		return downloadStatePriority(items[i].State) < downloadStatePriority(items[j].State)
+	})
+	d.items = items
+	d.metrics = summarizeDownloads(items)
+	d.itemsReady = true
+
+	if d.selectionPinned && selected != "" {
+		for i := range items {
+			if downloadItemKey(items[i]) == selected {
+				d.win.cursor = i
+				break
+			}
+		}
+	} else if !d.selectionPinned {
+		d.win.home()
+	}
+	d.win.clamp(len(items), a.downloadListRows())
+	d.syncSelection(items)
+}
+
+func (a *App) buildDownloadItems() []downloadItem {
 	snapsByMagnet := make(map[string]engine.Snapshot, len(a.downloads.snaps))
 	for _, s := range a.downloads.snaps {
 		if s.Magnet != "" {
@@ -438,13 +558,87 @@ func (a *App) downloadItems() []downloadItem {
 	return out
 }
 
+func downloadItemKey(it downloadItem) string {
+	if it.Magnet != "" {
+		return "magnet:" + it.Magnet
+	}
+	if it.Hash != (metainfo.Hash{}) {
+		return "hash:" + it.Hash.HexString()
+	}
+	return "path:" + it.DataPath + "\x00" + it.Name
+}
+
+func (d *downloadsModel) syncSelection(items []downloadItem) {
+	if d.win.cursor < 0 || d.win.cursor >= len(items) {
+		d.selectedKey = ""
+		return
+	}
+	d.selectedKey = downloadItemKey(items[d.win.cursor])
+}
+
+func downloadStatePriority(s engine.TorrentState) int {
+	switch s {
+	case engine.StateDownloading, engine.StateFetchingMeta, engine.StateVerifying, engine.StatePreviewing:
+		return 0
+	case engine.StatePaused:
+		return 1
+	case engine.StateMissing:
+		return 2
+	case engine.StateSeeding:
+		return 3
+	case engine.StateDone:
+		return 4
+	default:
+		return 2
+	}
+}
+
+func summarizeDownloads(items []downloadItem) downloadMetrics {
+	var m downloadMetrics
+	m.Total = len(items)
+	for _, it := range items {
+		if it.Length > 0 {
+			m.Length += it.Length
+			completed := min(it.BytesCompleted, it.Length)
+			if it.State == engine.StateDone || it.State == engine.StateSeeding {
+				completed = it.Length
+			}
+			m.BytesCompleted += max(int64(0), completed)
+		}
+		m.SpeedBps += max(0, it.SpeedBps)
+		m.PeersActive += it.PeersActive
+		m.PeersTotal += it.PeersTotal
+		m.Seeders += it.Seeders
+		switch it.State {
+		case engine.StateDownloading, engine.StateFetchingMeta, engine.StatePreviewing:
+			m.Active++
+			m.ActiveRemaining += max(int64(0), it.Length-it.BytesCompleted)
+		case engine.StateVerifying:
+			m.Active++
+			m.Verifying++
+		case engine.StatePaused:
+			m.Paused++
+		case engine.StateMissing:
+			m.Missing++
+		case engine.StateSeeding:
+			m.Seeding++
+			m.Done++
+		case engine.StateDone:
+			m.Done++
+		}
+	}
+	return m
+}
+
 func itemFromSnapshot(s engine.Snapshot, idx int, live bool) downloadItem {
 	return downloadItem{
 		Hash: s.Hash, Magnet: s.Magnet, Name: s.Name,
 		DownloadDir: s.DownloadDir, DataPath: s.DataPath,
 		BytesCompleted: s.BytesCompleted, Length: s.Length,
 		SpeedBps: s.SpeedBps, ETA: s.ETA,
-		PeersActive: s.PeersActive, PeersTotal: s.PeersTotal,
+		PeersActive: s.PeersActive, PeersTotal: s.PeersTotal, Seeders: s.Seeders,
+		Trackers: s.Metadata.Trackers, MetadataSource: s.Metadata.Source,
+		DHTEnabled: s.Metadata.DHTEnabled, ProxyStrict: s.Metadata.ProxyStrict,
 		State: s.State, Note: s.Note, Seed: s.Seed,
 		Live: live, EntryIndex: idx,
 	}
@@ -461,16 +655,24 @@ func (a *App) itemFromEntry(e *state.Entry, idx int) downloadItem {
 	}
 	st := engine.StatePaused
 	note := "not active"
+	path := strings.TrimSpace(e.DataPath)
+	pathExists, pathKnown := a.downloads.pathExists[path]
 	switch {
 	case e.NeedsRelink:
 		st = engine.StateMissing
 		note = "save path unknown - relink before retrying"
-	case e.Done && !entryPathExists(e.DataPath):
+	case e.Done && path == "":
+		st = engine.StateMissing
+		note = "save path unknown - relink before retrying"
+	case e.Done && pathKnown && !pathExists:
 		st = engine.StateMissing
 		note = "files not found - relink or move before retrying"
 	case e.Done:
 		st = engine.StateDone
 		note = "saved in state"
+		if !pathKnown {
+			note += " - checking files"
+		}
 	case e.Paused:
 		st = engine.StatePaused
 		note = "paused"
@@ -485,43 +687,41 @@ func (a *App) itemFromEntry(e *state.Entry, idx int) downloadItem {
 
 func (a *App) toggleSeed(it downloadItem) tea.Cmd {
 	if strings.HasPrefix(it.Magnet, "http://") || strings.HasPrefix(it.Magnet, "https://") {
-		a.errText = "direct downloads cannot seed"
-		return clearErrCmd()
+		return a.showError("direct downloads cannot seed")
 	}
 	next := !it.Seed
 	if it.Live {
 		if err := a.eng.SetSeeding(it.Hash, next); err != nil {
-			a.errText = "seed change failed: " + err.Error()
-			return clearErrCmd()
+			return a.showError("seed change failed: " + err.Error())
 		}
 		a.downloads.snaps = a.eng.Snapshots()
 	}
+	var save tea.Cmd
 	if e := a.st.Find(it.Magnet); e != nil {
 		e.Seed = state.Bool(next)
-		return a.saveState()
+		save = a.saveState()
 	}
-	return nil
+	a.refreshDownloadItems()
+	return save
 }
 
 func (a *App) togglePause(it downloadItem) tea.Cmd {
 	if it.State == engine.StateMissing {
-		a.errText = "missing data - press r to relink, or d to delete it"
-		return clearErrCmd()
+		return a.showError("missing data - press r to relink, or d to delete it")
 	}
 	if it.Live && it.State != engine.StatePaused {
 		if err := a.eng.Pause(it.Hash); err != nil {
-			a.errText = "pause failed: " + err.Error()
-			return clearErrCmd()
+			return a.showError("pause failed: " + err.Error())
 		}
 		if e := a.st.Find(it.Magnet); e != nil {
 			e.Paused = true
 		}
 		a.downloads.snaps = a.eng.Snapshots()
+		a.refreshDownloadItems()
 		return a.saveState()
 	}
 	if err := a.resumeDownload(it); err != nil {
-		a.errText = "resume failed: " + err.Error()
-		return clearErrCmd()
+		return a.showError("resume failed: " + err.Error())
 	}
 	if a.st != nil {
 		if e := a.st.Find(it.Magnet); e != nil {
@@ -529,21 +729,19 @@ func (a *App) togglePause(it downloadItem) tea.Cmd {
 		}
 	}
 	a.downloads.snaps = a.eng.Snapshots()
+	a.refreshDownloadItems()
 	return tea.Batch(a.saveState(), a.ensureTick())
 }
 
 func (a *App) verifyDownload(it downloadItem) tea.Cmd {
 	switch it.State {
 	case engine.StateVerifying:
-		a.errText = "verification already in progress"
-		return clearErrCmd()
+		return a.showError("verification already in progress")
 	case engine.StateMissing:
-		a.errText = "missing data - relink to existing files first"
-		return clearErrCmd()
+		return a.showError("missing data - relink to existing files first")
 	case engine.StateDone, engine.StateSeeding:
 	default:
-		a.errText = "verification is available after the download completes"
-		return clearErrCmd()
+		return a.showError("verification is available after the download completes")
 	}
 
 	h := it.Hash
@@ -551,8 +749,7 @@ func (a *App) verifyDownload(it downloadItem) tea.Cmd {
 		var err error
 		h, err = a.activateDownload(it)
 		if err != nil {
-			a.errText = "verify failed: " + err.Error()
-			return clearErrCmd()
+			return a.showError("verify failed: " + err.Error())
 		}
 	}
 	if a.st != nil {
@@ -561,6 +758,7 @@ func (a *App) verifyDownload(it downloadItem) tea.Cmd {
 		}
 	}
 	a.downloads.snaps = a.eng.Snapshots()
+	a.refreshDownloadItems()
 	magnet := it.Magnet
 	return tea.Batch(a.saveState(), a.ensureTick(), func() tea.Msg {
 		result, err := a.eng.Verify(context.Background(), h)
@@ -576,10 +774,10 @@ func (a *App) onVerifyDone(msg verifyDoneMsg) tea.Cmd {
 			save = a.saveState()
 		}
 	}
+	a.refreshDownloadItems()
 	if msg.err != nil {
 		a.toast.text = ""
-		a.errText = "verify failed: " + msg.err.Error()
-		return tea.Batch(save, a.ensureTick(), clearErrCmd())
+		return tea.Batch(save, a.ensureTick(), a.showError("verify failed: "+msg.err.Error()))
 	}
 
 	notice, warn := verificationNotice(msg.result)
@@ -698,9 +896,14 @@ func (a *App) moveDownload(it downloadItem, targetDir string) error {
 	moved.DownloadDir = targetDir
 	moved.DataPath = newPath
 	if shouldResumeAfterPathChange(moved) {
-		return a.resumeDownload(moved)
+		if err := a.resumeDownload(moved); err != nil {
+			return err
+		}
 	}
 	a.downloads.snaps = a.eng.Snapshots()
+	a.downloads.pathExists[newPath] = true
+	delete(a.downloads.pathExists, it.DataPath)
+	a.refreshDownloadItems()
 	return nil
 }
 
@@ -740,9 +943,13 @@ func (a *App) relinkDownload(it downloadItem, targetPath string) error {
 	linked.DownloadDir = filepath.Dir(targetPath)
 	linked.DataPath = targetPath
 	if shouldResumeAfterPathChange(linked) {
-		return a.resumeDownload(linked)
+		if err := a.resumeDownload(linked); err != nil {
+			return err
+		}
 	}
 	a.downloads.snaps = a.eng.Snapshots()
+	a.downloads.pathExists[targetPath] = true
+	a.refreshDownloadItems()
 	return nil
 }
 
@@ -828,18 +1035,14 @@ func safeDownloadPath(dir, path string) bool {
 		!strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && !filepath.IsAbs(rel)
 }
 
-func entryPathExists(path string) bool {
-	if path == "" {
-		return false
-	}
-	_, err := os.Stat(path)
-	return err == nil
-}
-
 func (a *App) viewDownloads() string {
 	d := &a.downloads
 	width := a.contentWidth()
 	items := a.downloadItems()
+	metrics := d.metrics
+	if !d.itemsReady {
+		metrics = summarizeDownloads(items)
+	}
 
 	if len(items) == 0 {
 		empty := lipgloss.JoinVertical(lipgloss.Center,
@@ -853,11 +1056,12 @@ func (a *App) viewDownloads() string {
 		return a.chrome("downloads", body, hints(hint("tab", "screens"), hint("q", "quit")))
 	}
 
-	d.bar.Width = max(20, min(64, width-40))
 	listRows := a.downloadListRows()
 	start, end := d.win.clamp(len(items), listRows)
 
 	var b strings.Builder
+	b.WriteString(a.downloadsOverview(metrics, width))
+	b.WriteString("\n")
 	for i := start; i < end; i++ {
 		b.WriteString(a.renderDownloadItem(items[i], i == d.win.cursor, width))
 		if i < end-1 {
@@ -883,7 +1087,7 @@ func (a *App) viewDownloads() string {
 	if d.prompt.action != pathActionNone {
 		help = d.prompt.input.View()
 	}
-	return a.chrome(a.downloadsContext(items), b.String(), help)
+	return a.chrome(a.downloadsContext(metrics), b.String(), help)
 }
 
 func (a *App) renderDownloadItem(it downloadItem, selected bool, width int) string {
@@ -891,40 +1095,148 @@ func (a *App) renderDownloadItem(it downloadItem, selected bool, width int) stri
 	nameStyle := styleFg
 	if selected {
 		marker = styleSelBar.Render("▍ ")
-		nameStyle = lipgloss.NewStyle().Foreground(colBrand).Bold(true)
+		nameStyle = styleBrand
 	}
-	name := marker + nameStyle.Render(truncate(it.Name, max(20, width-6)))
-	if it.State == engine.StateMissing {
-		name += " " + styleErr.Render("missing")
+	badge := stateBadge(it.State)
+	nameWidth := max(1, width-lipgloss.Width(marker)-lipgloss.Width(badge)-2)
+	name := nameStyle.Render(truncate(it.Name, nameWidth))
+	line1 := marker + name
+	if gap := width - lipgloss.Width(line1) - lipgloss.Width(badge); gap > 0 {
+		line1 += strings.Repeat(" ", gap) + badge
+	} else {
+		line1 += " " + badge
 	}
+
 	pct := fmt.Sprintf("%5.1f%%", it.Progress()*100)
-	bar := "  " + a.downloads.bar.ViewAs(it.Progress()) + "  " + styleDim.Render(pct)
-	stats := fmt.Sprintf("  %s / %s   %s   ETA %s   %s %d/%d   %s",
-		humanBytes(it.BytesCompleted),
-		humanBytes(it.Length),
-		humanSpeed(it.SpeedBps),
-		fmtETA(it.ETA),
-		styleFaint.Render("peers"), it.PeersActive, it.PeersTotal,
-		stateBadge(it.State),
-	)
-	if it.Note != "" {
-		stats += "   " + styleFaint.Render(it.Note)
+	size := ""
+	if it.Length > 0 && width >= 58 {
+		size = humanBytes(min(it.BytesCompleted, it.Length)) + " / " + humanBytes(it.Length)
 	}
-	return name + "\n" + bar + "\n" + styleDim.Render(stats) + "\n"
+	barWidth := width - 2 - 1 - lipgloss.Width(pct)
+	if size != "" {
+		barWidth -= lipgloss.Width(size) + 3
+	}
+	barWidth = max(4, min(48, barWidth))
+	line2 := "  " + progressRail(it.Progress(), barWidth) + " " + styleDim.Render(pct)
+	if size != "" {
+		line2 += styleFaint.Render("   " + size)
+	}
+
+	parts := make([]string, 0, 5)
+	if it.SpeedBps > 0 {
+		parts = append(parts, styleOK.Render("↓ "+humanSpeed(it.SpeedBps)))
+	}
+	if it.ETA > 0 {
+		parts = append(parts, "ETA "+fmtETA(it.ETA))
+	}
+	if it.PeersTotal > 0 {
+		parts = append(parts, fmt.Sprintf("peers %d/%d", it.PeersActive, it.PeersTotal))
+	}
+	if it.Seeders > 0 {
+		parts = append(parts, plural(it.Seeders, "seeder"))
+	}
+	if it.Trackers > 0 && width >= 72 {
+		parts = append(parts, plural(it.Trackers, "tracker"))
+	}
+	if strings.HasPrefix(it.Magnet, "http://") || strings.HasPrefix(it.Magnet, "https://") {
+		parts = append(parts, "direct")
+	}
+	if showDownloadNote(it.Note) {
+		parts = append(parts, it.Note)
+	}
+	if len(parts) == 0 {
+		parts = append(parts, "waiting for activity")
+	}
+	line3 := "  " + styleFaint.Render(strings.Join(parts, "  ·  "))
+	return truncate(line1, width) + "\n" + truncate(line2, width) + "\n" + truncate(line3, width)
 }
 
 func (it downloadItem) Progress() float64 {
+	if it.State == engine.StateDone || it.State == engine.StateSeeding {
+		return 1
+	}
 	if it.Length == 0 {
-		if it.State == engine.StateDone {
-			return 1
-		}
 		return 0
 	}
-	return float64(it.BytesCompleted) / float64(it.Length)
+	return clampProgress(float64(it.BytesCompleted) / float64(it.Length))
+}
+
+func clampProgress(progress float64) float64 { return max(0, min(1, progress)) }
+
+func progressRail(progress float64, width int) string {
+	width = max(1, width)
+	filled := int(clampProgress(progress)*float64(width) + 0.5)
+	return styleOK.Render(strings.Repeat("━", filled)) + styleRule.Render(strings.Repeat("─", width-filled))
+}
+
+func showDownloadNote(note string) bool {
+	switch strings.TrimSpace(note) {
+	case "", "not active", "paused", "saved in state":
+		return false
+	default:
+		return true
+	}
+}
+
+func (a *App) downloadsOverview(m downloadMetrics, width int) string {
+	activity := styleFaint.Render("queue idle")
+	if m.Active > 0 {
+		activity = styleOK.Render(fmt.Sprintf("↓ %d active", m.Active))
+	} else if m.Total > 0 && m.Done == m.Total {
+		activity = styleOK.Render("✓ all complete")
+	}
+	line1 := activity
+	if m.SpeedBps > 0 {
+		line1 += styleFaint.Render("   ") + styleFg.Render(humanSpeed(m.SpeedBps))
+	}
+	line1 += styleFaint.Render(fmt.Sprintf("   queue %.1f%%", m.Progress()*100))
+
+	if a.bodyHeight() < 12 {
+		return truncate(line1, width) + "\n" + rule(width)
+	}
+	percent := fmt.Sprintf("%5.1f%%", m.Progress()*100)
+	sizes := ""
+	if m.Length > 0 && width >= 62 {
+		sizes = humanBytes(m.BytesCompleted) + " / " + humanBytes(m.Length)
+	}
+	railWidth := width - lipgloss.Width(percent) - 1
+	if sizes != "" {
+		railWidth -= lipgloss.Width(sizes) + 3
+	}
+	railWidth = max(4, min(56, railWidth))
+	line2 := progressRail(m.Progress(), railWidth) + " " + styleDim.Render(percent)
+	if sizes != "" {
+		line2 += styleFaint.Render("   " + sizes)
+	}
+
+	facts := make([]string, 0, 6)
+	if m.PeersTotal > 0 {
+		facts = append(facts, fmt.Sprintf("peers %d/%d", m.PeersActive, m.PeersTotal))
+	}
+	if m.Seeders > 0 {
+		facts = append(facts, plural(m.Seeders, "seeder"))
+	}
+	if eta := m.ETA(); eta > 0 {
+		facts = append(facts, "ETA "+fmtETA(eta))
+	}
+	if m.Paused > 0 {
+		facts = append(facts, fmt.Sprintf("%d paused", m.Paused))
+	}
+	if m.Missing > 0 {
+		facts = append(facts, styleErr.Render(fmt.Sprintf("%d missing", m.Missing)))
+	}
+	if m.Seeding > 0 {
+		facts = append(facts, fmt.Sprintf("%d seeding", m.Seeding))
+	}
+	if len(facts) == 0 {
+		facts = append(facts, fmt.Sprintf("%d in queue", m.Total))
+	}
+	line3 := styleFaint.Render(strings.Join(facts, "  ·  "))
+	return truncate(line1, width) + "\n" + truncate(line2, width) + "\n" + truncate(line3, width) + "\n" + rule(width)
 }
 
 func (a *App) downloadDetail(it downloadItem, width int) string {
-	if a.bodyHeight() < 14 {
+	if a.bodyHeight() < 20 {
 		return ""
 	}
 	path := it.DataPath
@@ -935,63 +1247,86 @@ func (a *App) downloadDetail(it downloadItem, width int) string {
 	if it.Seed {
 		seed = "on"
 	}
-	// The full list lives in the `?` card now, so this line stays short and
-	// cannot drift out of step with what the keys actually do.
+	mode := "torrent"
+	if strings.HasPrefix(it.Magnet, "http://") || strings.HasPrefix(it.Magnet, "https://") {
+		mode = "direct"
+	}
+	engineMode := "saved state"
+	if it.Live {
+		engineMode = "live engine"
+	}
+	modeParts := []string{mode, engineMode, "seeding " + seed}
+	if it.MetadataSource != "" {
+		modeParts = append(modeParts, "metadata "+string(it.MetadataSource))
+	}
+	if it.ProxyStrict {
+		modeParts = append(modeParts, "strict proxy")
+	} else if it.DHTEnabled && mode == "torrent" {
+		modeParts = append(modeParts, "DHT on")
+	}
+	transfer := []string{fmt.Sprintf("%.1f%%", it.Progress()*100)}
+	if it.SpeedBps > 0 {
+		transfer = append(transfer, "↓ "+humanSpeed(it.SpeedBps))
+	}
+	if it.ETA > 0 {
+		transfer = append(transfer, "ETA "+fmtETA(it.ETA))
+	}
+	if it.PeersTotal > 0 {
+		transfer = append(transfer, fmt.Sprintf("peers %d/%d", it.PeersActive, it.PeersTotal))
+	}
+	if it.Seeders > 0 {
+		transfer = append(transfer, plural(it.Seeders, "seeder"))
+	}
+	if it.Trackers > 0 {
+		transfer = append(transfer, plural(it.Trackers, "tracker"))
+	}
 	keys := "enter open"
 	if revealAvailable {
 		keys += " · o " + revealLabel
 	}
 	keys += " · ? all keys"
 	lines := []string{
-		styleFaint.Render("path  ") + styleDim.Render(truncate(path, width-7)),
-		styleFaint.Render("root  ") + styleDim.Render(truncate(it.DownloadDir, width-7)),
-		styleFaint.Render("seed  ") + styleDim.Render(seed) + styleFaint.Render("   status  ") + stateBadge(it.State),
-		styleFaint.Render("size  ") + styleDim.Render(fmt.Sprintf("%s selected", humanBytes(it.Length))),
-		styleFaint.Render("keys  ") + styleDim.Render(truncate(keys, width-7)),
+		styleFaint.Render("mode      ") + styleDim.Render(strings.Join(modeParts, " · ")) + styleFaint.Render("   ") + stateBadge(it.State),
+		styleFaint.Render("transfer  ") + styleDim.Render(strings.Join(transfer, " · ")),
+		styleFaint.Render("path      ") + styleDim.Render(truncate(path, width-10)),
+		styleFaint.Render("root      ") + styleDim.Render(truncate(it.DownloadDir, width-10)),
+		styleFaint.Render("actions   ") + styleDim.Render(truncate(keys, width-10)),
 	}
 	return strings.Join(lines, "\n")
 }
 
 func (a *App) downloadListRows() int {
 	body := a.bodyHeight()
-	if body >= 14 {
-		body -= 6
+	overviewLines := 2
+	if body >= 12 {
+		overviewLines = 4
 	}
-	return max(1, body/4)
+	detailLines := 0
+	if body >= 20 {
+		detailLines = 6
+	}
+	return max(1, (body-overviewLines-detailLines)/3)
 }
 
 // downloadsContext summarises the list in the header: what is moving, what is
 // waiting on you, and what is finished, so the shape of the queue is readable
 // without counting rows.
-func (a *App) downloadsContext(items []downloadItem) string {
-	var active, paused, done, missing int
-	for _, it := range items {
-		switch it.State {
-		case engine.StateDownloading, engine.StateFetchingMeta, engine.StateVerifying:
-			active++
-		case engine.StatePaused:
-			paused++
-		case engine.StateSeeding, engine.StateDone:
-			done++
-		case engine.StateMissing:
-			missing++
-		}
-	}
-	if active == 0 && paused == 0 && missing == 0 && done > 0 {
+func (a *App) downloadsContext(m downloadMetrics) string {
+	if m.Active == 0 && m.Paused == 0 && m.Missing == 0 && m.Done > 0 {
 		return "downloads · all done"
 	}
 	parts := []string{}
-	if active > 0 {
-		parts = append(parts, fmt.Sprintf("%d active", active))
+	if m.Active > 0 {
+		parts = append(parts, fmt.Sprintf("%d active", m.Active))
 	}
-	if paused > 0 {
-		parts = append(parts, fmt.Sprintf("%d paused", paused))
+	if m.Paused > 0 {
+		parts = append(parts, fmt.Sprintf("%d paused", m.Paused))
 	}
-	if missing > 0 {
-		parts = append(parts, fmt.Sprintf("%d missing", missing))
+	if m.Missing > 0 {
+		parts = append(parts, fmt.Sprintf("%d missing", m.Missing))
 	}
-	if done > 0 {
-		parts = append(parts, fmt.Sprintf("%d done", done))
+	if m.Done > 0 {
+		parts = append(parts, fmt.Sprintf("%d done", m.Done))
 	}
 	if len(parts) == 0 {
 		return "downloads"
@@ -1003,21 +1338,12 @@ func (a *App) downloadsContext(items []downloadItem) string {
 // queuing a download no longer jumps to the downloads screen: without it, a
 // download started from the results list would vanish from view entirely.
 func (a *App) activityChip() string {
-	active, seeding, speed := 0, 0, 0.0
-	for _, s := range a.downloads.snaps {
-		switch s.State {
-		case engine.StateDownloading, engine.StateFetchingMeta:
-			active++
-			speed += s.SpeedBps
-		case engine.StateSeeding:
-			seeding++
-		}
-	}
+	m := a.downloads.metrics
 	switch {
-	case active > 0:
-		return styleOK.Render(fmt.Sprintf("↓ %d", active)) + styleDim.Render("  "+humanSpeed(speed))
-	case seeding > 0:
-		return styleFaint.Render(fmt.Sprintf("↑ %d seeding", seeding))
+	case m.Active > 0:
+		return styleOK.Render(fmt.Sprintf("↓ %d", m.Active)) + styleDim.Render("  "+humanSpeed(m.SpeedBps))
+	case m.Seeding > 0:
+		return styleFaint.Render(fmt.Sprintf("↑ %d seeding", m.Seeding))
 	default:
 		return ""
 	}

@@ -72,8 +72,7 @@ func (a *App) runHealthCheck() tea.Cmd {
 func (a *App) onHealthDone(msg healthDoneMsg) tea.Cmd {
 	a.compass.probing = false
 	if msg.err != nil {
-		a.errText = "health check failed: " + msg.err.Error()
-		return clearErrCmd()
+		return a.showError("health check failed: " + msg.err.Error())
 	}
 	a.refreshCompass()
 	return nil

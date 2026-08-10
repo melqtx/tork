@@ -45,29 +45,37 @@ func (s sortMode) String() string {
 }
 
 type resultsModel struct {
-	query     string
-	rows      []scoredRow     // sorted by the active sort mode
-	seen      map[string]bool // dedupe across providers/retries
-	hashes    map[string]bool // infohashes already on a row, for cross-provider merging
-	merged    int             // duplicate listings folded into an existing row
-	visible   []int           // indices into rows after fuzzy filter
-	matched   map[int][]int   // row index -> matched rune positions in title
-	win       listWindow      // cursor over visible (flat mode)
-	filtering bool
-	filterIn  textinput.Model
-	filterErr string
-	status    map[string]aggregator.StatusEvent
-	searching bool
-	resolving bool
-	weights   rank.Weights
-	sort      sortMode
+	searchID        uint64
+	query           string
+	rows            []scoredRow     // sorted by the active sort mode
+	seen            map[string]bool // dedupe across providers/retries
+	hashes          map[string]bool // infohashes already on a row, for cross-provider merging
+	merged          int             // duplicate listings folded into an existing row
+	visible         []int           // indices into rows after fuzzy filter
+	matched         map[int][]int   // row index -> matched rune positions in title
+	win             listWindow      // cursor over visible (flat mode)
+	selectedKey     string          // stable identity; keeps selection through streamed inserts
+	selectionPinned bool            // false keeps following the best row until the user moves
+	filtering       bool
+	filterIn        textinput.Model
+	filterErr       string
+	filterHint      string
+	filterCommitted bool // Enter switches the live editor to strict validation
+	status          map[string]aggregator.StatusEvent
+	searching       bool
+	resolving       bool
+	resolveID       uint64
+	resolveCancel   context.CancelFunc
+	weights         rank.Weights
+	sort            sortMode
 
-	grouped       bool // source-graph view toggle (see graphview.go)
-	groups        []group
-	gwin          listWindow // cursor over the flattened grouped view
-	bestIdx       int        // r.rows index of the single best pick, or -1 (see recomputeBest)
-	meterMax      int        // max seeders among visible rows: one shared meter scale
-	resortPending bool       // a merge changed a row's sort key; refreshFilter re-orders
+	grouped          bool // source-graph view toggle (see graphview.go)
+	groups           []group
+	gwin             listWindow // cursor over the flattened grouped view
+	graphSelectedKey string     // group/result identity; survives regrouping
+	bestIdx          int        // r.rows index of the single best pick, or -1 (see recomputeBest)
+	meterMax         int        // max seeders among visible rows: one shared meter scale
+	resortPending    bool       // a merge changed a row's sort key; refreshFilter re-orders
 
 	resultCh <-chan provider.Result
 	statusCh <-chan aggregator.StatusEvent
@@ -119,6 +127,9 @@ func (a *App) updateResults(msg tea.Msg) (tea.Model, tea.Cmd) {
 	r := &a.results
 	switch msg := msg.(type) {
 	case resultMsg:
+		if msg.searchID != r.searchID {
+			return a, nil
+		}
 		// Drain whatever else is already buffered on the channel and refresh the
 		// view once, so a burst of providers doesn't trigger a full re-sort +
 		// re-filter + re-group per result.
@@ -138,27 +149,39 @@ func (a *App) updateResults(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		r.refreshFilter()
-		return a, waitForResult(r.resultCh)
+		return a, waitForResult(r.searchID, r.resultCh)
 
 	case statusMsg:
+		if msg.searchID != r.searchID {
+			return a, nil
+		}
 		r.status[msg.ev.Provider] = msg.ev
-		return a, waitForStatus(r.statusCh)
+		return a, waitForStatus(r.searchID, r.statusCh)
 
 	case resultsClosedMsg:
+		if msg.searchID != r.searchID {
+			return a, nil
+		}
 		r.openResults = false
 		r.searching = r.openStatus
 		return a, nil
 
 	case statusClosedMsg:
+		if msg.searchID != r.searchID {
+			return a, nil
+		}
 		r.openStatus = false
 		r.searching = r.openResults
 		return a, nil
 
 	case magnetResolvedMsg:
+		if msg.searchID != r.searchID || msg.resolveID != r.resolveID {
+			return a, nil
+		}
 		r.resolving = false
+		r.resolveCancel = nil
 		if msg.err != nil {
-			a.errText = "resolve failed: " + msg.err.Error()
-			return a, clearErrCmd()
+			return a, a.showError("resolve failed: " + msg.err.Error())
 		}
 		if msg.yank {
 			return a, yankDownloadValue("magnet", msg.magnet)
@@ -181,10 +204,12 @@ func (a *App) updateResultsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q":
 		return a, tea.Quit
 	case "esc":
+		a.cancelResolve()
 		a.screen = screenSearch
 		return a, a.search.input.Focus()
 	case "/":
 		r.filtering = true
+		r.filterCommitted = false
 		return a, r.filterIn.Focus()
 	case "o":
 		r.sort = (r.sort + 1) % 3
@@ -194,7 +219,14 @@ func (a *App) updateResultsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		r.grouped = !r.grouped
 		if r.grouped {
 			r.gwin.home()
+			r.graphSelectedKey = ""
 			r.rebuildGroups()
+		} else {
+			// A graph header represents its best source. Returning to flat mode
+			// should land on that same choice, not the row selected before the
+			// user explored the graph.
+			r.selectionPinned = true
+			r.restoreFlatSelection()
 		}
 		return a, nil
 	}
@@ -204,16 +236,22 @@ func (a *App) updateResultsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "up", "k":
+		r.selectionPinned = true
 		r.win.move(-1, len(r.visible), a.listRows())
 	case "down", "j":
+		r.selectionPinned = true
 		r.win.move(1, len(r.visible), a.listRows())
 	case "pgup":
+		r.selectionPinned = true
 		r.win.move(-a.listRows(), len(r.visible), a.listRows())
 	case "pgdown":
+		r.selectionPinned = true
 		r.win.move(a.listRows(), len(r.visible), a.listRows())
 	case "g", "home":
+		r.selectionPinned = true
 		r.win.home()
 	case "G", "end":
+		r.selectionPinned = true
 		r.win.end(len(r.visible), a.listRows())
 	case "enter":
 		return a, a.selectResult()
@@ -226,6 +264,7 @@ func (a *App) updateResultsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return a, a.yankResult(r.rows[r.visible[r.win.cursor]].res)
 		}
 	}
+	r.syncFlatSelection()
 	return a, nil
 }
 
@@ -234,17 +273,24 @@ func (a *App) updateResultsFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		r.filtering = false
+		r.filterCommitted = false
 		r.filterIn.SetValue("")
 		r.filterIn.Blur()
 		r.refreshFilter()
 		return a, nil
 	case "enter":
+		r.filterCommitted = true
+		r.refreshFilter()
+		if r.filterErr != "" {
+			return a, nil
+		}
 		r.filtering = false
 		r.filterIn.Blur()
 		return a, nil
 	}
 	var cmd tea.Cmd
 	r.filterIn, cmd = r.filterIn.Update(msg)
+	r.filterCommitted = false
 	r.refreshFilter()
 	return a, cmd
 }
@@ -296,19 +342,37 @@ func (a *App) yankResult(res provider.Result) tea.Cmd {
 func (a *App) startResolve(res provider.Result, preview, yank bool) tea.Cmd {
 	resolver := a.findResolver(res.Provider)
 	if resolver == nil {
-		a.errText = res.Provider + ": cannot resolve magnet"
-		return clearErrCmd()
+		return a.showError(res.Provider + ": cannot resolve magnet")
 	}
 	a.results.resolving = true
+	a.results.resolveID++
+	searchID := a.results.searchID
+	resolveID := a.results.resolveID
+	ctx, cancel := context.WithTimeout(context.Background(), a.cfg.SearchTimeout())
+	a.results.resolveCancel = cancel
 	return func() (msg tea.Msg) {
-		defer guard(&msg, func(r any) tea.Msg {
-			return magnetResolvedMsg{res: res, yank: yank, err: fmt.Errorf("resolve panicked: %v", r)}
-		})
-		ctx, cancel := context.WithTimeout(context.Background(), a.cfg.SearchTimeout())
 		defer cancel()
+		defer guard(&msg, func(r any) tea.Msg {
+			return magnetResolvedMsg{searchID: searchID, resolveID: resolveID, res: res, yank: yank, err: fmt.Errorf("resolve panicked: %v", r)}
+		})
 		magnet, err := resolver.ResolveMagnet(ctx, res)
-		return magnetResolvedMsg{res: res, magnet: magnet, preview: preview, yank: yank, err: err}
+		return magnetResolvedMsg{searchID: searchID, resolveID: resolveID, res: res, magnet: magnet, preview: preview, yank: yank, err: err}
 	}
+}
+
+// cancelResolve invalidates the in-flight selected-row action without stopping
+// the background search stream. Leaving Results should not later open a preview
+// or copy a magnet the user no longer expects.
+func (a *App) cancelResolve() {
+	r := &a.results
+	if r.resolveCancel != nil {
+		r.resolveCancel()
+		r.resolveCancel = nil
+	}
+	if r.resolving {
+		r.resolveID++
+	}
+	r.resolving = false
 }
 
 // launchCmd either enters the preview screen or downloads immediately.
@@ -465,10 +529,19 @@ func (r *resultsModel) refreshFilter() {
 	}
 	term := strings.TrimSpace(r.filterIn.Value())
 	filter := parseResultFilter(term)
+	if r.filtering && !r.filterCommitted {
+		filter = parseLiveResultFilter(term)
+	}
 	r.filterErr = ""
 	if filter.err != nil {
 		r.filterErr = filter.err.Error()
+		// A syntax correction belongs in the footer, not in the list. Keep all
+		// valid text/facets applied and omit only invalid facets so a typo never
+		// replaces useful results with a giant empty-state panel.
+		filter = parseLiveResultFilter(term)
+		filter.hint = ""
 	}
+	r.filterHint = filter.hint
 	r.matched = make(map[int][]int)
 	if term == "" {
 		r.visible = r.visible[:0]
@@ -495,13 +568,52 @@ func (r *resultsModel) refreshFilter() {
 			}
 		}
 	}
-	if r.win.cursor >= len(r.visible) {
-		r.win.cursor = max(0, len(r.visible)-1)
-	}
+	r.restoreFlatSelection()
 	r.recomputeBest()
 	if r.grouped {
 		r.rebuildGroups()
 	}
+}
+
+// rowIdentity is stable across sorting, filtering and cross-provider merging.
+// A known infohash is the strongest identity; detail-page-only rows fall back
+// to the provider result key until a magnet is resolved.
+func rowIdentity(row scoredRow) string {
+	if row.hash != "" {
+		return "hash:" + row.hash
+	}
+	return "row:" + row.res.Key()
+}
+
+func (r *resultsModel) syncFlatSelection() {
+	if r.win.cursor < 0 || r.win.cursor >= len(r.visible) {
+		r.selectedKey = ""
+		return
+	}
+	idx := r.visible[r.win.cursor]
+	if idx < 0 || idx >= len(r.rows) {
+		r.selectedKey = ""
+		return
+	}
+	r.selectedKey = rowIdentity(r.rows[idx])
+}
+
+func (r *resultsModel) restoreFlatSelection() {
+	if r.selectionPinned && r.selectedKey != "" {
+		for vi, idx := range r.visible {
+			if rowIdentity(r.rows[idx]) == r.selectedKey {
+				r.win.cursor = vi
+				return
+			}
+		}
+	}
+	if !r.selectionPinned {
+		r.win.home()
+	}
+	if r.win.cursor >= len(r.visible) {
+		r.win.cursor = max(0, len(r.visible)-1)
+	}
+	r.syncFlatSelection()
 }
 
 // recomputeBest finds the single best pick among visible rows: the highest-
@@ -523,19 +635,28 @@ func (r *resultsModel) recomputeBest() {
 	}
 }
 
-// listRows is the number of visible result rows (body minus status + columns).
+func (a *App) resultsDetailVisible() bool { return a.bodyHeight() >= 14 }
+
+// listRows is the number of visible flat-result rows. On a tall terminal the
+// selected result gets a five-line decision panel, so the list pays that space
+// up front and paging stays aligned with what is actually visible.
 func (a *App) listRows() int {
-	return max(1, a.bodyHeight()-2)
+	rows := max(1, a.bodyHeight()-2)
+	if a.resultsDetailVisible() {
+		rows = max(1, rows-6)
+	}
+	return rows
 }
 
 // graphRows is the window height of the grouped list: listRows minus the
 // detail panel (5 lines) when the terminal is tall enough to show one. Key
 // handling and rendering must agree on this so paging moves by a real page.
 func (a *App) graphRows() int {
-	if a.bodyHeight() >= 14 {
-		return max(1, a.listRows()-6)
+	rows := max(1, a.bodyHeight()-2)
+	if a.resultsDetailVisible() {
+		return max(1, rows-6)
 	}
-	return max(1, a.listRows()-1)
+	return rows
 }
 
 func (a *App) viewResults() string {
@@ -585,6 +706,10 @@ func (a *App) viewResults() string {
 			return line
 		}))
 		b.WriteString("\n")
+		if a.resultsDetailVisible() {
+			b.WriteString(a.resultDetail(width))
+			b.WriteString("\n")
+		}
 	}
 
 	var help string
@@ -593,6 +718,8 @@ func (a *App) viewResults() string {
 		help = r.filterIn.View()
 		if r.filterErr != "" {
 			help += "  " + styleErr.Render(r.filterErr)
+		} else if r.filterHint != "" {
+			help += "  " + styleFaint.Render(r.filterHint)
 		} else {
 			help += "  " + styleFaint.Render("try res:1080p  seeders:>20  size:<8gb  is:trusted")
 		}
@@ -611,6 +738,53 @@ func (a *App) viewResults() string {
 		ctx = "results · " + r.query
 	}
 	return a.chrome(ctx, b.String(), help)
+}
+
+// resultDetail turns the flat live list into a decision view: the highlighted
+// row remains compact above, while the facts needed before Enter stay readable
+// as providers continue to stream results around it.
+func (a *App) resultDetail(width int) string {
+	r := &a.results
+	lines := []string{rule(width)}
+	if r.win.cursor < 0 || r.win.cursor >= len(r.visible) {
+		return strings.Join(append(lines, styleDim.Render("no result selected"), "", "", ""), "\n")
+	}
+	idx := r.visible[r.win.cursor]
+	if idx < 0 || idx >= len(r.rows) {
+		return strings.Join(append(lines, styleDim.Render("no result selected"), "", "", ""), "\n")
+	}
+	row := r.rows[idx]
+	trust := styleFaint.Render("untrusted")
+	if row.res.Trusted {
+		trust = styleOK.Render("trusted")
+	}
+	quality := []string{}
+	if resolution := row.tags.Resolution.String(); resolution != "" {
+		quality = append(quality, resolution)
+	}
+	if source := row.tags.Source.String(); source != "" {
+		quality = append(quality, source)
+	}
+	if row.tags.Codec != "" {
+		quality = append(quality, row.tags.Codec)
+	}
+	noise := styleOK.Render("looks clean")
+	if reasons := rank.NoiseReasons(r.query, row.res.Title, row.tags, row.res.Seeders); len(reasons) > 0 {
+		noise = styleHealthMid.Render("check: " + strings.Join(reasons, ", "))
+	}
+	size := strings.TrimSpace(row.res.Size)
+	if row.res.SizeBytes > 0 {
+		size = humanBytes(row.res.SizeBytes)
+	} else if size == "" {
+		size = "size unknown"
+	}
+	lines = append(lines,
+		styleFg.Render(truncate(row.res.Title, width)),
+		truncate(fmt.Sprintf("%s  %s  %s  score %.1f", sourceCol(row.res, false), trust, strings.Join(quality, " · "), row.score), width),
+		truncate(fmt.Sprintf("%s %d   %s %d   %s   %s", styleSeeders.Render("S"), row.res.Seeders, styleLeechers.Render("L"), row.res.Leechers, size, magnetCell(row.res)), width),
+		truncate(noise+styleFaint.Render(" · "+plural(len(row.res.Trackers()), "tracker")), width),
+	)
+	return strings.Join(lines, "\n")
 }
 
 // renderTitle pads/truncates and highlights fuzzy-matched runes.
@@ -677,7 +851,7 @@ func (r *resultsModel) statusLine(agg *aggregator.Aggregator) string {
 			head = styleOK.Render(fmt.Sprintf("%d results", n))
 		}
 	case r.searching:
-		head = styleDim.Render("searching…")
+		head = styleDim.Render("searching live…")
 	case hidden > 0:
 		head = styleDim.Render("no visible results")
 	case failed > 0:
@@ -697,8 +871,8 @@ func (r *resultsModel) statusLine(agg *aggregator.Aggregator) string {
 		line += styleFaint.Render(fmt.Sprintf("  · %d hidden", hidden))
 	}
 	line += styleDim.Render("   ") + strings.Join(chips, styleDim.Render(" · "))
-	if r.searching {
-		line += styleDim.Render("  searching…")
+	if r.searching && len(r.rows) > 0 {
+		line += styleBrand.Render("  · live")
 	}
 	return line
 }

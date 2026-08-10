@@ -4,6 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/melqtx/tork/internal/aggregator"
 	"github.com/melqtx/tork/internal/provider"
 	"github.com/melqtx/tork/internal/rank"
 )
@@ -93,6 +96,66 @@ func TestResultFilterReportsHelpfulSyntaxErrors(t *testing.T) {
 	}
 }
 
+func TestLiveResultFilterKeepsRowsWhileFacetIsIncomplete(t *testing.T) {
+	row := filterTestRow("Example 1080p WEB-DL", "alpha", "movies", 4<<30, 42, false)
+	for _, input := range []string{"res:", "res:1", "res:108", "size:<8", "seeders:>"} {
+		filter := parseLiveResultFilter(input)
+		if filter.err != nil {
+			t.Fatalf("%q raised a live error: %v", input, filter.err)
+		}
+		if filter.hint == "" {
+			t.Fatalf("%q has no completion hint", input)
+		}
+		if !filter.matches(row) {
+			t.Fatalf("%q hid the row while its last token was incomplete", input)
+		}
+	}
+}
+
+func TestLiveResultFilterDefersErrorsUntilSubmit(t *testing.T) {
+	filter := parseLiveResultFilter("res:12k ")
+	if filter.err != nil || filter.hint == "" {
+		t.Fatalf("live filter error=%v hint=%q; validation should wait for Enter", filter.err, filter.hint)
+	}
+	if strict := parseResultFilter("res:12k"); strict.err == nil {
+		t.Fatal("strict submit parser accepted invalid resolution")
+	}
+}
+
+func TestSubmittingInvalidFilterKeepsEditorOpen(t *testing.T) {
+	r := newResultsModel(rank.DefaultWeights())
+	r.filtering = true
+	r.filterIn.SetValue("res:12k")
+	a := &App{results: r}
+
+	a.updateResultsFilter(tea.KeyMsg{Type: tea.KeyEnter})
+	if !a.results.filtering || a.results.filterErr == "" {
+		t.Fatalf("filtering=%v error=%q; invalid submit should stay editable", a.results.filtering, a.results.filterErr)
+	}
+}
+
+func TestIncompleteResolutionFilterRendersAsGuidanceNotError(t *testing.T) {
+	r := newResultsModel(rank.DefaultWeights())
+	r.insertRow(provider.Result{Title: "Example 1080p WEB-DL", Provider: "alpha", Seeders: 10})
+	r.filtering = true
+	r.filterIn.SetValue("res:108")
+	r.refreshFilter()
+	a := &App{
+		width: 100, height: 30, screen: screenResults, results: r,
+		agg: aggregator.New(nil, 0, 0), downloads: newDownloadsModel(),
+	}
+
+	view := a.viewResults()
+	if !strings.Contains(view, "resolution  480p") {
+		t.Fatalf("live filter view has no completion guidance: %q", view)
+	}
+	for _, unwanted := range []string{"unknown resolution", "no result selected"} {
+		if strings.Contains(view, unwanted) {
+			t.Fatalf("live filter view still contains %q", unwanted)
+		}
+	}
+}
+
 func TestRefreshFilterCombinesFuzzyTextAndFacets(t *testing.T) {
 	model := newResultsModel(rank.DefaultWeights())
 	for _, row := range []provider.Result{
@@ -120,7 +183,7 @@ func TestRefreshFilterCombinesFuzzyTextAndFacets(t *testing.T) {
 	}
 }
 
-func TestRefreshFilterSurfacesErrorAndShowsNoRows(t *testing.T) {
+func TestRefreshFilterSurfacesErrorWithoutBlankingRows(t *testing.T) {
 	model := newResultsModel(rank.DefaultWeights())
 	model.insertRow(provider.Result{Title: "Example 1080p", Provider: "alpha", Seeders: 10})
 	model.filterIn.SetValue("size:huge")
@@ -128,8 +191,8 @@ func TestRefreshFilterSurfacesErrorAndShowsNoRows(t *testing.T) {
 	if model.filterErr == "" {
 		t.Fatal("expected filter error")
 	}
-	if len(model.visible) != 0 {
-		t.Fatalf("visible = %v, want none", model.visible)
+	if len(model.visible) != 1 {
+		t.Fatalf("visible = %v, want the usable result set retained", model.visible)
 	}
 }
 

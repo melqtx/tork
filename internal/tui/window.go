@@ -44,13 +44,15 @@ func (w *listWindow) clamp(total, visible int) (start, end int) {
 // so screen bodies keep a stable height. render must not include the gutter.
 func renderWindow(w *listWindow, total, visible, width int, render func(i int, selected bool) string) string {
 	start, end := w.clamp(total, visible)
+	rowWidth := max(0, width-1) // every row reserves one display cell for its gutter
 	var b strings.Builder
 	for i := start; i < end; i++ {
+		content := truncate(render(i, i == w.cursor), rowWidth)
 		if i == w.cursor {
-			line := styleSelBar.Render("▍") + render(i, true)
+			line := styleSelBar.Render("▍") + content
 			b.WriteString(styleSelected.Render(padRight(line, width)))
 		} else {
-			b.WriteString(" " + render(i, false))
+			b.WriteString(" " + padRight(content, rowWidth))
 		}
 		b.WriteString("\n")
 	}
