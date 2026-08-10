@@ -17,19 +17,27 @@ import (
 // previewModel is the magnet sandbox: inspect a torrent's files and choose
 // which to download before any data transfers.
 type previewModel struct {
-	hash      metainfo.Hash
-	magnet    string
-	name      string
-	from      screen
-	owned     bool
-	files     []engine.FileInfo
-	tree      *fileNode
-	rows      []*fileNode
-	ready       bool
-	startedAt   time.Time
-	excluded    map[int]bool // keyed by FileInfo.Index
-	autoSkipped int          // extras deselected on arrival, reported in the header
-	win         listWindow
+	hash          metainfo.Hash
+	magnet        string
+	name          string
+	from          screen
+	owned         bool
+	files         []engine.FileInfo
+	filesByIndex  map[int]engine.FileInfo
+	tree          *fileNode
+	rows          []*fileNode
+	ready         bool
+	startedAt     time.Time
+	excluded      map[int]bool // keyed by FileInfo.Index
+	autoSkipped   int          // extras deselected on arrival, reported in the header
+	win           listWindow
+	statsReady    bool
+	totalSize     int64
+	selectedSize  int64
+	largestSize   int64
+	selectedCount int
+	warningCount  int
+	dirCount      int
 }
 
 func newPreviewModel(h metainfo.Hash, magnet, name string, from screen, owned bool) previewModel {
@@ -50,6 +58,7 @@ func (p *previewModel) refresh(eng *engine.Engine) {
 		p.excluded = junkFiles(files)
 		p.autoSkipped = len(p.excluded)
 		p.rebuildRows()
+		p.rebuildStats()
 		if inferred := p.inferredName(); inferred != "" && strings.HasPrefix(p.name, "magnet · ") {
 			p.name = inferred
 		}
@@ -65,21 +74,48 @@ func (p *previewModel) rebuildRows() {
 }
 
 func (p *previewModel) selectedBytes() int64 {
-	var sum int64
-	for _, f := range p.files {
-		if !p.excluded[f.Index] {
-			sum += f.Length
-		}
-	}
-	return sum
+	p.ensureStats()
+	return p.selectedSize
 }
 
 func (p *previewModel) totalBytes() int64 {
-	var sum int64
-	for _, f := range p.files {
-		sum += f.Length
+	p.ensureStats()
+	return p.totalSize
+}
+
+func (p *previewModel) ensureStats() {
+	if !p.statsReady {
+		p.rebuildStats()
 	}
-	return sum
+}
+
+func (p *previewModel) rebuildStats() {
+	p.filesByIndex = make(map[int]engine.FileInfo, len(p.files))
+	p.totalSize = 0
+	p.largestSize = 0
+	p.warningCount = 0
+	for _, f := range p.files {
+		p.filesByIndex[f.Index] = f
+		p.totalSize += f.Length
+		p.largestSize = max(p.largestSize, f.Length)
+		if riskFor(f.Path) != "" {
+			p.warningCount++
+		}
+	}
+	p.dirCount = countDirs(p.tree)
+	p.statsReady = true
+	p.recomputeSelection()
+}
+
+func (p *previewModel) recomputeSelection() {
+	p.selectedSize = 0
+	p.selectedCount = 0
+	for _, f := range p.files {
+		if !p.excluded[f.Index] {
+			p.selectedSize += f.Length
+			p.selectedCount++
+		}
+	}
 }
 
 func (p *previewModel) excludedSlice() []int {
@@ -146,18 +182,19 @@ func (a *App) updatePreview(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case "a": // include all
 		p.excluded = map[int]bool{}
+		p.recomputeSelection()
 	case "n": // exclude all
 		for _, f := range p.files {
 			p.excluded[f.Index] = true
 		}
+		p.recomputeSelection()
 	case "enter":
 		// enter always means "get what is selected", wherever the cursor sits.
 		// Folding is ←→ only: enter on a folder used to fold it, which made the
 		// common case (everything already selected, cursor on the root folder)
 		// need an extra hop onto a file row before the download would start.
 		if p.selectedBytes() == 0 {
-			a.errText = "select at least one file"
-			return a, clearErrCmd()
+			return a, a.showError("select at least one file")
 		}
 		return a, a.startPreviewDownload()
 	}
@@ -227,6 +264,7 @@ func isJunkPath(p string) bool {
 }
 
 func (p *previewModel) toggleNode(n *fileNode) {
+	defer p.recomputeSelection()
 	if n.fileIdx >= 0 {
 		if p.excluded[n.fileIdx] {
 			delete(p.excluded, n.fileIdx)
@@ -313,6 +351,7 @@ func (a *App) startPreviewDownload() tea.Cmd {
 	}
 	a.st.Upsert(entry)
 	a.downloads.snaps = a.eng.Snapshots()
+	a.refreshDownloadItems()
 	// Hand the user back to whatever they were browsing, so queuing several
 	// torrents out of one search costs one keypress each. A preview opened from
 	// home (or from the command line) has no list to return to, so the downloads
@@ -364,7 +403,7 @@ func (a *App) viewPreview() string {
 	}
 	nameWidth := max(12, width-40-lipgloss.Width(source))
 	b.WriteString(" " + styleFg.Render(truncate(p.name, nameWidth)) +
-		styleFaint.Render(fmt.Sprintf("   %d files · %d dirs", len(p.files), countDirs(p.tree))) +
+		styleFaint.Render(fmt.Sprintf("   %d files · %d dirs", len(p.files), p.dirCount)) +
 		styleFaint.Render(" · total ") + styleDim.Render(humanBytes(p.totalBytes())) + source + "\n")
 	flagged := ""
 	if n := p.flaggedCount(); n > 0 {
@@ -391,42 +430,24 @@ func (a *App) viewPreview() string {
 }
 
 func (p *previewModel) flaggedCount() int {
-	total := 0
-	for _, f := range p.files {
-		if riskFor(f.Path) != "" {
-			total++
-		}
-	}
-	return total
+	p.ensureStats()
+	return p.warningCount
 }
 
 func (p *previewModel) largestFile() int64 {
-	var maxLen int64
-	for _, f := range p.files {
-		if f.Length > maxLen {
-			maxLen = f.Length
-		}
-	}
-	return maxLen
+	p.ensureStats()
+	return p.largestSize
 }
 
 func (p *previewModel) fileByIndex(idx int) (engine.FileInfo, bool) {
-	for _, f := range p.files {
-		if f.Index == idx {
-			return f, true
-		}
-	}
-	return engine.FileInfo{}, false
+	p.ensureStats()
+	f, ok := p.filesByIndex[idx]
+	return f, ok
 }
 
 func (p *previewModel) selectedFiles() int {
-	total := 0
-	for _, f := range p.files {
-		if !p.excluded[f.Index] {
-			total++
-		}
-	}
-	return total
+	p.ensureStats()
+	return p.selectedCount
 }
 
 func (p *previewModel) checkbox(n *fileNode) string {

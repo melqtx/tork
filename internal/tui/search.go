@@ -86,8 +86,7 @@ func (a *App) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if query := strings.TrimSpace(a.search.input.Value()); query != "" {
 			target, detected, err := intake.DetectHome(query)
 			if err != nil {
-				a.errText = err.Error()
-				return a, clearErrCmd()
+				return a, a.showError(err.Error())
 			}
 			if detected {
 				switch target.Kind {
@@ -129,10 +128,13 @@ func (a *App) startSearch(query string) tea.Cmd {
 	if a.results.cancel != nil {
 		a.results.cancel()
 	}
+	a.cancelResolve()
 	ctx, cancel := context.WithCancel(context.Background())
 	resultCh, statusCh := a.agg.Search(ctx, query)
+	a.searchSeq++
 
 	a.results = newResultsModel(a.cfg.Ranking)
+	a.results.searchID = a.searchSeq
 	a.results.query = query
 	a.results.cancel = cancel
 	a.results.resultCh = resultCh
@@ -140,7 +142,7 @@ func (a *App) startSearch(query string) tea.Cmd {
 	a.results.searching = true
 	a.screen = screenResults
 
-	return tea.Batch(waitForResult(resultCh), waitForStatus(statusCh))
+	return tea.Batch(waitForResult(a.searchSeq, resultCh), waitForStatus(a.searchSeq, statusCh))
 }
 
 // viewSearch is the front page: a centered hero (wordmark, tagline, search
@@ -148,13 +150,13 @@ func (a *App) startSearch(query string) tea.Cmd {
 func (a *App) viewSearch() string {
 	tw, th := a.termWidth(), a.termHeight()
 
-	fieldW := min(52, a.contentWidth())
-	a.search.input.Width = fieldW - 6
+	fieldW := max(8, min(52, a.contentWidth()))
+	a.search.input.Width = max(1, fieldW-6)
 	field := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(colBrand).
 		Padding(0, 1).
-		Width(fieldW - 4).
+		Width(max(1, fieldW-4)).
 		Render(a.search.input.View())
 
 	cue := styleFaint.Render("press enter to search")
@@ -162,18 +164,32 @@ func (a *App) viewSearch() string {
 		cue = styleFaint.Render("type to search  ·  ↑↓ then enter to open")
 	}
 
-	hero := lipgloss.JoinVertical(lipgloss.Center,
-		renderCat(smallCat(moodHappy), moodHappy),
-		"",
-		renderLogo(),
-		"",
-		styleDim.Render("you name it, the cat fetches it"),
-		"",
-		field,
-		cue,
-		"",
-		a.homeMenuView(),
-	)
+	var hero string
+	if th < 18 || a.contentWidth() < 40 {
+		hero = lipgloss.JoinVertical(lipgloss.Center,
+			styleBrand.Render("tork"),
+			styleDim.Render("the cat fetches it"),
+			"",
+			field,
+			cue,
+			"",
+			a.homeMenuView(),
+		)
+	} else {
+		hero = lipgloss.JoinVertical(lipgloss.Center,
+			renderCat(smallCat(moodHappy), moodHappy),
+			"",
+			renderLogo(),
+			"",
+			styleDim.Render("you name it, the cat fetches it"),
+			"",
+			field,
+			cue,
+			"",
+			a.homeMenuView(),
+		)
+	}
+	hero = padLines(fitBlockWidth(hero, tw), max(1, th-2))
 
 	// footer status bar pinned to the bottom, sharing chrome's help/error logic
 	right := styleFaint.Render(cozyGreeting())
@@ -181,7 +197,10 @@ func (a *App) viewSearch() string {
 		right = proxyStatus
 	}
 	left := a.keyStrip(max(20, tw-3-lipgloss.Width(right)))
-	bar := " " + a.footerLine(tw-2, left, right) + " "
+	bar := a.footerLine(tw, left, right)
+	if tw >= 2 {
+		bar = " " + a.footerLine(tw-2, left, right) + " "
+	}
 	footer := styleRule.Render(strings.Repeat("─", tw)) + "\n" + bar
 
 	top := lipgloss.Place(tw, max(1, th-2), lipgloss.Center, lipgloss.Center, hero)

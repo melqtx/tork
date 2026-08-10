@@ -15,6 +15,7 @@ type parsedResultFilter struct {
 	text       string
 	predicates []func(scoredRow) bool
 	err        error
+	hint       string // quiet completion guidance used only by the live editor
 }
 
 var filterNumber = regexp.MustCompile(`^(>=|<=|>|<|=)?(\d+(?:\.\d+)?)([a-zA-Z]*)$`)
@@ -36,6 +37,63 @@ func parseResultFilter(input string) parsedResultFilter {
 	}
 	filter.text = strings.Join(text, " ")
 	return filter
+}
+
+// parseLiveResultFilter is deliberately forgiving about the token under the
+// cursor. Structured filters are strict once submitted, but while someone is
+// halfway through "res:1080p" the partial token should not blank the list and
+// shout an error. Completed earlier tokens still apply normally.
+func parseLiveResultFilter(input string) parsedResultFilter {
+	fields := strings.Fields(input)
+	if len(fields) == 0 {
+		return parsedResultFilter{}
+	}
+	var filter parsedResultFilter
+	var text []string
+	for _, token := range fields {
+		predicate, recognized, err := parseFilterToken(token)
+		if err != nil {
+			// The editor remains non-destructive until Enter: a bad or partial
+			// facet is omitted while valid neighboring facets and fuzzy text keep
+			// working. Strict parseResultFilter handles submission.
+			if filter.hint == "" {
+				filter.hint = liveFilterHint(token)
+			}
+			continue
+		}
+		if recognized {
+			filter.predicates = append(filter.predicates, predicate)
+		} else {
+			text = append(text, token)
+		}
+	}
+	filter.text = strings.Join(text, " ")
+	return filter
+}
+
+func liveFilterHint(token string) string {
+	raw := strings.TrimPrefix(strings.ToLower(token), "-")
+	key, _, _ := strings.Cut(raw, ":")
+	switch key {
+	case "res", "resolution":
+		return "resolution  480p · 720p · 1080p · 2160p"
+	case "size":
+		return "finish a size  ·  try size:<8gb"
+	case "seed", "seeders":
+		return "finish a count  ·  try seeders:>20"
+	case "source", "src":
+		return "source  web-dl · bluray · remux · hdtv"
+	case "codec":
+		return "codec  x264 · x265 · av1"
+	case "is":
+		return "attribute  trusted · hdr · dv · pack"
+	case "provider", "prov":
+		return "type a provider name"
+	case "category", "cat":
+		return "type a category"
+	default:
+		return "finish this filter  ·  enter validates"
+	}
 }
 
 func parseFilterToken(token string) (func(scoredRow) bool, bool, error) {

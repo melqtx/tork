@@ -48,9 +48,11 @@ type App struct {
 	startup    tea.Cmd // optional one-shot action requested on the command line
 
 	errText      string
+	errGen       uint64
 	toast        toastState
 	showHelp     bool      // the `?` key card, drawn over whichever screen is active
 	lastTickSave time.Time // throttles progress-only state.json writes on the tick
+	searchSeq    uint64    // generation for streamed searches; rejects late messages
 }
 
 func New(cfg *config.Config, eng *engine.Engine, agg *aggregator.Aggregator, st *state.State, hs *health.Store) *App {
@@ -68,6 +70,7 @@ func New(cfg *config.Config, eng *engine.Engine, agg *aggregator.Aggregator, st 
 	if runtime := cfg.ProxyRuntime(); runtime != nil && runtime.Enabled() {
 		a.proxy.state = proxyBadgeUnverified
 	}
+	a.refreshDownloadItems()
 	return a
 }
 
@@ -77,12 +80,13 @@ func (a *App) ShowDownloads() { a.screen = screenDownloads }
 
 func (a *App) Init() tea.Cmd {
 	// pick up torrents resumed from state.json at startup
-	cmds := []tea.Cmd{a.search.input.Focus()}
+	cmds := []tea.Cmd{a.search.input.Focus(), a.startDownloadPathCheck(true)}
 	if snaps := a.eng.Snapshots(); len(snaps) > 0 {
 		a.downloads.snaps = snaps
 		a.downloads.ticking = true
 		cmds = append(cmds, tickCmd(a.tickInterval()))
 	}
+	a.refreshDownloadItems()
 	if proxyCmd := a.startProxyCheck(time.Now()); proxyCmd != nil {
 		cmds = append(cmds, proxyCmd)
 	}
@@ -112,9 +116,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// every letter has to stay a letter. Preview stays inert, like tab: it
 		// is a modal you leave with esc, not a stop on the cycle.
 		if msg.String() == "ctrl+d" && a.screen != screenPreview {
+			a.cancelResolve()
 			a.showHelp = false
 			a.screen = screenDownloads
-			return a, nil
+			return a, a.startDownloadPathCheck(false)
 		}
 		if a.showHelp {
 			// The card is a reference, not a mode: any key puts it away, so
@@ -132,8 +137,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// tab always cycles screens (it means nothing inside a search box);
 			// only the preview modal keeps it inert.
 			if a.screen != screenPreview {
-				a.cycleScreen()
-				return a, nil
+				return a, a.cycleScreen()
 			}
 		case "H":
 			// The health screen is reachable from anywhere a capital letter is
@@ -146,15 +150,17 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		a.downloads.snaps = a.eng.Snapshots()
 		saveCmd := a.syncCompletedToState()
+		a.refreshDownloadItems()
 		proxyCmd := a.startProxyCheck(time.Time(msg))
+		pathCmd := a.startDownloadPathCheck(false)
 		if a.screen == screenPreview {
 			a.preview.refresh(a.eng)
 		}
 		if a.tickShouldContinue() {
-			return a, tea.Batch(saveCmd, proxyCmd, tickCmd(a.tickInterval()))
+			return a, tea.Batch(saveCmd, proxyCmd, pathCmd, tickCmd(a.tickInterval()))
 		}
 		a.downloads.ticking = false
-		return a, tea.Batch(saveCmd, proxyCmd)
+		return a, tea.Batch(saveCmd, proxyCmd, pathCmd)
 
 	case torrentAddedMsg:
 		return a, a.onTorrentAdded(msg)
@@ -162,21 +168,31 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case previewReadyMsg:
 		return a, a.onPreviewReady(msg)
 
+	case resultMsg, resultsClosedMsg, statusMsg, statusClosedMsg, magnetResolvedMsg:
+		// Search streams keep progressing even while the user checks downloads or
+		// the ISO shelf. updateResults only changes the visible screen when a
+		// selected action completes, so processing these globally is safe.
+		return a.updateResults(msg)
+
 	case clearErrMsg:
-		a.errText = ""
+		if msg.gen == a.errGen {
+			a.errText = ""
+		}
+		return a, nil
+
+	case downloadPathsMsg:
+		a.onDownloadPaths(msg)
 		return a, nil
 
 	case revealDownloadMsg:
 		if msg.err != nil {
-			a.errText = msg.err.Error()
-			return a, clearErrCmd()
+			return a, a.showError(msg.err.Error())
 		}
 		return a, nil
 
 	case yankDoneMsg:
 		if msg.err != nil {
-			a.errText = msg.err.Error()
-			return a, clearErrCmd()
+			return a, a.showError(msg.err.Error())
 		}
 		return a, a.showToast("yanked "+msg.what, toastOK, toastQuick)
 
@@ -257,20 +273,20 @@ func (a *App) ensureTick() tea.Cmd {
 	return tickCmd(a.tickInterval())
 }
 
-// tickInterval polls fast enough to feel fluid on the screens that show live
-// progress, and lazily elsewhere (background downloads still get saved).
+// tickInterval keeps the dashboard fluid without sampling every torrent four
+// times a second. Two visual updates per second are ample for terminal progress
+// bars; background screens sample more lazily and still persist every change.
 func (a *App) tickInterval() time.Duration {
 	if a.screen == screenDownloads || a.screen == screenPreview {
-		return 250 * time.Millisecond
+		return 500 * time.Millisecond
 	}
-	return time.Second
+	return 1500 * time.Millisecond
 }
 
 // onPreviewReady opens the preview screen once the metadata torrent is added.
 func (a *App) onPreviewReady(msg previewReadyMsg) tea.Cmd {
 	if msg.err != nil {
-		a.errText = "preview failed: " + msg.err.Error()
-		return clearErrCmd()
+		return a.showError("preview failed: " + msg.err.Error())
 	}
 	a.preview = newPreviewModel(msg.hash, msg.magnet, msg.name, msg.from, msg.owned)
 	a.screen = screenPreview
@@ -286,7 +302,8 @@ func (a *App) typing() bool {
 		a.downloads.prompt.action != pathActionNone
 }
 
-func (a *App) cycleScreen() {
+func (a *App) cycleScreen() tea.Cmd {
+	a.cancelResolve()
 	switch a.screen {
 	case screenSearch:
 		a.screen = screenISOs
@@ -301,6 +318,10 @@ func (a *App) cycleScreen() {
 	default:
 		a.screen = screenSearch
 	}
+	if a.screen == screenDownloads {
+		return a.startDownloadPathCheck(false)
+	}
+	return nil
 }
 
 // onTorrentAdded records the new download in state.json and confirms it with a
@@ -311,8 +332,7 @@ func (a *App) cycleScreen() {
 func (a *App) onTorrentAdded(msg torrentAddedMsg) tea.Cmd {
 	a.isos.resolving = false
 	if msg.err != nil {
-		a.errText = "add failed: " + msg.err.Error()
-		return clearErrCmd()
+		return a.showError("add failed: " + msg.err.Error())
 	}
 	entry := state.Entry{
 		Magnet:      msg.magnet,
@@ -327,6 +347,7 @@ func (a *App) onTorrentAdded(msg torrentAddedMsg) tea.Cmd {
 	}
 	a.st.Upsert(entry)
 	a.downloads.snaps = a.eng.Snapshots()
+	a.refreshDownloadItems()
 	return tea.Batch(
 		a.saveState(),
 		a.ensureTick(),
@@ -413,8 +434,16 @@ func applySnapshotToEntry(e *state.Entry, s engine.Snapshot) (meta, progress boo
 
 func (a *App) saveState() tea.Cmd {
 	if err := a.st.Save(a.cfg.StatePath()); err != nil {
-		a.errText = "save failed: " + err.Error()
-		return clearErrCmd()
+		return a.showError("save failed: " + err.Error())
 	}
 	return nil
+}
+
+// showError replaces the footer error and returns a generation-aware timer.
+// Without the generation, a timer belonging to an older error can erase a new
+// failure almost immediately.
+func (a *App) showError(text string) tea.Cmd {
+	a.errText = text
+	a.errGen++
+	return clearErrCmd(a.errGen)
 }

@@ -15,19 +15,19 @@ import (
 // grays, and calm semantic colors. Green for the app's own voice; amber/rose
 // reserved for caution/alarm so signal never blends into the accent.
 var (
-	colBrand  = lipgloss.Color("114") // soft green - the accent
-	colBrand2 = lipgloss.Color("108") // sage green - secondary (keys, borders)
-	colFg     = lipgloss.Color("253")
-	colText   = lipgloss.Color("250")
-	colMuted  = lipgloss.Color("245")
-	colFaint  = lipgloss.Color("240")
-	colBorder = lipgloss.Color("238")
-	colSel    = lipgloss.Color("236") // selection background
-	colGreen  = lipgloss.Color("114") // seeders / healthy - the positive green
-	colAmber  = lipgloss.Color("179") // caution - mid-health, reserved for signal
-	colRose   = lipgloss.Color("174")
-	colBlue   = lipgloss.Color("111")
-	colViolet = lipgloss.Color("176")
+	colBrand  = lipgloss.AdaptiveColor{Light: "28", Dark: "114"} // soft green - the accent
+	colBrand2 = lipgloss.AdaptiveColor{Light: "29", Dark: "108"} // sage green - secondary
+	colFg     = lipgloss.AdaptiveColor{Light: "234", Dark: "253"}
+	colText   = lipgloss.AdaptiveColor{Light: "238", Dark: "250"}
+	colMuted  = lipgloss.AdaptiveColor{Light: "242", Dark: "245"}
+	colFaint  = lipgloss.AdaptiveColor{Light: "240", Dark: "240"}
+	colBorder = lipgloss.AdaptiveColor{Light: "244", Dark: "238"}
+	colSel    = lipgloss.AdaptiveColor{Light: "153", Dark: "236"} // selection background
+	colGreen  = lipgloss.AdaptiveColor{Light: "28", Dark: "114"}  // seeders / healthy
+	colAmber  = lipgloss.AdaptiveColor{Light: "130", Dark: "179"} // caution
+	colRose   = lipgloss.AdaptiveColor{Light: "124", Dark: "174"}
+	colBlue   = lipgloss.AdaptiveColor{Light: "25", Dark: "111"}
+	colViolet = lipgloss.AdaptiveColor{Light: "91", Dark: "176"}
 )
 
 var (
@@ -131,13 +131,13 @@ var torkLogo = []string{
 // logoGradient tints the wordmark top-to-bottom: a soft wash from pale mint
 // down through sage to a deep forest green, so the banner glows rather than
 // shouts - minimal, but cozy.
-var logoGradient = []lipgloss.Color{
-	lipgloss.Color("157"),
-	lipgloss.Color("151"),
-	lipgloss.Color("114"),
-	lipgloss.Color("108"),
-	lipgloss.Color("72"),
-	lipgloss.Color("65"),
+var logoGradient = []lipgloss.TerminalColor{
+	lipgloss.AdaptiveColor{Light: "22", Dark: "157"},
+	lipgloss.AdaptiveColor{Light: "28", Dark: "151"},
+	lipgloss.AdaptiveColor{Light: "29", Dark: "114"},
+	lipgloss.AdaptiveColor{Light: "35", Dark: "108"},
+	lipgloss.AdaptiveColor{Light: "64", Dark: "72"},
+	lipgloss.AdaptiveColor{Light: "65", Dark: "65"},
 }
 
 // renderLogo paints torkLogo top-to-bottom, spreading the gradient evenly

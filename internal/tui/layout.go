@@ -26,12 +26,19 @@ func (a *App) termHeight() int {
 
 // contentWidth is the width of the centered column.
 func (a *App) contentWidth() int {
-	w := a.termWidth() - 8
+	tw := a.termWidth()
+	w := tw - 8
+	// Below 48 columns, margins cost more than they help. Never claim a content
+	// width wider than the terminal: doing so makes the terminal wrap lines behind
+	// Bubble Tea's back and breaks the row accounting for every screen.
+	if tw < 48 {
+		w = tw
+	}
 	if w > maxContentWidth {
 		w = maxContentWidth
 	}
-	if w < 40 {
-		w = 40
+	if w < 1 {
+		w = 1
 	}
 	return w
 }
@@ -95,6 +102,17 @@ func padLines(s string, n int) string {
 	return strings.Join(lines, "\n")
 }
 
+// fitBlockWidth truncates every rendered line to the available display cells.
+// It is the final guard for long provider errors, user queries, paths and custom
+// feed names that individual screens cannot reasonably predict.
+func fitBlockWidth(s string, w int) string {
+	lines := strings.Split(s, "\n")
+	for i := range lines {
+		lines[i] = truncate(lines[i], w)
+	}
+	return strings.Join(lines, "\n")
+}
+
 // headerBar is the wordmark + context line plus an underline rule, with the
 // live activity chip right-aligned so transfers stay visible from every screen.
 func (a *App) headerBar(context string) string {
@@ -104,25 +122,36 @@ func (a *App) headerBar(context string) string {
 		left += styleFaint.Render("  ·  ") + styleDim.Render(context)
 	}
 	right := a.activityChip()
-	gap := w - lipgloss.Width(left) - lipgloss.Width(right)
-	if right == "" || gap < 2 {
-		return padRight(left, w) + "\n" + rule(w)
+	if right == "" || w < 10 {
+		return padRight(truncate(left, w), w) + "\n" + rule(w)
 	}
+	// Keep the wordmark visible and bound the activity chip on cramped screens.
+	right = truncate(right, max(1, w-7))
+	left = truncate(left, max(1, w-lipgloss.Width(right)-2))
+	gap := max(2, w-lipgloss.Width(left)-lipgloss.Width(right))
 	return left + strings.Repeat(" ", gap) + right + "\n" + rule(w)
 }
 
 // footerLine renders one status row: help text (an error, when present, takes
 // over) padded to width, with an optional right-aligned tail.
 func (a *App) footerLine(width int, help, right string) string {
+	if width < 1 {
+		return ""
+	}
 	line := help
 	if a.errText != "" {
 		line = styleErr.Render(a.errText)
+		// The actionable failure is more important than a proxy/status tail and
+		// gets the whole line while it is present.
+		right = ""
 	}
 	if right == "" {
-		return padRight(line, width)
+		return padRight(truncate(line, width), width)
 	}
-	gap := width - lipgloss.Width(line) - lipgloss.Width(right)
-	return line + strings.Repeat(" ", max(1, gap)) + right
+	right = truncate(right, max(1, width/2))
+	line = truncate(line, max(0, width-lipgloss.Width(right)-1))
+	gap := max(1, width-lipgloss.Width(line)-lipgloss.Width(right))
+	return truncate(line+strings.Repeat(" ", gap)+right, width)
 }
 
 // footerBar is a rule plus a help/status line (errors take over when present).
@@ -136,9 +165,11 @@ func (a *App) footerBar(help string) string {
 // the body's bottom-right corner here, so every screen confirms actions the
 // same way instead of each view remembering to do it.
 func (a *App) chrome(context, body, help string) string {
+	body = fitBlockWidth(body, a.contentWidth())
 	body = padLines(body, a.bodyHeight())
 	if a.toast.text != "" {
 		body = overlayBottomRight(body, toastBox(a.toast), a.contentWidth())
+		body = fitBlockWidth(body, a.contentWidth())
 	}
 	col := a.headerBar(context) + "\n" + body + "\n" + a.footerBar(help)
 	return a.center(col)

@@ -14,6 +14,8 @@ jobs:
         with:
           go-version: "1.26"
           cache: true
+      - name: format
+        run: test -z "$(gofmt -l .)"
       - name: vet
         run: go vet ./...
       - name: build
@@ -27,3 +29,28 @@ jobs:
             go build -trimpath -o /tmp/tork-linux-riscv64 ./cmd/tork
       - name: test (race)
         run: go test -race -timeout 5m ./...
+
+  native-platforms:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+      - name: test
+        if: runner.os != 'Windows'
+        run: go test -timeout 5m ./...
+      # The application builds on Windows and the TUI package is portable, but
+      # several older engine/config tests still assert Unix permission, path,
+      # and file-locking behavior. Keep Windows coverage honest and focused
+      # until those platform assumptions are addressed in a dedicated change.
+      - name: test TUI (Windows)
+        if: runner.os == 'Windows'
+        run: go test -timeout 5m ./internal/tui
+      - name: build
+        run: go build ./...

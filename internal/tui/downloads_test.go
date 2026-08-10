@@ -28,7 +28,9 @@ func TestDownloadItemsShowsMissingCompletedData(t *testing.T) {
 		DownloadDir: cfg.DownloadDir,
 		DataPath:    filepath.Join(cfg.DownloadDir, "gone"),
 	})
-	app := &App{cfg: cfg, st: st}
+	app := &App{cfg: cfg, st: st, downloads: newDownloadsModel()}
+	cmd := app.startDownloadPathCheck(true)
+	app.onDownloadPaths(cmd().(downloadPathsMsg))
 
 	items := app.downloadItems()
 	if len(items) != 1 {
@@ -36,6 +38,22 @@ func TestDownloadItemsShowsMissingCompletedData(t *testing.T) {
 	}
 	if items[0].State != engine.StateMissing {
 		t.Fatalf("state = %s, want missing data", items[0].State)
+	}
+}
+
+func TestUncheckedCompletedPathDoesNotTouchFilesystemFromViewModel(t *testing.T) {
+	st := &state.State{}
+	st.Upsert(state.Entry{
+		Magnet:   "magnet:?xt=urn:btih:unchecked",
+		Name:     "remote payload",
+		Done:     true,
+		DataPath: "/a/path/not-yet-checked-in-the-background",
+	})
+	app := &App{st: st, downloads: newDownloadsModel()}
+
+	item := app.downloadItems()[0]
+	if item.State != engine.StateDone || !strings.Contains(item.Note, "checking files") {
+		t.Fatalf("unchecked item = state %s note %q", item.State, item.Note)
 	}
 }
 
@@ -57,6 +75,78 @@ func TestDownloadItemsShowsRelinkNeededData(t *testing.T) {
 	if items[0].State != engine.StateMissing {
 		t.Fatalf("state = %s, want missing data", items[0].State)
 	}
+}
+
+func TestDownloadProjectionIsCachedAndActiveItemsLead(t *testing.T) {
+	st := &state.State{Entries: []state.Entry{
+		{Magnet: "done", Name: "old", Done: true, Length: 100, BytesCompleted: 100, DataPath: "/done"},
+		{Magnet: "active", Name: "new"},
+	}}
+	a := &App{width: 100, height: 30, st: st, downloads: newDownloadsModel()}
+	a.downloads.pathExists["/done"] = true
+	a.downloads.snaps = []engine.Snapshot{{
+		Magnet: "active", Name: "new", State: engine.StateDownloading,
+		Length: 200, BytesCompleted: 50, SpeedBps: 25,
+	}}
+	a.refreshDownloadItems()
+
+	first := a.downloadItems()
+	second := a.downloadItems()
+	if len(first) != 2 || &first[0] != &second[0] {
+		t.Fatal("download projection was rebuilt instead of reused")
+	}
+	if first[0].Magnet != "active" {
+		t.Fatalf("queue begins with %q, want active transfer", first[0].Magnet)
+	}
+
+	a.downloads.win.cursor = 0
+	a.downloads.syncSelection(first)
+	a.downloads.selectionPinned = true
+	a.downloads.snaps[0].State = engine.StateDone
+	a.downloads.snaps[0].BytesCompleted = 200
+	a.refreshDownloadItems()
+	if got := a.downloadItems()[a.downloads.win.cursor].Magnet; got != "active" {
+		t.Fatalf("selection moved to %q when active item joined history", got)
+	}
+}
+
+func TestDownloadMetricsAreWeightedAcrossQueue(t *testing.T) {
+	m := summarizeDownloads([]downloadItem{
+		{State: engine.StateDownloading, Length: 1000, BytesCompleted: 250, SpeedBps: 100, PeersActive: 2, PeersTotal: 5, Seeders: 1},
+		{State: engine.StateDone, Length: 500, BytesCompleted: 500},
+		{State: engine.StatePaused, Length: 500, BytesCompleted: 250},
+	})
+	if m.Total != 3 || m.Active != 1 || m.Done != 1 || m.Paused != 1 {
+		t.Fatalf("state metrics = %+v", m)
+	}
+	if m.Length != 2000 || m.BytesCompleted != 1000 || m.Progress() != 0.5 {
+		t.Fatalf("byte metrics = completed %d length %d progress %.2f", m.BytesCompleted, m.Length, m.Progress())
+	}
+	if m.ETA() != 7500*time.Millisecond {
+		t.Fatalf("queue ETA = %s, want 7.5s", m.ETA())
+	}
+}
+
+func TestDownloadsDashboardShowsTransferFactsAndFits(t *testing.T) {
+	a := &App{width: 100, height: 32, screen: screenDownloads, downloads: newDownloadsModel()}
+	a.downloads.snaps = []engine.Snapshot{{
+		Magnet: "magnet:?xt=urn:btih:active", Name: "A very useful Linux image",
+		State: engine.StateDownloading, Length: 4 << 30, BytesCompleted: 1 << 30,
+		SpeedBps: 12 << 20, ETA: 4 * time.Minute, PeersActive: 8, PeersTotal: 21, Seeders: 5,
+		DownloadDir: "/downloads", DataPath: "/downloads/linux.iso",
+		Metadata: engine.MetadataStatus{Trackers: 7, Source: engine.MetadataPeers, DHTEnabled: true},
+	}}
+	a.refreshDownloadItems()
+	view := a.viewDownloads()
+	for _, want := range []string{"queue 25.0%", "12.0 MiB/s", "peers 8/21", "5 seeders", "7 trackers", "ETA 4m", "mode", "live engine", "DHT on"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("dashboard omits %q", want)
+		}
+	}
+	assertRenderFits(t, view, a.width)
+
+	a.width, a.height = 32, 14
+	assertRenderFits(t, a.viewDownloads(), a.width)
 }
 
 func TestDeleteDownloadDataRefusesUnsafePath(t *testing.T) {
