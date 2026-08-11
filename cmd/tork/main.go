@@ -13,6 +13,7 @@ import (
 	"runtime/debug"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -98,6 +99,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "tork:", err)
 			os.Exit(1)
 		}
+		return
 	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "tork:", err)
@@ -137,11 +139,20 @@ your OS Downloads folder by default. Press H inside it for the health screen.
 
 // runDaemon... TODO
 func runDaemon(args []string) error {
-	p, err := control.ResolvePaths()
+	l, err := control.Listen()
 	if err != nil {
 		return err
 	}
-	fmt.Println(p)
+	defer l.Close()
+	fmt.Printf("tork daemon listening on %s\n", l.Addr())
+
+	// SIGTERM as well as SIGINT: systemd stops services with SIGTERM, and
+	// ignoring it means being SIGKILLed after the stop timeout instead. The
+	// lock survives that, but the socket file would be left behind.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	// TODO: serve the control protocol on l.
+	<-ctx.Done()
 	return nil
 }
 

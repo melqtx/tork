@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/anacrolix/torrent/metainfo"
+	"github.com/melqtx/tork/internal/control"
 	"github.com/melqtx/tork/internal/engine"
 	"github.com/melqtx/tork/internal/state"
 )
@@ -48,7 +49,7 @@ func newPreviewModel(h metainfo.Hash, magnet, name string, from screen, owned bo
 }
 
 // refresh polls the engine for file metadata once it arrives.
-func (p *previewModel) refresh(eng *engine.Engine) {
+func (p *previewModel) refresh(eng control.Engine) {
 	if p.ready {
 		return
 	}
