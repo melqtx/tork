@@ -10,6 +10,7 @@ import (
 
 	"github.com/melqtx/tork/internal/aggregator"
 	"github.com/melqtx/tork/internal/config"
+	"github.com/melqtx/tork/internal/control"
 	"github.com/melqtx/tork/internal/engine"
 	"github.com/melqtx/tork/internal/health"
 	"github.com/melqtx/tork/internal/state"
@@ -28,7 +29,7 @@ const (
 
 type App struct {
 	cfg    *config.Config
-	eng    *engine.Engine
+	eng    control.Engine
 	agg    *aggregator.Aggregator
 	st     *state.State
 	health *health.Store
@@ -55,7 +56,7 @@ type App struct {
 	searchSeq    uint64    // generation for streamed searches; rejects late messages
 }
 
-func New(cfg *config.Config, eng *engine.Engine, agg *aggregator.Aggregator, st *state.State, hs *health.Store) *App {
+func New(cfg *config.Config, eng control.Engine, agg *aggregator.Aggregator, st *state.State, hs *health.Store) *App {
 	a := &App{
 		cfg:       cfg,
 		eng:       eng,

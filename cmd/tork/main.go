@@ -13,6 +13,7 @@ import (
 	"runtime/debug"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -21,6 +22,7 @@ import (
 	"github.com/melqtx/tork/internal/aggregator"
 	"github.com/melqtx/tork/internal/autopilot"
 	"github.com/melqtx/tork/internal/config"
+	"github.com/melqtx/tork/internal/control"
 	"github.com/melqtx/tork/internal/engine"
 	"github.com/melqtx/tork/internal/health"
 	"github.com/melqtx/tork/internal/intake"
@@ -92,6 +94,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "daemon" {
+		if err := runDaemon(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "tork:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "tork:", err)
 		os.Exit(1)
@@ -111,6 +120,7 @@ Usage:
 
 Commands:
   autopilot   search, explain the best choices, then queue them
+  daemon      TODO
   doctor      read-only config, disk, state, and provider diagnostic
   proxy       configure or inspect strict SOCKS5 routing
 
@@ -125,6 +135,25 @@ Flags:
 The interactive UI stores config and state under ~/.tork and downloads into
 your OS Downloads folder by default. Press H inside it for the health screen.
 `)
+}
+
+// runDaemon... TODO
+func runDaemon(args []string) error {
+	l, err := control.Listen()
+	if err != nil {
+		return err
+	}
+	defer l.Close()
+	fmt.Printf("tork daemon listening on %s\n", l.Addr())
+
+	// SIGTERM as well as SIGINT: systemd stops services with SIGTERM, and
+	// ignoring it means being SIGKILLed after the stop timeout instead. The
+	// lock survives that, but the socket file would be left behind.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	// TODO: serve the control protocol on l.
+	<-ctx.Done()
+	return nil
 }
 
 // runDoctor prints a read-only diagnostic of the local setup and the provider
