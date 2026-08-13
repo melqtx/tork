@@ -16,7 +16,7 @@
       forAllSystems = nixpkgs.lib.genAttrs systems;
       pkgsFor = system: import nixpkgs { inherit system; };
       version = "0.3.2";
-      vendorHash = "sha256-mpuvGJEygfcfsGftK1oPjPCfkko28VE22MmSRL35Tdo=";
+      vendorHash = "sha256-OqzWmiGLKMrKoTEelDFe1ebsI1Edfaho8TadZcFTrPs=";
     in
     {
       packages = forAllSystems (
