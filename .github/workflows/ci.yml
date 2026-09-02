@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.26"
+          go-version: "1.26.7"
           cache: true
       - name: format
         run: test -z "$(gofmt -l .)"
@@ -40,7 +40,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.26"
+          go-version: "1.26.7"
           cache: true
       - name: test
         if: runner.os != 'Windows'
