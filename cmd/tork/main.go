@@ -593,11 +593,25 @@ func resumeAll(eng *engine.Engine, st *state.State, cfg *config.Config, legacyDo
 		}
 		opts := engine.AddOptions{DownloadDir: e.DownloadDir, Excluded: e.Excluded, Seed: &seed}
 		if strings.HasPrefix(e.Magnet, "http://") || strings.HasPrefix(e.Magnet, "https://") {
-			eng.AddDirectWithOptions(e.Magnet, e.Name, e.SHA256, opts) // best-effort; failures surface in UI
+			checksum, err := entryChecksum(*e)
+			if err != nil {
+				continue
+			}
+			eng.AddDirectDownloadWithOptions(engine.DirectDownload{
+				URL: e.Magnet, Name: e.Name, Checksum: checksum, ExpectedSize: e.ExpectedSize,
+				LockToOrigin: e.LockToOrigin,
+			}, opts) // best-effort; failures surface in UI
 			continue
 		}
 		eng.AddWithOptions(e.Magnet, opts) // best-effort; failures surface in UI
 	}
+}
+
+func entryChecksum(e state.Entry) (engine.Checksum, error) {
+	if strings.TrimSpace(e.Checksum) != "" || strings.TrimSpace(e.ChecksumAlgorithm) != "" {
+		return engine.NewChecksum(e.ChecksumAlgorithm, e.Checksum)
+	}
+	return engine.SHA256Checksum(e.SHA256)
 }
 
 func normalizeEntryPaths(e *state.Entry, legacyDir string) {

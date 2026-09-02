@@ -3,35 +3,38 @@ package engine
 import (
 	"context"
 	"crypto/sha1"
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/anacrolix/torrent/metainfo"
 )
 
-// This file adds a plain-HTTPS download path for ISO-shelf images whose
-// distros publish no torrent (Gentoo, openSUSE, …). Direct downloads share
-// the torrents' Snapshot/pause/resume/remove surface, verify a published
-// sha256 incrementally as bytes arrive, and resume partial files with HTTP
-// Range requests.
+// This file adds a plain-HTTP(S) download path for files whose publishers
+// provide no torrent. Direct downloads share
+// the torrents' Snapshot/pause/resume/remove surface, verify published hashes
+// incrementally, and resume partial files with HTTP Range requests.
 
 // directItem tracks one HTTP download. All fields are guarded by Engine.mu.
 type directItem struct {
-	url         string
-	name        string // file name under DownloadDir (pre-validated by safeDataPath)
-	sha256      string // expected hex digest; "" downloads unverified
-	downloadDir string
-	dataPath    string
+	url          string
+	name         string // file name under DownloadDir (pre-validated by safeDataPath)
+	checksum     Checksum
+	expectedSize int64
+	lockedOrigin string
+	downloadDir  string
+	dataPath     string
 
 	length       int64 // total bytes; 0 until the server reports it
 	done         int64
@@ -71,23 +74,80 @@ func (e *Engine) AddDirect(url, name, sum string) (metainfo.Hash, error) {
 }
 
 func (e *Engine) AddDirectWithOptions(url, name, sum string, opts AddOptions) (metainfo.Hash, error) {
-	opts = e.normalizeOptions(opts)
-	if name == "" {
-		name = filepath.Base(strings.TrimRight(url, "/"))
+	checksum, err := SHA256Checksum(sum)
+	if err != nil {
+		return metainfo.Hash{}, err
 	}
-	dataPath, ok := safeDataPath(opts.DownloadDir, name)
+	return e.AddDirectDownloadWithOptions(DirectDownload{
+		URL: url, Name: name, Checksum: checksum,
+	}, opts)
+}
+
+func (e *Engine) AddDirectDownload(spec DirectDownload) (metainfo.Hash, error) {
+	return e.AddDirectDownloadWithOptions(spec, AddOptions{})
+}
+
+func (e *Engine) AddDirectDownloadWithOptions(spec DirectDownload, opts AddOptions) (metainfo.Hash, error) {
+	opts = e.normalizeOptions(opts)
+	parsed, err := url.Parse(spec.URL)
+	if err != nil || parsed.Hostname() == "" || parsed.User != nil || parsed.Fragment != "" ||
+		(parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return metainfo.Hash{}, errors.New("direct download needs a valid HTTP(S) URL without credentials or fragments")
+	}
+	checksum, err := NewChecksum(string(spec.Checksum.Algorithm), spec.Checksum.Hex)
+	if err != nil {
+		return metainfo.Hash{}, err
+	}
+	spec.Checksum = checksum
+	if spec.ExpectedSize < 0 {
+		return metainfo.Hash{}, errors.New("direct download size cannot be negative")
+	}
+	if spec.Name == "" {
+		spec.Name = path.Base(strings.TrimRight(parsed.Path, "/"))
+	}
+	if !safeDirectFilename(spec.Name) {
+		return metainfo.Hash{}, fmt.Errorf("unsafe file name %q", spec.Name)
+	}
+	dataPath, ok := safeDataPath(opts.DownloadDir, spec.Name)
 	if !ok {
-		return metainfo.Hash{}, fmt.Errorf("unsafe file name %q", name)
+		return metainfo.Hash{}, fmt.Errorf("unsafe file name %q", spec.Name)
 	}
 	existingSize, existingDone := int64(0), false
-	if fi, err := os.Stat(dataPath); err == nil && fi.Mode().IsRegular() {
+	if fi, err := os.Lstat(dataPath); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
+			return metainfo.Hash{}, errors.New("destination already exists and is not a regular file")
+		}
 		existingSize, existingDone = fi.Size(), true
+		if spec.VerifyExisting || spec.ExpectedSize > 0 || !spec.Checksum.Empty() {
+			if spec.VerifyExisting && spec.ExpectedSize == 0 && spec.Checksum.Empty() {
+				return metainfo.Hash{}, errors.New("destination already exists but no size or checksum is available to verify it; refusing to trust it")
+			}
+			if spec.ExpectedSize > 0 && existingSize != spec.ExpectedSize {
+				return metainfo.Hash{}, fmt.Errorf("destination already exists with size %d, expected %d; refusing to overwrite", existingSize, spec.ExpectedSize)
+			}
+			if !spec.Checksum.Empty() {
+				matches, err := fileMatchesChecksum(dataPath, spec.Checksum)
+				if err != nil {
+					return metainfo.Hash{}, fmt.Errorf("verify existing destination: %w", err)
+				}
+				if !matches {
+					return metainfo.Hash{}, errors.New("destination already exists with a different checksum; refusing to overwrite")
+				}
+			}
+		}
 	}
-	h := directHash(url)
+	h := directHash(spec.URL)
+	lockedOrigin := ""
+	if spec.LockToOrigin {
+		lockedOrigin = directURLOrigin(parsed)
+	}
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if it, ok := e.direct[h]; ok {
+		if it.name != spec.Name || it.checksum != spec.Checksum || it.expectedSize != spec.ExpectedSize || it.lockedOrigin != lockedOrigin {
+			return metainfo.Hash{}, errors.New("direct download is already tracked with different safety metadata")
+		}
 		if it.state == StatePaused {
 			it.downloadDir = opts.DownloadDir
 			it.dataPath = dataPath
@@ -96,10 +156,12 @@ func (e *Engine) AddDirectWithOptions(url, name, sum string, opts AddOptions) (m
 		return h, nil
 	}
 	it := &directItem{
-		url: url, name: name, sha256: strings.ToLower(sum),
-		downloadDir: opts.DownloadDir, dataPath: dataPath,
-		state: StateDownloading,
+		url: spec.URL, name: spec.Name, checksum: spec.Checksum,
+		expectedSize: spec.ExpectedSize,
+		downloadDir:  opts.DownloadDir, dataPath: dataPath,
+		length: spec.ExpectedSize, state: StateDownloading,
 	}
+	it.lockedOrigin = lockedOrigin
 	e.direct[h] = it
 	if existingDone {
 		it.done, it.length, it.state = existingSize, existingSize, StateDone
@@ -140,6 +202,19 @@ func (e *Engine) runDirect(ctx context.Context, it *directItem) {
 		dest, _ = safeDataPath(it.downloadDir, it.name) // validated in AddDirect
 	}
 	part := dest + ".part"
+	if fi, err := os.Lstat(part); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
+			e.failDirect(ctx, it, errors.New("partial download path is not a regular file; refusing to read or write it"))
+			return
+		}
+		if it.expectedSize > 0 && fi.Size() > it.expectedSize {
+			e.failDirect(ctx, it, fmt.Errorf("partial download is %d bytes, larger than the expected %d; refusing to overwrite it", fi.Size(), it.expectedSize))
+			return
+		}
+	} else if !os.IsNotExist(err) {
+		e.failDirect(ctx, it, fmt.Errorf("inspect partial download: %w", err))
+		return
+	}
 
 	// already on disk from an earlier run (e.g. resumed from state.json)
 	if fi, err := os.Stat(dest); err == nil {
@@ -164,13 +239,13 @@ func (e *Engine) runDirect(ctx context.Context, it *directItem) {
 	}
 	_ = os.Remove(part + ".meta")
 
-	hasher := sha256.New()
+	hasher, _ := it.checksum.newHash()
 	offset := hashExistingPart(part, hasher)
 	e.mu.Lock()
 	it.done = offset
 	e.mu.Unlock()
 
-	resp, err := e.openDirect(ctx, it.url, offset)
+	resp, err := e.openDirect(ctx, it, offset)
 	if err != nil {
 		e.failDirect(ctx, it, err)
 		return
@@ -180,13 +255,21 @@ func (e *Engine) runDirect(ctx context.Context, it *directItem) {
 	if resp.StatusCode == http.StatusOK && offset > 0 {
 		// server ignored the Range request: start over
 		offset = 0
-		hasher = sha256.New()
+		hasher, _ = it.checksum.newHash()
 	}
 	length := totalLength(resp, offset)
+	if it.expectedSize > 0 && length > 0 && length != it.expectedSize {
+		e.failDirect(ctx, it, fmt.Errorf("server reported %d bytes, expected %d", length, it.expectedSize))
+		return
+	}
 
 	flags := os.O_CREATE | os.O_WRONLY | os.O_APPEND
 	if offset == 0 {
 		flags = os.O_CREATE | os.O_WRONLY | os.O_TRUNC
+	}
+	if fi, err := os.Lstat(part); err == nil && (fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular()) {
+		e.failDirect(ctx, it, errors.New("partial download path is not a regular file; refusing to write"))
+		return
 	}
 	f, err := os.OpenFile(part, flags, 0o644)
 	if err != nil {
@@ -208,12 +291,20 @@ func (e *Engine) runDirect(ctx context.Context, it *directItem) {
 		return
 	}
 
-	if it.sha256 != "" {
-		if got := hex.EncodeToString(hasher.Sum(nil)); got != it.sha256 {
+	e.mu.Lock()
+	downloaded := it.done
+	e.mu.Unlock()
+	if it.expectedSize > 0 && downloaded != it.expectedSize {
+		_ = os.Remove(part)
+		e.failDirect(ctx, it, fmt.Errorf("downloaded %d bytes, expected %d", downloaded, it.expectedSize))
+		return
+	}
+	if !it.checksum.Empty() {
+		if got := hex.EncodeToString(hasher.Sum(nil)); got != it.checksum.Hex {
 			os.Remove(part)
 			e.mu.Lock()
 			it.done, it.state, it.cancel = 0, StatePaused, nil
-			it.note = "checksum mismatch - data discarded, press p to retry"
+			it.note = it.checksum.Label() + " checksum mismatch - data discarded, press p to retry"
 			e.mu.Unlock()
 			return
 		}
@@ -239,6 +330,9 @@ func (e *Engine) copyDirect(it *directItem, f *os.File, body io.Reader, hasher h
 	for {
 		n, rerr := body.Read(buf)
 		if n > 0 {
+			if it.expectedSize > 0 && done+int64(n) > it.expectedSize {
+				return fmt.Errorf("server exceeded the declared size of %d bytes", it.expectedSize)
+			}
 			if _, werr := f.Write(buf[:n]); werr != nil {
 				return werr
 			}
@@ -257,8 +351,8 @@ func (e *Engine) copyDirect(it *directItem, f *os.File, body io.Reader, hasher h
 	}
 }
 
-func (e *Engine) openDirect(ctx context.Context, url string, offset int64) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func (e *Engine) openDirect(ctx context.Context, it *directItem, offset int64) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, it.url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -266,7 +360,7 @@ func (e *Engine) openDirect(ctx context.Context, url string, offset int64) (*htt
 	if offset > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 	}
-	resp, err := e.directHTTP.Do(req)
+	resp, err := e.doDirectRequest(req, it)
 	if err != nil {
 		return nil, err
 	}
@@ -275,6 +369,60 @@ func (e *Engine) openDirect(ctx context.Context, url string, offset int64) (*htt
 		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
 	}
 	return resp, nil
+}
+
+func directURLOrigin(u *url.URL) string {
+	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host)
+}
+
+func safeDirectFilename(name string) bool {
+	if len(name) == 0 || len(name) > 240 || strings.TrimSpace(name) != name ||
+		name == "." || name == ".." || strings.ContainsAny(name, "/\\<>:\"|?*") {
+		return false
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) || directBidiControl(r) {
+			return false
+		}
+	}
+	stem := strings.ToUpper(strings.SplitN(name, ".", 2)[0])
+	switch stem {
+	case "CON", "PRN", "AUX", "NUL",
+		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
+		return false
+	}
+	return !strings.HasSuffix(name, ".") && !strings.HasSuffix(name, " ")
+}
+
+func directBidiControl(r rune) bool {
+	return r == '\u200e' || r == '\u200f' ||
+		(r >= '\u202a' && r <= '\u202e') ||
+		(r >= '\u2066' && r <= '\u2069')
+}
+
+// doDirectRequest preserves the configured transport while applying the
+// per-download redirect boundary. The cloned client is request-local and
+// therefore safe when range workers call it concurrently.
+func (e *Engine) doDirectRequest(req *http.Request, it *directItem) (*http.Response, error) {
+	if it.lockedOrigin == "" {
+		return e.directHTTP.Do(req)
+	}
+	client := *e.directHTTP
+	baseCheck := client.CheckRedirect
+	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		if next.URL.User != nil || directURLOrigin(next.URL) != it.lockedOrigin {
+			return errors.New("refusing a download redirect outside the trusted origin")
+		}
+		if baseCheck != nil {
+			return baseCheck(next, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
+	return client.Do(req)
 }
 
 // failDirect parks the download as paused with a short reason, so the user
@@ -433,8 +581,8 @@ func (e *Engine) verifyDirectDownload(ctx context.Context, h metainfo.Hash) (res
 		e.mu.Unlock()
 		return result, ErrVerificationIncomplete
 	}
-	expected := strings.TrimSpace(strings.ToLower(it.sha256))
-	if expected == "" {
+	checksum := it.checksum
+	if checksum.Empty() {
 		e.mu.Unlock()
 		return result, ErrNoChecksum
 	}
@@ -448,11 +596,11 @@ func (e *Engine) verifyDirectDownload(ctx context.Context, h metainfo.Hash) (res
 	}
 	e.mu.Unlock()
 
-	fi, err := os.Stat(dest)
+	fi, err := os.Lstat(dest)
 	if err != nil {
 		return result, err
 	}
-	if !fi.Mode().IsRegular() {
+	if fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
 		return result, fmt.Errorf("verify %s: not a regular file", dest)
 	}
 
@@ -477,7 +625,7 @@ func (e *Engine) verifyDirectDownload(ctx context.Context, h metainfo.Hash) (res
 	previousDone, previousLength, previousNote := it.done, it.length, it.note
 	verifyCtx, cancel := context.WithCancel(ctx)
 	it.state = StateVerifying
-	it.note = "checking SHA256"
+	it.note = "checking " + checksum.Label()
 	it.verifyCancel = cancel
 	e.vwg.Add(1)
 	e.mu.Unlock()
@@ -496,10 +644,10 @@ func (e *Engine) verifyDirectDownload(ctx context.Context, h metainfo.Hash) (res
 		e.vwg.Done()
 	}()
 
-	return e.verifyDirectFile(verifyCtx, h, it, dest, expected, fi.Size())
+	return e.verifyDirectFile(verifyCtx, h, it, dest, checksum, fi.Size())
 }
 
-func (e *Engine) verifyDirectFile(ctx context.Context, h metainfo.Hash, it *directItem, dest, expected string, size int64) (VerifyResult, error) {
+func (e *Engine) verifyDirectFile(ctx context.Context, h metainfo.Hash, it *directItem, dest string, checksum Checksum, size int64) (VerifyResult, error) {
 	var result VerifyResult
 	f, err := os.Open(dest)
 	if err != nil {
@@ -507,7 +655,10 @@ func (e *Engine) verifyDirectFile(ctx context.Context, h metainfo.Hash, it *dire
 	}
 	defer f.Close()
 
-	hasher := sha256.New()
+	hasher, err := checksum.newHash()
+	if err != nil {
+		return result, err
+	}
 	buf := make([]byte, 128<<10)
 	for {
 		select {
@@ -530,7 +681,7 @@ func (e *Engine) verifyDirectFile(ctx context.Context, h metainfo.Hash, it *dire
 	}
 
 	got := hex.EncodeToString(hasher.Sum(nil))
-	if got == expected {
+	if got == checksum.Hex {
 		e.mu.Lock()
 		if current, ok := e.direct[h]; ok && current == it {
 			it.done, it.length, it.state = size, size, StateDone
@@ -558,6 +709,22 @@ func (e *Engine) verifyDirectFile(ctx context.Context, h metainfo.Hash, it *dire
 	}
 	e.mu.Unlock()
 	return result, nil
+}
+
+func fileMatchesChecksum(filename string, checksum Checksum) (bool, error) {
+	f, err := os.Open(filename)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	hasher, err := checksum.newHash()
+	if err != nil {
+		return false, err
+	}
+	if _, err := io.Copy(hasher, f); err != nil {
+		return false, err
+	}
+	return hex.EncodeToString(hasher.Sum(nil)) == checksum.Hex, nil
 }
 
 func nextQuarantinePath(dest string) (string, error) {

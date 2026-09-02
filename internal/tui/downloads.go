@@ -837,16 +837,34 @@ func (a *App) activateDownload(it downloadItem) (metainfo.Hash, error) {
 	}
 	if strings.HasPrefix(it.Magnet, "http://") || strings.HasPrefix(it.Magnet, "https://") {
 		name := it.Name
-		sum := ""
+		var checksum engine.Checksum
+		expectedSize := int64(0)
+		lockToOrigin := false
 		if a.st != nil {
 			if e := a.st.Find(it.Magnet); e != nil {
 				name = e.Name
-				sum = e.SHA256
+				var err error
+				checksum, err = directEntryChecksum(*e)
+				if err != nil {
+					return metainfo.Hash{}, err
+				}
+				expectedSize = e.ExpectedSize
+				lockToOrigin = e.LockToOrigin
 			}
 		}
-		return a.eng.AddDirectWithOptions(it.Magnet, name, sum, opts)
+		return a.eng.AddDirectDownloadWithOptions(engine.DirectDownload{
+			URL: it.Magnet, Name: name, Checksum: checksum, ExpectedSize: expectedSize,
+			LockToOrigin: lockToOrigin,
+		}, opts)
 	}
 	return a.eng.AddWithOptions(it.Magnet, opts)
+}
+
+func directEntryChecksum(e state.Entry) (engine.Checksum, error) {
+	if strings.TrimSpace(e.Checksum) != "" || strings.TrimSpace(e.ChecksumAlgorithm) != "" {
+		return engine.NewChecksum(e.ChecksumAlgorithm, e.Checksum)
+	}
+	return engine.SHA256Checksum(e.SHA256)
 }
 
 func (a *App) removeDownload(it downloadItem, deleteData bool) error {
@@ -1068,12 +1086,9 @@ func (a *App) viewDownloads() string {
 			b.WriteString("\n")
 		}
 	}
-	for i := end - start; i < listRows; i++ {
-		b.WriteString("\n\n\n")
-	}
 
 	if detail := a.downloadDetail(items[d.win.cursor], width); detail != "" {
-		b.WriteString("\n" + rule(width) + "\n" + detail)
+		b.WriteString("\n\n" + detail)
 	}
 
 	help := a.keyStrip(a.helpBudget(width))
@@ -1098,57 +1113,94 @@ func (a *App) renderDownloadItem(it downloadItem, selected bool, width int) stri
 		nameStyle = styleBrand
 	}
 	badge := stateBadge(it.State)
-	nameWidth := max(1, width-lipgloss.Width(marker)-lipgloss.Width(badge)-2)
+	kind := ""
+	if directDownload(it) && width >= 44 {
+		kind = styleFaint.Render("direct") + "  "
+	}
+	glyph := downloadStateGlyph(it.State) + " "
+	nameWidth := max(1, width-lipgloss.Width(marker)-lipgloss.Width(glyph)-lipgloss.Width(kind)-lipgloss.Width(badge)-2)
 	name := nameStyle.Render(truncate(it.Name, nameWidth))
-	line1 := marker + name
-	if gap := width - lipgloss.Width(line1) - lipgloss.Width(badge); gap > 0 {
-		line1 += strings.Repeat(" ", gap) + badge
+	line1 := marker + glyph + name
+	right := kind + badge
+	if gap := width - lipgloss.Width(line1) - lipgloss.Width(right); gap > 0 {
+		line1 += strings.Repeat(" ", gap) + right
 	} else {
-		line1 += " " + badge
+		line1 += " " + right
 	}
 
 	pct := fmt.Sprintf("%5.1f%%", it.Progress()*100)
-	size := ""
-	if it.Length > 0 && width >= 58 {
-		size = humanBytes(min(it.BytesCompleted, it.Length)) + " / " + humanBytes(it.Length)
+	activity := downloadRowActivity(it)
+	activityWidth := min(lipgloss.Width(activity), max(0, width/3))
+	if activityWidth > 0 {
+		activity = truncate(activity, activityWidth)
 	}
-	barWidth := width - 2 - 1 - lipgloss.Width(pct)
-	if size != "" {
-		barWidth -= lipgloss.Width(size) + 3
+	barWidth := width - 4 - lipgloss.Width(pct) - 1
+	if activity != "" {
+		barWidth -= lipgloss.Width(activity) + 2
 	}
-	barWidth = max(4, min(48, barWidth))
-	line2 := "  " + progressRail(it.Progress(), barWidth) + " " + styleDim.Render(pct)
-	if size != "" {
-		line2 += styleFaint.Render("   " + size)
+	barWidth = max(4, min(44, barWidth))
+	line2 := "    " + progressRail(it.Progress(), barWidth) + " " + styleDim.Render(pct)
+	if activity != "" {
+		line2 += styleFaint.Render("  ") + activity
 	}
+	return truncate(line1, width) + "\n" + truncate(line2, width)
+}
 
-	parts := make([]string, 0, 5)
+func directDownload(it downloadItem) bool {
+	return strings.HasPrefix(it.Magnet, "http://") || strings.HasPrefix(it.Magnet, "https://")
+}
+
+func downloadStateGlyph(s engine.TorrentState) string {
+	switch s {
+	case engine.StateDownloading:
+		return styleOK.Render("↓")
+	case engine.StateSeeding:
+		return styleOK.Render("↑")
+	case engine.StateDone:
+		return styleOK.Render("✓")
+	case engine.StatePaused:
+		return styleFaint.Render("Ⅱ")
+	case engine.StateMissing:
+		return styleErr.Render("!")
+	case engine.StateVerifying:
+		return styleBest.Render("◇")
+	case engine.StateFetchingMeta, engine.StatePreviewing:
+		return styleDim.Render("…")
+	default:
+		return styleDim.Render("○")
+	}
+}
+
+func downloadRowActivity(it downloadItem) string {
+	parts := make([]string, 0, 2)
 	if it.SpeedBps > 0 {
 		parts = append(parts, styleOK.Render("↓ "+humanSpeed(it.SpeedBps)))
 	}
 	if it.ETA > 0 {
 		parts = append(parts, "ETA "+fmtETA(it.ETA))
 	}
-	if it.PeersTotal > 0 {
-		parts = append(parts, fmt.Sprintf("peers %d/%d", it.PeersActive, it.PeersTotal))
-	}
-	if it.Seeders > 0 {
-		parts = append(parts, plural(it.Seeders, "seeder"))
-	}
-	if it.Trackers > 0 && width >= 72 {
-		parts = append(parts, plural(it.Trackers, "tracker"))
-	}
-	if strings.HasPrefix(it.Magnet, "http://") || strings.HasPrefix(it.Magnet, "https://") {
-		parts = append(parts, "direct")
+	if len(parts) > 0 {
+		return strings.Join(parts, " · ")
 	}
 	if showDownloadNote(it.Note) {
-		parts = append(parts, it.Note)
+		return styleFaint.Render(it.Note)
 	}
-	if len(parts) == 0 {
-		parts = append(parts, "waiting for activity")
+	switch it.State {
+	case engine.StateDone:
+		return styleOK.Render("ready")
+	case engine.StateSeeding:
+		return styleOK.Render("complete · seeding")
+	case engine.StatePaused:
+		return styleFaint.Render("paused")
+	case engine.StateMissing:
+		return styleErr.Render("file missing")
+	case engine.StateVerifying:
+		return styleBest.Render("checking data")
+	case engine.StateFetchingMeta:
+		return styleDim.Render("fetching metadata")
+	default:
+		return styleDim.Render("waiting")
 	}
-	line3 := "  " + styleFaint.Render(strings.Join(parts, "  ·  "))
-	return truncate(line1, width) + "\n" + truncate(line2, width) + "\n" + truncate(line3, width)
 }
 
 func (it downloadItem) Progress() float64 {
@@ -1179,19 +1231,30 @@ func showDownloadNote(note string) bool {
 }
 
 func (a *App) downloadsOverview(m downloadMetrics, width int) string {
-	activity := styleFaint.Render("queue idle")
+	counts := []string{fmt.Sprintf("%d total", m.Total)}
 	if m.Active > 0 {
-		activity = styleOK.Render(fmt.Sprintf("↓ %d active", m.Active))
-	} else if m.Total > 0 && m.Done == m.Total {
-		activity = styleOK.Render("✓ all complete")
+		counts = append(counts, styleOK.Render(fmt.Sprintf("%d active", m.Active)))
 	}
-	line1 := activity
+	if m.Paused > 0 {
+		counts = append(counts, styleBest.Render(fmt.Sprintf("%d paused", m.Paused)))
+	}
+	if m.Done > 0 {
+		counts = append(counts, styleOK.Render(fmt.Sprintf("%d complete", m.Done)))
+	}
+	if m.Missing > 0 {
+		counts = append(counts, styleErr.Render(fmt.Sprintf("%d missing", m.Missing)))
+	}
+	left := styleTitle.Render("queue") + styleFaint.Render("  ") + strings.Join(counts, styleFaint.Render("  ·  "))
+	rightParts := []string{}
 	if m.SpeedBps > 0 {
-		line1 += styleFaint.Render("   ") + styleFg.Render(humanSpeed(m.SpeedBps))
+		rightParts = append(rightParts, styleOK.Render("↓ "+humanSpeed(m.SpeedBps)))
 	}
-	line1 += styleFaint.Render(fmt.Sprintf("   queue %.1f%%", m.Progress()*100))
+	if eta := m.ETA(); eta > 0 {
+		rightParts = append(rightParts, styleDim.Render("ETA "+fmtETA(eta)))
+	}
+	line1 := joinDownloadEnds(left, strings.Join(rightParts, "  "), width)
 
-	if a.bodyHeight() < 12 {
+	if a.bodyHeight() < 10 {
 		return truncate(line1, width) + "\n" + rule(width)
 	}
 	percent := fmt.Sprintf("%5.1f%%", m.Progress()*100)
@@ -1209,103 +1272,93 @@ func (a *App) downloadsOverview(m downloadMetrics, width int) string {
 		line2 += styleFaint.Render("   " + sizes)
 	}
 
-	facts := make([]string, 0, 6)
-	if m.PeersTotal > 0 {
-		facts = append(facts, fmt.Sprintf("peers %d/%d", m.PeersActive, m.PeersTotal))
+	return truncate(line1, width) + "\n" + truncate(line2, width) + "\n" + rule(width)
+}
+
+func joinDownloadEnds(left, right string, width int) string {
+	if right == "" || lipgloss.Width(left)+lipgloss.Width(right)+2 > width {
+		return truncate(left, width)
 	}
-	if m.Seeders > 0 {
-		facts = append(facts, plural(m.Seeders, "seeder"))
-	}
-	if eta := m.ETA(); eta > 0 {
-		facts = append(facts, "ETA "+fmtETA(eta))
-	}
-	if m.Paused > 0 {
-		facts = append(facts, fmt.Sprintf("%d paused", m.Paused))
-	}
-	if m.Missing > 0 {
-		facts = append(facts, styleErr.Render(fmt.Sprintf("%d missing", m.Missing)))
-	}
-	if m.Seeding > 0 {
-		facts = append(facts, fmt.Sprintf("%d seeding", m.Seeding))
-	}
-	if len(facts) == 0 {
-		facts = append(facts, fmt.Sprintf("%d in queue", m.Total))
-	}
-	line3 := styleFaint.Render(strings.Join(facts, "  ·  "))
-	return truncate(line1, width) + "\n" + truncate(line2, width) + "\n" + truncate(line3, width) + "\n" + rule(width)
+	return left + strings.Repeat(" ", width-lipgloss.Width(left)-lipgloss.Width(right)) + right
 }
 
 func (a *App) downloadDetail(it downloadItem, width int) string {
-	if a.bodyHeight() < 20 {
+	if a.bodyHeight() < 20 || width < 44 {
 		return ""
 	}
 	path := it.DataPath
 	if path == "" {
 		path = "(unknown path)"
 	}
-	seed := "off"
-	if it.Seed {
-		seed = "on"
-	}
 	mode := "torrent"
-	if strings.HasPrefix(it.Magnet, "http://") || strings.HasPrefix(it.Magnet, "https://") {
+	if directDownload(it) {
 		mode = "direct"
 	}
-	engineMode := "saved state"
-	if it.Live {
-		engineMode = "live engine"
-	}
-	modeParts := []string{mode, engineMode, "seeding " + seed}
-	if it.MetadataSource != "" {
-		modeParts = append(modeParts, "metadata "+string(it.MetadataSource))
-	}
-	if it.ProxyStrict {
-		modeParts = append(modeParts, "strict proxy")
-	} else if it.DHTEnabled && mode == "torrent" {
-		modeParts = append(modeParts, "DHT on")
-	}
-	transfer := []string{fmt.Sprintf("%.1f%%", it.Progress()*100)}
-	if it.SpeedBps > 0 {
-		transfer = append(transfer, "↓ "+humanSpeed(it.SpeedBps))
-	}
-	if it.ETA > 0 {
-		transfer = append(transfer, "ETA "+fmtETA(it.ETA))
+	info := []string{mode}
+	if it.Length > 0 {
+		info = append(info, humanBytes(it.Length))
 	}
 	if it.PeersTotal > 0 {
-		transfer = append(transfer, fmt.Sprintf("peers %d/%d", it.PeersActive, it.PeersTotal))
+		info = append(info, fmt.Sprintf("peers %d/%d", it.PeersActive, it.PeersTotal))
 	}
 	if it.Seeders > 0 {
-		transfer = append(transfer, plural(it.Seeders, "seeder"))
+		info = append(info, plural(it.Seeders, "seeder"))
 	}
 	if it.Trackers > 0 {
-		transfer = append(transfer, plural(it.Trackers, "tracker"))
+		info = append(info, plural(it.Trackers, "tracker"))
 	}
-	keys := "enter open"
-	if revealAvailable {
-		keys += " · o " + revealLabel
+	if it.ProxyStrict {
+		info = append(info, "strict proxy")
+	} else if it.DHTEnabled && mode == "torrent" {
+		info = append(info, "DHT on")
 	}
-	keys += " · ? all keys"
+	actions := downloadActionHint(it)
+	innerWidth := max(1, width-4)
+	headerRight := stateBadge(it.State)
+	headerLeft := styleBrand.Render("selected") + styleFaint.Render("  ") + styleFg.Bold(true).Render(truncate(it.Name, max(1, innerWidth-lipgloss.Width(headerRight)-2)))
 	lines := []string{
-		styleFaint.Render("mode      ") + styleDim.Render(strings.Join(modeParts, " · ")) + styleFaint.Render("   ") + stateBadge(it.State),
-		styleFaint.Render("transfer  ") + styleDim.Render(strings.Join(transfer, " · ")),
-		styleFaint.Render("path      ") + styleDim.Render(truncate(path, width-10)),
-		styleFaint.Render("root      ") + styleDim.Render(truncate(it.DownloadDir, width-10)),
-		styleFaint.Render("actions   ") + styleDim.Render(truncate(keys, width-10)),
+		joinDownloadEnds(headerLeft, headerRight, innerWidth),
+		styleFaint.Render("save     ") + styleDim.Render(truncate(path, max(1, innerWidth-9))),
+		styleFaint.Render("info     ") + styleDim.Render(truncate(strings.Join(info, " · "), max(1, innerWidth-9))),
+		styleFaint.Render("actions  ") + styleDim.Render(truncate(actions, max(1, innerWidth-9))),
 	}
-	return strings.Join(lines, "\n")
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colBorder).
+		Padding(0, 1).
+		Width(max(1, width-4)).
+		Render(strings.Join(lines, "\n"))
+}
+
+func downloadActionHint(it downloadItem) string {
+	switch it.State {
+	case engine.StatePaused:
+		return "p resume · m move · x remove"
+	case engine.StateMissing:
+		return "r relink · m move · x remove"
+	case engine.StateDone, engine.StateSeeding:
+		if revealAvailable {
+			return "enter open · o reveal · v verify · y copy path"
+		}
+		return "enter open · v verify · y copy path"
+	case engine.StateVerifying:
+		return "verification in progress"
+	default:
+		return "p pause · m move · x remove · ? all keys"
+	}
 }
 
 func (a *App) downloadListRows() int {
 	body := a.bodyHeight()
 	overviewLines := 2
-	if body >= 12 {
-		overviewLines = 4
+	if body >= 10 {
+		overviewLines = 3
 	}
 	detailLines := 0
-	if body >= 20 {
-		detailLines = 6
+	if body >= 20 && a.contentWidth() >= 44 {
+		detailLines = 7 // one breathing line plus the six-line bordered card
 	}
-	return max(1, (body-overviewLines-detailLines)/3)
+	return max(1, (body-overviewLines-detailLines)/2)
 }
 
 // downloadsContext summarises the list in the header: what is moving, what is

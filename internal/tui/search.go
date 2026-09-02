@@ -125,6 +125,9 @@ func (a *App) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // startSearch cancels any in-flight search and fans a new one out.
 func (a *App) startSearch(query string) tea.Cmd {
+	if len(a.agg.Providers()) == 0 {
+		return a.showError("no search providers are enabled in config.yaml")
+	}
 	if a.results.cancel != nil {
 		a.results.cancel()
 	}
@@ -189,7 +192,7 @@ func (a *App) viewSearch() string {
 			a.homeMenuView(),
 		)
 	}
-	hero = padLines(fitBlockWidth(hero, tw), max(1, th-2))
+	hero = fitBlockWidth(hero, tw)
 
 	// footer status bar pinned to the bottom, sharing chrome's help/error logic
 	right := styleFaint.Render(cozyGreeting())

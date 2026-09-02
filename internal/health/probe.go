@@ -43,7 +43,7 @@ func ProbeProviders(ctx context.Context, providers []provider.Provider, timeout 
 var errPanicked = errors.New("panicked")
 
 func probeOne(ctx context.Context, p provider.Provider, timeout time.Duration) ProviderProbe {
-	probe := ProviderProbe{Name: p.Name()}
+	probe := ProviderProbe{Name: provider.DisplayName(p)}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 

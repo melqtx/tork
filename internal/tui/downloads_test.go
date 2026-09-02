@@ -138,10 +138,17 @@ func TestDownloadsDashboardShowsTransferFactsAndFits(t *testing.T) {
 	}}
 	a.refreshDownloadItems()
 	view := a.viewDownloads()
-	for _, want := range []string{"queue 25.0%", "12.0 MiB/s", "peers 8/21", "5 seeders", "7 trackers", "ETA 4m", "mode", "live engine", "DHT on"} {
+	for _, want := range []string{
+		"queue", "1 total", "1 active", "25.0%", "12.0 MiB/s", "ETA 4m",
+		"selected", "save", "/downloads/linux.iso", "info", "torrent",
+		"peers 8/21", "5 seeders", "7 trackers", "DHT on", "actions",
+	} {
 		if !strings.Contains(view, want) {
 			t.Errorf("dashboard omits %q", want)
 		}
+	}
+	if !strings.Contains(view, "╭") || !strings.Contains(view, "╰") {
+		t.Error("selected download is not presented as a detail card")
 	}
 	assertRenderFits(t, view, a.width)
 

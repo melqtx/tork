@@ -2,7 +2,7 @@
 
 ```
  /\_/\
-( ^.^ )  a cozy terminal for torrent search + one-key linux isos
+( ^.^ )  a cozy terminal for torrent search + verified downloads
  > ^ <
 ```
 
@@ -113,8 +113,7 @@ Transfer rates are client-wide bytes per second; dial rate is dials per second.
 does not expose its webseed concurrency as a runtime client setting, so tork
 does not claim to configure it here.
 
-Direct HTTP ISO downloads use verified byte ranges when the server supports
-them:
+Direct HTTP downloads use verified byte ranges when the server supports them:
 
 ```yaml
 direct:
@@ -127,7 +126,8 @@ The connection limit is per direct download. tork confirms range support and a
 stable resource before splitting; small, unknown-length, or incompatible
 responses automatically use one sequential connection. Paused segmented
 transfers resume from an internal `.part.meta` sidecar, and the final filename
-still appears only after SHA256 verification when a checksum is available.
+still appears only after its published SHA-1, SHA-256, or SHA-512 digest is
+verified.
 
 ## SOCKS5 proxy
 
@@ -232,7 +232,9 @@ Available fields are `res`, `seeders`, `size`, `source`, `codec`, `provider`,
 and `category`. Attributes include `is:trusted`, `is:hdr`, `is:dv`, and
 `is:pack`; prefix any structured filter with `-` to negate it.
 
-Verification rehashes completed torrent pieces. Direct downloads require a published SHA256; mismatches are moved aside as `.corrupt`, `.corrupt.1`, and so on before retrying.
+Verification rehashes completed torrent pieces and direct-download checksums.
+Checksum mismatches are moved aside as `.corrupt`, `.corrupt.1`, and so on
+before retrying.
 
 ## Autopilot (WIP)
 

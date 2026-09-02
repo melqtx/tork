@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // ErrBlocked marks a provider rejected by an anti-bot layer (e.g. Cloudflare).
@@ -35,6 +36,55 @@ type Result struct {
 	AlsoOn    []string // other providers that listed this same infohash (see Merge)
 }
 
+// SanitizeResult bounds and strips terminal control sequences from text that
+// came from a remote index. URLs and magnets stay byte-for-byte intact; only
+// fields rendered in the terminal are normalized.
+func SanitizeResult(r Result) Result {
+	r.Title = SanitizeDisplayText(r.Title, 512)
+	r.Size = SanitizeDisplayText(r.Size, 64)
+	r.Provider = SanitizeDisplayText(r.Provider, 80)
+	r.Category = SanitizeDisplayText(r.Category, 120)
+	r.AlsoOn = sanitizeDisplayList(r.AlsoOn, 64, 80)
+	return r
+}
+
+// SanitizeDisplayText makes untrusted catalog text inert in a terminal. It
+// removes C0/C1 and bidirectional formatting controls, collapses whitespace,
+// and applies a rune bound so one remote field cannot dominate rendering.
+func SanitizeDisplayText(raw string, limit int) string {
+	clean := strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || isBidiControl(r) {
+			return ' '
+		}
+		return r
+	}, raw)
+	clean = strings.Join(strings.Fields(clean), " ")
+	runes := []rune(clean)
+	if limit > 0 && len(runes) > limit {
+		clean = string(runes[:limit])
+	}
+	return clean
+}
+
+func sanitizeDisplayList(values []string, maxItems, maxRunes int) []string {
+	if len(values) > maxItems {
+		values = values[:maxItems]
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = SanitizeDisplayText(value, maxRunes); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func isBidiControl(r rune) bool {
+	return r == '\u200e' || r == '\u200f' ||
+		(r >= '\u202a' && r <= '\u202e') ||
+		(r >= '\u2066' && r <= '\u2069')
+}
+
 // Key identifies a result for deduplication across retries.
 func (r Result) Key() string {
 	if r.Magnet != "" {
@@ -49,6 +99,14 @@ func (r Result) Key() string {
 type Provider interface {
 	Name() string
 	Search(ctx context.Context, query string, out chan<- Result) error
+}
+
+func DisplayName(p Provider) string {
+	name := SanitizeDisplayText(p.Name(), 80)
+	if name == "" {
+		return "provider"
+	}
+	return name
 }
 
 // MagnetResolver is implemented by providers whose results carry only a

@@ -143,6 +143,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// The health screen is reachable from anywhere a capital letter is
 			// not being typed, and is deliberately outside the tab cycle.
 			if a.health != nil && !a.typing() && a.screen != screenPreview && a.screen != screenHealth {
+				a.cancelResolve()
 				return a, a.openHealth()
 			}
 		}
@@ -321,6 +322,9 @@ func (a *App) cycleScreen() tea.Cmd {
 	if a.screen == screenDownloads {
 		return a.startDownloadPathCheck(false)
 	}
+	if a.screen == screenSearch {
+		return a.search.input.Focus()
+	}
 	return nil
 }
 
@@ -335,12 +339,19 @@ func (a *App) onTorrentAdded(msg torrentAddedMsg) tea.Cmd {
 		return a.showError("add failed: " + msg.err.Error())
 	}
 	entry := state.Entry{
-		Magnet:      msg.magnet,
-		Name:        msg.name,
-		SHA256:      msg.sha256,
-		AddedAt:     time.Now().UTC(),
-		DownloadDir: a.cfg.DownloadDir,
-		Seed:        state.Bool(a.cfg.SeedAfterComplete),
+		Magnet:            msg.magnet,
+		Name:              msg.name,
+		SHA256:            msg.sha256,
+		ChecksumAlgorithm: string(msg.checksum.Algorithm),
+		Checksum:          msg.checksum.Hex,
+		ExpectedSize:      msg.expectedSize,
+		LockToOrigin:      msg.lockToOrigin,
+		AddedAt:           time.Now().UTC(),
+		DownloadDir:       a.cfg.DownloadDir,
+		Seed:              state.Bool(a.cfg.SeedAfterComplete),
+	}
+	if strings.HasPrefix(msg.magnet, "http://") || strings.HasPrefix(msg.magnet, "https://") {
+		entry.Seed = state.Bool(false)
 	}
 	if snap, ok := a.eng.Snapshot(msg.hash); ok {
 		applySnapshotToEntry(&entry, snap)

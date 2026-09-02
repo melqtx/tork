@@ -234,7 +234,7 @@ func (d Deps) resolve(ctx context.Context, r provider.Result) (string, error) {
 		return r.Magnet, nil
 	}
 	for _, p := range d.Providers {
-		if p.Name() != r.Provider {
+		if p.Name() != r.Provider && provider.DisplayName(p) != r.Provider {
 			continue
 		}
 		if mr, ok := p.(provider.MagnetResolver); ok {
