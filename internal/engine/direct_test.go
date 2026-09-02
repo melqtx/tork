@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -53,6 +54,155 @@ func serveISO(t *testing.T, payload []byte, rangeHits *atomic.Int32) *httptest.S
 func sumHex(b []byte) string {
 	s := sha256.Sum256(b)
 	return hex.EncodeToString(s[:])
+}
+
+func sum512Hex(b []byte) string {
+	s := sha512.Sum512(b)
+	return hex.EncodeToString(s[:])
+}
+
+func TestDirectDownloadSupportsSHA512AndExpectedSize(t *testing.T) {
+	payload := []byte("a checksum-verified catalog artifact")
+	ts := serveISO(t, payload, nil)
+	eng := newDirectTestEngine(t)
+	checksum, err := NewChecksum("sha512", sum512Hex(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h, err := eng.AddDirectDownload(DirectDownload{
+		URL: ts.URL + "/artifact.jar", Name: "artifact.jar", Checksum: checksum,
+		ExpectedSize: int64(len(payload)), LockToOrigin: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	awaitDirect(t, eng, func(s Snapshot) bool { return s.Hash == h && s.State == StateDone }, 10*time.Second)
+	got, err := os.ReadFile(filepath.Join(eng.cfg.DownloadDir, "artifact.jar"))
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("downloaded artifact = %q, %v", got, err)
+	}
+}
+
+func TestDirectDownloadRefusesCrossOriginRedirect(t *testing.T) {
+	var targetHits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		targetHits.Add(1)
+		_, _ = w.Write([]byte("untrusted"))
+	}))
+	defer target.Close()
+	entry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/artifact.jar", http.StatusFound)
+	}))
+	defer entry.Close()
+	eng := newDirectTestEngine(t)
+
+	h, err := eng.AddDirectDownload(DirectDownload{
+		URL: entry.URL + "/artifact.jar", Name: "artifact.jar", LockToOrigin: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := awaitDirect(t, eng, func(s Snapshot) bool { return s.Hash == h && s.State == StatePaused }, 10*time.Second)
+	if !strings.Contains(snap.Note, "trusted origin") {
+		t.Fatalf("note = %q, want trusted-origin refusal", snap.Note)
+	}
+	if targetHits.Load() != 0 {
+		t.Fatalf("redirect target received %d requests, want none", targetHits.Load())
+	}
+}
+
+func TestDirectDownloadVerifiesExistingCatalogFile(t *testing.T) {
+	payload := []byte("already downloaded")
+	eng := newDirectTestEngine(t)
+	checksum, err := NewChecksum("sha512", sum512Hex(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(eng.cfg.DownloadDir, "artifact.jar")
+	if err := os.WriteFile(dest, []byte("different bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = eng.AddDirectDownload(DirectDownload{
+		URL:  "https://downloads.example.org/releases/artifact.jar",
+		Name: "artifact.jar", Checksum: checksum, ExpectedSize: int64(len(payload)),
+		VerifyExisting: true, LockToOrigin: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Fatalf("existing-file error = %v", err)
+	}
+	got, readErr := os.ReadFile(dest)
+	if readErr != nil || string(got) != "different bytes" {
+		t.Fatalf("existing destination was changed: %q, %v", got, readErr)
+	}
+}
+
+func TestDirectDownloadVerifyExistingRequiresVerificationMetadata(t *testing.T) {
+	eng := newDirectTestEngine(t)
+	dest := filepath.Join(eng.cfg.DownloadDir, "artifact.jar")
+	if err := os.WriteFile(dest, []byte("unverifiable existing bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := eng.AddDirectDownload(DirectDownload{
+		URL: "https://downloads.example.org/releases/artifact.jar", Name: "artifact.jar",
+		VerifyExisting: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "no size or checksum") {
+		t.Fatalf("existing-file error = %v, want missing verification metadata refusal", err)
+	}
+	got, readErr := os.ReadFile(dest)
+	if readErr != nil || string(got) != "unverifiable existing bytes" {
+		t.Fatalf("existing destination was changed: %q, %v", got, readErr)
+	}
+}
+
+func TestDirectDownloadRejectsPortableUnsafeNames(t *testing.T) {
+	eng := newDirectTestEngine(t)
+	for _, name := range []string{"../escape", `folder\\escape`, "CON.jar", "bad:name.jar", "trailing.jar."} {
+		if _, err := eng.AddDirect("https://example.com/file", name, ""); err == nil {
+			t.Errorf("unsafe name %q was accepted", name)
+		}
+	}
+	if _, err := eng.AddDirect("https://example.com/file#other", "file.bin", ""); err == nil {
+		t.Error("URL fragment was accepted even though it is not sent to the server")
+	}
+}
+
+func TestDirectDownloadRefusesSymlinkedDestinationFiles(t *testing.T) {
+	payload := []byte("trusted payload")
+	ts := serveISO(t, payload, nil)
+	eng := newDirectTestEngine(t)
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, []byte("leave me alone"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dest := filepath.Join(eng.cfg.DownloadDir, "artifact.jar")
+	if err := os.Symlink(outside, dest); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := eng.AddDirect(ts.URL+"/artifact.jar", "artifact.jar", sumHex(payload)); err == nil {
+		t.Fatal("symlinked final destination was accepted")
+	}
+	if err := os.Remove(dest); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, dest+".part"); err != nil {
+		t.Fatal(err)
+	}
+	h, err := eng.AddDirect(ts.URL+"/artifact.jar", "artifact.jar", sumHex(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := awaitDirect(t, eng, func(s Snapshot) bool { return s.Hash == h && s.State == StatePaused }, 10*time.Second)
+	if !strings.Contains(snap.Note, "not a regular file") {
+		t.Fatalf("symlink refusal note = %q", snap.Note)
+	}
+	got, err := os.ReadFile(outside)
+	if err != nil || string(got) != "leave me alone" {
+		t.Fatalf("symlink target was changed: %q, %v", got, err)
+	}
 }
 
 func awaitDirect(t *testing.T, eng *Engine, want func(Snapshot) bool, timeout time.Duration) Snapshot {

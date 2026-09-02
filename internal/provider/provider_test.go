@@ -40,6 +40,22 @@ func collect(t *testing.T, p Provider, query string) []Result {
 	return results
 }
 
+func TestSanitizeResultMakesRemoteTerminalTextInert(t *testing.T) {
+	r := SanitizeResult(Result{
+		Title:    "safe\x1b]52;c;Y2xpcGJvYXJk\a title\nnext",
+		Category: "left\u202eright",
+		AlsoOn:   []string{"source\x1b[2J"},
+	})
+	for _, got := range append([]string{r.Title, r.Category}, r.AlsoOn...) {
+		if strings.ContainsAny(got, "\x1b\a\n\r") || strings.ContainsRune(got, '\u202e') {
+			t.Fatalf("sanitized text still contains terminal controls: %q", got)
+		}
+	}
+	if !strings.Contains(r.Title, "safe") || !strings.Contains(r.Title, "next") {
+		t.Fatalf("sanitizer discarded ordinary text: %q", r.Title)
+	}
+}
+
 func TestYTSSearch(t *testing.T) {
 	srv := serveFixture(t, "yts.json")
 	results := collect(t, NewYTS(srv.Client(), srv.URL), "inception")

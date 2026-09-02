@@ -76,13 +76,14 @@ func (a *Aggregator) Search(ctx context.Context, query string) (<-chan provider.
 }
 
 func (a *Aggregator) searchOne(ctx context.Context, p provider.Provider, query string, results chan<- provider.Result, status chan<- StatusEvent) {
+	providerName := provider.DisplayName(p)
 	sendStatus := func(ev StatusEvent) {
 		select {
 		case status <- ev:
 		case <-ctx.Done():
 		}
 	}
-	sendStatus(StatusEvent{Provider: p.Name(), State: StateSearching})
+	sendStatus(StatusEvent{Provider: providerName, State: StateSearching})
 
 	// The provider writes into a proxy channel; a forwarder counts rows and
 	// pushes them onto the shared results channel. The count feeds the
@@ -97,6 +98,11 @@ func (a *Aggregator) searchOne(ctx context.Context, p provider.Provider, query s
 		go func() {
 			defer close(forwarded)
 			for r := range proxy {
+				r = provider.SanitizeResult(r)
+				if r.Title == "" {
+					hidden++
+					continue
+				}
 				if !allow(r) {
 					hidden++
 					continue
@@ -117,7 +123,7 @@ func (a *Aggregator) searchOne(ctx context.Context, p provider.Provider, query s
 		<-forwarded
 
 		if err == nil {
-			sendStatus(StatusEvent{Provider: p.Name(), State: StateDone, Count: count, Hidden: hidden})
+			sendStatus(StatusEvent{Provider: providerName, State: StateDone, Count: count, Hidden: hidden})
 			return
 		}
 		// parent cancelled: quit silently; blocked: retrying is pointless
@@ -137,7 +143,7 @@ func (a *Aggregator) searchOne(ctx context.Context, p provider.Provider, query s
 	if ctx.Err() != nil {
 		return // cancelled searches report nothing
 	}
-	sendStatus(StatusEvent{Provider: p.Name(), State: StateFailed, Err: err, Count: count, Hidden: hidden})
+	sendStatus(StatusEvent{Provider: providerName, State: StateFailed, Err: err, Count: count, Hidden: hidden})
 }
 
 // safeSearch runs a provider search, converting any panic into an error so a
@@ -145,7 +151,7 @@ func (a *Aggregator) searchOne(ctx context.Context, p provider.Provider, query s
 func safeSearch(ctx context.Context, p provider.Provider, query string, out chan<- provider.Result) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("%s panicked: %v", p.Name(), r)
+			err = fmt.Errorf("%s panicked: %v", provider.DisplayName(p), r)
 		}
 	}()
 	return p.Search(ctx, query, out)

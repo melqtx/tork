@@ -3,7 +3,6 @@ package engine
 import (
 	"cmp"
 	"context"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -36,11 +35,22 @@ type directManifest struct {
 type directProtocolError struct{ error }
 
 func (e *Engine) runDirectParallel(ctx context.Context, it *directItem, dest string) (bool, error) {
-	total, validator, ok := e.discoverDirectRanges(ctx, it.url)
-	if !ok || total < 2*e.directMinChunkSize || (it.sha256 == "" && validator == "") {
+	total, validator, ok := e.discoverDirectRanges(ctx, it)
+	if !ok || total < 2*e.directMinChunkSize || (it.checksum.Empty() && validator == "") {
 		return false, nil
 	}
+	if it.expectedSize > 0 && total != it.expectedSize {
+		return true, fmt.Errorf("server reported %d bytes, expected %d", total, it.expectedSize)
+	}
 	part, meta := dest+".part", dest+".part.meta"
+	if fi, err := os.Lstat(part); err == nil && (fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular()) {
+		return true, errors.New("partial download path is not a regular file; refusing to write")
+	}
+	if fi, err := os.Lstat(meta); err == nil && (fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular()) {
+		return true, errors.New("direct-download metadata path is not a regular file; refusing to read it")
+	} else if err != nil && !os.IsNotExist(err) {
+		return true, fmt.Errorf("inspect direct-download metadata: %w", err)
+	}
 	manifest, err := loadDirectManifest(meta, it.url, total, validator)
 	if err != nil {
 		_ = os.Remove(meta)
@@ -152,25 +162,25 @@ func (e *Engine) runDirectParallel(ctx context.Context, it *directItem, dest str
 	return true, nil
 }
 
-func (e *Engine) discoverDirectRanges(ctx context.Context, rawURL string) (int64, string, bool) {
+func (e *Engine) discoverDirectRanges(ctx context.Context, it *directItem) (int64, string, bool) {
 	validator := ""
-	head, err := http.NewRequestWithContext(ctx, http.MethodHead, rawURL, nil)
+	head, err := http.NewRequestWithContext(ctx, http.MethodHead, it.url, nil)
 	if err == nil {
 		head.Header.Set("User-Agent", directUserAgent)
 		head.Header.Set("Accept-Encoding", "identity")
-		if resp, doErr := e.directHTTP.Do(head); doErr == nil {
+		if resp, doErr := e.doDirectRequest(head, it); doErr == nil {
 			validator = responseValidator(resp)
 			resp.Body.Close()
 		}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, it.url, nil)
 	if err != nil {
 		return 0, "", false
 	}
 	req.Header.Set("User-Agent", directUserAgent)
 	req.Header.Set("Accept-Encoding", "identity")
 	req.Header.Set("Range", "bytes=0-0")
-	resp, err := e.directHTTP.Do(req)
+	resp, err := e.doDirectRequest(req, it)
 	if err != nil {
 		return 0, "", false
 	}
@@ -202,7 +212,7 @@ func (e *Engine) fetchDirectRange(ctx context.Context, it *directItem, f *os.Fil
 	if validator != "" {
 		req.Header.Set("If-Range", validator)
 	}
-	resp, err := e.directHTTP.Do(req)
+	resp, err := e.doDirectRequest(req, it)
 	if err != nil {
 		return err
 	}
@@ -250,7 +260,10 @@ func finalizeParallelDirect(it *directItem, part, dest string) error {
 	if err != nil {
 		return err
 	}
-	h := sha256.New()
+	h, err := it.checksum.newHash()
+	if err != nil {
+		return err
+	}
 	_, copyErr := io.Copy(h, f)
 	closeErr := f.Close()
 	if copyErr != nil {
@@ -259,9 +272,9 @@ func finalizeParallelDirect(it *directItem, part, dest string) error {
 	if closeErr != nil {
 		return closeErr
 	}
-	if it.sha256 != "" && hex.EncodeToString(h.Sum(nil)) != it.sha256 {
+	if !it.checksum.Empty() && hex.EncodeToString(h.Sum(nil)) != it.checksum.Hex {
 		_ = os.Remove(part)
-		return errors.New("checksum mismatch - data discarded, press p to retry")
+		return fmt.Errorf("%s checksum mismatch - data discarded, press p to retry", it.checksum.Label())
 	}
 	return os.Rename(part, dest)
 }

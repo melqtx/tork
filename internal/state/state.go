@@ -13,20 +13,24 @@ import (
 type Entry struct {
 	// Magnet is the resume key: a magnet URI for torrents, or the https URL
 	// for ISO-shelf images downloaded directly (distros without torrents).
-	Magnet         string     `json:"magnet"`
-	Name           string     `json:"name"`
-	SHA256         string     `json:"sha256,omitempty"` // expected digest for direct downloads
-	AddedAt        time.Time  `json:"added_at"`
-	Paused         bool       `json:"paused"`
-	Done           bool       `json:"done"`
-	DownloadDir    string     `json:"download_dir,omitempty"`
-	DataPath       string     `json:"data_path,omitempty"`
-	NeedsRelink    bool       `json:"needs_relink,omitempty"`
-	Seed           *bool      `json:"seed,omitempty"`
-	BytesCompleted int64      `json:"bytes_completed,omitempty"`
-	Length         int64      `json:"length,omitempty"`
-	CompletedAt    *time.Time `json:"completed_at,omitempty"`
-	Excluded       []int      `json:"excluded,omitempty"`
+	Magnet            string     `json:"magnet"`
+	Name              string     `json:"name"`
+	SHA256            string     `json:"sha256,omitempty"` // expected digest for direct downloads
+	ChecksumAlgorithm string     `json:"checksum_algorithm,omitempty"`
+	Checksum          string     `json:"checksum,omitempty"`
+	ExpectedSize      int64      `json:"expected_size,omitempty"`
+	LockToOrigin      bool       `json:"lock_to_origin,omitempty"`
+	AddedAt           time.Time  `json:"added_at"`
+	Paused            bool       `json:"paused"`
+	Done              bool       `json:"done"`
+	DownloadDir       string     `json:"download_dir,omitempty"`
+	DataPath          string     `json:"data_path,omitempty"`
+	NeedsRelink       bool       `json:"needs_relink,omitempty"`
+	Seed              *bool      `json:"seed,omitempty"`
+	BytesCompleted    int64      `json:"bytes_completed,omitempty"`
+	Length            int64      `json:"length,omitempty"`
+	CompletedAt       *time.Time `json:"completed_at,omitempty"`
+	Excluded          []int      `json:"excluded,omitempty"`
 }
 
 type State struct {

@@ -116,3 +116,20 @@ func TestHomeAndWindowFitNarrowTerminals(t *testing.T) {
 		})
 	}
 }
+
+func TestHomeHeroIsVerticallyCentered(t *testing.T) {
+	a := &App{width: 100, height: 40, screen: screenSearch}
+	a.search = newSearchModel()
+	a.downloads = newDownloadsModel()
+	lines := strings.Split(a.viewSearch(), "\n")
+	row := -1
+	for i, line := range lines {
+		if strings.Contains(line, "you name it, the cat fetches it") {
+			row = i
+			break
+		}
+	}
+	if row < a.height/3 || row > 2*a.height/3 {
+		t.Fatalf("home tagline rendered on row %d of %d, want the hero in the visual center", row, a.height)
+	}
+}

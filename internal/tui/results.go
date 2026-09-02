@@ -422,7 +422,7 @@ func (a *App) launchTorrentFilePreviewCmd(path, name string) tea.Cmd {
 
 func (a *App) findResolver(name string) provider.MagnetResolver {
 	for _, p := range a.agg.Providers() {
-		if p.Name() == name {
+		if p.Name() == name || provider.DisplayName(p) == name {
 			if mr, ok := p.(provider.MagnetResolver); ok {
 				return mr
 			}
@@ -815,11 +815,12 @@ func (r *resultsModel) renderTitle(idx, width int) string {
 // provider that failed or is simply the wrong category is shown muted, not in
 // alarming red - a search "works" as long as any source answered.
 func (r *resultsModel) statusLine(agg *aggregator.Aggregator) string {
-	chips := make([]string, 0, len(agg.Providers()))
+	providers := agg.Providers()
+	chips := make([]string, 0, len(providers))
 	failed := 0
 	hidden := 0
-	for _, p := range agg.Providers() {
-		name := p.Name()
+	for _, p := range providers {
+		name := provider.DisplayName(p)
 		ev, ok := r.status[name]
 		hidden += ev.Hidden
 		var chip string

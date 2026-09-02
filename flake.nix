@@ -1,7 +1,7 @@
 {
   description = "Terminal torrent search and download client";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/b5aa0fbd538984f6e3d201be0005b4463d8b09f8";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/34ab99075ac4f7e40cf037eef32cb1c360bb85e9";
 
   outputs =
     { self, nixpkgs }:
@@ -15,8 +15,8 @@
       ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
       pkgsFor = system: import nixpkgs { inherit system; };
-      version = "0.3.2";
-      vendorHash = "sha256-OqzWmiGLKMrKoTEelDFe1ebsI1Edfaho8TadZcFTrPs=";
+      version = "0.4.0";
+      vendorHash = "sha256-4/sDvcE6xIV7RQPDrwZsftkSQwzljfM78yDDIg3QMhg=";
     in
     {
       packages = forAllSystems (
