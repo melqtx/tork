@@ -1,8 +1,8 @@
 class Tork < Formula
   desc "Terminal torrent search and download client"
   homepage "https://github.com/melqtx/tork"
-  url "https://github.com/melqtx/tork/archive/refs/tags/v0.3.2.tar.gz"
-  sha256 "e4925cd2fc8beca00e6041e4200a8b94df989a92dfc290feefb2bc8ac28c04ba"
+  url "https://github.com/melqtx/tork/archive/refs/tags/v0.4.0.tar.gz"
+  sha256 "5c32c3bbb5317ad2cee53287b4314514a9e29363b691e4f00ad1e2d51e4036a3"
   license "MIT"
   head "https://github.com/melqtx/tork.git", branch: "main"
 
