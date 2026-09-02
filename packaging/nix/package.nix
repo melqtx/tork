@@ -2,13 +2,13 @@
   lib,
   buildGoModule,
   fetchFromGitHub,
-  version ? "0.3.2",
-  vendorHash ? "sha256-OqzWmiGLKMrKoTEelDFe1ebsI1Edfaho8TadZcFTrPs=",
+  version ? "0.4.0",
+  vendorHash ? "sha256-4/sDvcE6xIV7RQPDrwZsftkSQwzljfM78yDDIg3QMhg=",
   source ? fetchFromGitHub {
     owner = "melqtx";
     repo = "tork";
     tag = "v${version}";
-    hash = "sha256-7LnFbFv9I0b2tC611Ot6QpfAR8R0SGE1GzJ5I2Orvq4=";
+    hash = "sha256-MnE8PHUYyBaGur9Aohnk7vmFy1Lc6JKhNfv3/EfvQ3g=";
   },
 }:
 
