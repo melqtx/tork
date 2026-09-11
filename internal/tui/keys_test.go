@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 var allScreens = []screen{
@@ -60,9 +61,16 @@ func TestEveryScreenDocumentsItsKeys(t *testing.T) {
 			if onStrip == 0 {
 				t.Errorf("%s has an empty footer strip", a.screenTitle())
 			}
-			card := a.viewHelp()
+			lines := a.helpLines()
+			var left, right []string
+			columnWidth := (a.contentWidth() - 4) / 2
+			for _, line := range lines {
+				left = append(left, ansi.Cut(line, 0, columnWidth))
+				right = append(right, ansi.Cut(line, columnWidth+4, a.contentWidth()))
+			}
+			card := strings.Join(left, " ") + " " + strings.Join(right, " ")
 			for _, kh := range append(append([]keyHint{}, keys...), globalKeys...) {
-				if !strings.Contains(card, kh.label) {
+				if !strings.Contains(strings.Join(strings.Fields(card), " "), strings.Join(strings.Fields(kh.label), " ")) {
 					t.Errorf("%dr %s: card omits %q (%s)", height, a.screenTitle(), kh.label, kh.key)
 				}
 			}

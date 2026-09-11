@@ -18,19 +18,46 @@ type homeDest struct {
 	screen screen
 }
 
-var homeMenu = []homeDest{
-	{"linux isos", screenISOs},
-	{"downloads", screenDownloads},
+func (a *App) homeDestinations() []homeDest {
+	menu := []homeDest{{"downloads", screenDownloads}, {"linux isos", screenISOs}}
+	if a.results.query != "" {
+		menu = append(menu, homeDest{"back to results", screenResults})
+	}
+	return menu
+}
+
+// Tab moves through the controls on home; arrows work the same way.
+func (a *App) cycleHomeFocus(reverse bool) tea.Cmd {
+	n := len(a.homeDestinations())
+	if !a.search.menuFocused {
+		a.search.menu = 0
+		if reverse {
+			a.search.menu = n - 1
+		}
+		a.search.menuFocused = true
+		a.search.input.Blur()
+		return nil
+	}
+	if reverse {
+		a.search.menu--
+	} else {
+		a.search.menu++
+	}
+	if a.search.menu < 0 || a.search.menu >= n {
+		return a.focusSearch()
+	}
+	return nil
 }
 
 type searchModel struct {
-	input textinput.Model
-	menu  int // highlighted front-page destination
+	input       textinput.Model
+	menu        int // highlighted front-page destination
+	menuFocused bool
 }
 
 func newSearchModel() searchModel {
 	ti := textinput.New()
-	ti.Placeholder = "search anything… or paste a magnet / .torrent path"
+	ti.Placeholder = "search or paste a torrent link"
 	ti.CharLimit = 4096 // tracker-rich magnets and long local paths are valid inputs
 	ti.Width = 50
 	ti.Prompt = "❯ "
@@ -79,10 +106,13 @@ func (a *App) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, cmd
 	}
 
-	// The field stays focused for typing; ↑↓ move the destination menu, and
-	// enter searches (with a query) or opens the highlighted destination.
+	// Only the visibly focused control handles Enter. Typing from the menu
+	// returns focus to search without losing the saved query.
 	switch key.String() {
 	case "enter":
+		if a.search.menuFocused {
+			return a, a.navigate(a.homeDestinations()[a.search.menu].screen)
+		}
 		if query := strings.TrimSpace(a.search.input.Value()); query != "" {
 			target, detected, err := intake.DetectHome(query)
 			if err != nil {
@@ -100,23 +130,37 @@ func (a *App) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return a, a.startSearch(query)
 		}
-		a.screen = homeMenu[a.search.menu].screen
 		return a, nil
 	case "up":
-		a.search.menu = max(0, a.search.menu-1)
-		return a, nil
-	case "down":
-		a.search.menu = min(len(homeMenu)-1, a.search.menu+1)
-		return a, nil
-	case "esc":
-		if a.search.input.Value() != "" {
-			a.search.input.SetValue("")
+		if a.search.menuFocused && a.search.menu > 0 {
+			a.search.menu--
 			return a, nil
 		}
-		if len(a.results.rows) > 0 {
-			a.screen = screenResults
+		return a, a.focusSearch()
+	case "down":
+		if a.search.menuFocused {
+			a.search.menu = min(len(a.homeDestinations())-1, a.search.menu+1)
+		} else {
+			a.search.menu = 0
+			a.search.menuFocused = true
+			a.search.input.Blur()
 		}
 		return a, nil
+	case "esc":
+		if a.search.menuFocused {
+			return a, a.focusSearch()
+		}
+		a.search.input.SetValue("")
+		return a, nil
+	}
+	if a.search.menuFocused {
+		if key.Type != tea.KeyRunes && key.Type != tea.KeySpace && key.Type != tea.KeyBackspace && key.Type != tea.KeyCtrlV {
+			return a, nil
+		}
+		focus := a.focusSearch()
+		var cmd tea.Cmd
+		a.search.input, cmd = a.search.input.Update(msg)
+		return a, tea.Batch(focus, cmd)
 	}
 	var cmd tea.Cmd
 	a.search.input, cmd = a.search.input.Update(msg)
@@ -136,7 +180,10 @@ func (a *App) startSearch(query string) tea.Cmd {
 	resultCh, statusCh := a.agg.Search(ctx, query)
 	a.searchSeq++
 
+	prefs := a.results.pickPrefs
 	a.results = newResultsModel(a.cfg.Ranking)
+	a.results.curated = true
+	a.results.pickPrefs = prefs
 	a.results.searchID = a.searchSeq
 	a.results.query = query
 	a.results.cancel = cancel
@@ -151,30 +198,26 @@ func (a *App) startSearch(query string) tea.Cmd {
 // viewSearch is the front page: a centered hero (wordmark, tagline, search
 // field, and a small destination menu) above a pinned status bar.
 func (a *App) viewSearch() string {
-	tw, th := a.termWidth(), a.termHeight()
+	th := a.termHeight()
 
 	fieldW := max(8, min(52, a.contentWidth()))
 	a.search.input.Width = max(1, fieldW-6)
+	border := colBrand
+	if a.search.menuFocused {
+		border = colBorder
+	}
 	field := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colBrand).
+		BorderForeground(border).
 		Padding(0, 1).
 		Width(max(1, fieldW-4)).
 		Render(a.search.input.View())
 
-	cue := styleFaint.Render("press enter to search")
-	if strings.TrimSpace(a.search.input.Value()) == "" {
-		cue = styleFaint.Render("type to search  ·  ↑↓ then enter to open")
-	}
-
 	var hero string
-	if th < 18 || a.contentWidth() < 40 {
+	if th < 25 || a.contentWidth() < 40 {
 		hero = lipgloss.JoinVertical(lipgloss.Center,
-			styleBrand.Render("tork"),
-			styleDim.Render("the cat fetches it"),
-			"",
+			styleBrand.Render("tork  /ᐠ｡ꞈ｡ᐟ\\"),
 			field,
-			cue,
 			"",
 			a.homeMenuView(),
 		)
@@ -187,36 +230,27 @@ func (a *App) viewSearch() string {
 			styleDim.Render("you name it, the cat fetches it"),
 			"",
 			field,
-			cue,
 			"",
 			a.homeMenuView(),
 		)
 	}
-	hero = fitBlockWidth(hero, tw)
-
-	// footer status bar pinned to the bottom, sharing chrome's help/error logic
-	right := styleFaint.Render(cozyGreeting())
-	if proxyStatus := a.proxyStatusTail(); proxyStatus != "" {
-		right = proxyStatus
-	}
-	left := a.keyStrip(max(20, tw-3-lipgloss.Width(right)))
-	bar := a.footerLine(tw, left, right)
-	if tw >= 2 {
-		bar = " " + a.footerLine(tw-2, left, right) + " "
-	}
-	footer := styleRule.Render(strings.Repeat("─", tw)) + "\n" + bar
-
-	top := lipgloss.Place(tw, max(1, th-2), lipgloss.Center, lipgloss.Center, hero)
-	return top + "\n" + footer
+	hero = fitBlockWidth(hero, a.contentWidth())
+	body := lipgloss.Place(a.contentWidth(), a.bodyHeight(), lipgloss.Center, lipgloss.Center, hero)
+	return a.chrome("home", body, a.keyStrip(a.helpBudget(a.contentWidth())))
 }
 
 // homeMenuView renders the small destination list under the search field.
 func (a *App) homeMenuView() string {
-	descs := []string{"browse & grab official distro images", a.downloadsSummary()}
-	rows := make([]string, len(homeMenu))
-	for i, d := range homeMenu {
-		name := padRight(d.name, 12)
-		if i == a.search.menu {
+	resultDesc := "your latest search"
+	if a.results.query != "" {
+		resultDesc = a.results.query
+	}
+	descs := []string{a.downloadsSummary(), "official images", resultDesc}
+	menu := a.homeDestinations()
+	rows := make([]string, len(menu))
+	for i, d := range menu {
+		name := padRight(d.name, 16)
+		if a.search.menuFocused && i == a.search.menu {
 			rows[i] = styleBrand.Render("→ ") + styleFg.Bold(true).Render(name) + " " + styleDim.Render(descs[i])
 		} else {
 			rows[i] = styleFaint.Render("  ") + styleDim.Render(name) + " " + styleFaint.Render(descs[i])

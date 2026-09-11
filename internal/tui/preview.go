@@ -29,7 +29,8 @@ type previewModel struct {
 	ready         bool
 	startedAt     time.Time
 	excluded      map[int]bool // keyed by FileInfo.Index
-	autoSkipped   int          // extras deselected on arrival, reported in the header
+	saveDir       string
+	autoSkipped   int // extras deselected on arrival, reported in the header
 	win           listWindow
 	statsReady    bool
 	totalSize     int64
@@ -49,6 +50,11 @@ func newPreviewModel(h metainfo.Hash, magnet, name string, from screen, owned bo
 
 // refresh polls the engine for file metadata once it arrives.
 func (p *previewModel) refresh(eng *engine.Engine) {
+	if p.saveDir == "" {
+		if snap, ok := eng.Snapshot(p.hash); ok {
+			p.saveDir = snap.DownloadDir
+		}
+	}
 	if p.ready {
 		return
 	}
@@ -57,11 +63,13 @@ func (p *previewModel) refresh(eng *engine.Engine) {
 		p.tree = buildFileTree(files)
 		p.excluded = junkFiles(files)
 		p.autoSkipped = len(p.excluded)
-		p.rebuildRows()
-		p.rebuildStats()
+
 		if inferred := p.inferredName(); inferred != "" && strings.HasPrefix(p.name, "magnet · ") {
 			p.name = inferred
 		}
+		p.tree = buildPreviewTree(files, p.excluded)
+		p.rebuildRows()
+		p.rebuildStats()
 		p.ready = true
 	}
 }
@@ -357,6 +365,7 @@ func (a *App) startPreviewDownload() tea.Cmd {
 	// home (or from the command line) has no list to return to, so the downloads
 	// screen is the only useful destination there.
 	if p.from == screenSearch {
+		a.downloadsFrom = screenSearch
 		a.screen = screenDownloads
 	} else {
 		a.screen = p.from
@@ -391,34 +400,29 @@ func (a *App) viewPreview() string {
 			styleDim.Render("finding metadata peers…"),
 			styleFaint.Render(discovery),
 			detail,
+			styleDim.Render("Save to "+a.previewDestination()),
 		)
 		body := lipgloss.Place(width, a.bodyHeight(), lipgloss.Center, lipgloss.Center, msg)
 		return a.chrome("preview", body, hints(hint("enter", "queue all now"), hint("esc", "cancel")))
 	}
 
 	var b strings.Builder
-	source := ""
-	if status, ok := a.eng.MetadataDiscovery(p.hash); ok && status.SourceLabel() != "" {
-		source = styleFaint.Render(" · " + status.SourceLabel())
+	b.WriteString(styleFg.Bold(true).Render(truncate(p.name, width)) + "\n")
+	b.WriteString(styleOK.Render("Selected "+humanBytes(p.selectedBytes())) + styleDim.Render(fmt.Sprintf(" · %d of %d files", p.selectedFiles(), len(p.files))) + "\n")
+	b.WriteString(styleDim.Render("Save to  ") + styleFg.Render(a.previewDestination()) + "\n")
+	action := styleBrand.Render("enter download") + styleDim.Render(" · space choose files")
+	if p.selectedBytes() == 0 {
+		action = styleDim.Render("space select a file to download")
 	}
-	nameWidth := max(12, width-40-lipgloss.Width(source))
-	b.WriteString(" " + styleFg.Render(truncate(p.name, nameWidth)) +
-		styleFaint.Render(fmt.Sprintf("   %d files · %d dirs", len(p.files), p.dirCount)) +
-		styleFaint.Render(" · total ") + styleDim.Render(humanBytes(p.totalBytes())) + source + "\n")
-	flagged := ""
-	if n := p.flaggedCount(); n > 0 {
-		flagged = styleFaint.Render(" · ") + styleHealthMid.Render(fmt.Sprintf("⚠ %d flagged", n))
-	}
-	skipped := ""
+	b.WriteString(action + "\n\n")
+	info := "Files"
 	if p.autoSkipped > 0 {
-		noun := "extras"
-		if p.autoSkipped == 1 {
-			noun = "extra"
-		}
-		skipped = styleFaint.Render(fmt.Sprintf(" · skipped %d %s (a for all)", p.autoSkipped, noun))
+		info += fmt.Sprintf(" · %d extras grouped (→ expand)", p.autoSkipped)
 	}
-	b.WriteString(" " + styleOK.Render(fmt.Sprintf("selected %d of %d", p.selectedFiles(), len(p.files))) +
-		styleFaint.Render(" · ") + styleDim.Render(humanBytes(p.selectedBytes())) + flagged + skipped + "\n\n")
+	if n := p.flaggedCount(); n > 0 {
+		info += fmt.Sprintf(" · %d flagged", n)
+	}
+	b.WriteString(styleDim.Render(info) + "\n")
 
 	lay := newPreviewLayout(width)
 	maxFile := p.largestFile()
@@ -507,9 +511,9 @@ func (p *previewModel) renderNode(n *fileNode, lay previewLayout, maxFile int64)
 	return line
 }
 
-// previewRows is the file-list height on the preview screen (two header lines + blank).
+// previewRows reserves the confirmation summary above the file tree.
 func (a *App) previewRows() int {
-	return max(1, a.bodyHeight()-3)
+	return max(1, a.bodyHeight()-6)
 }
 
 func fileSizeBar(size, maxSize int64, cells int) string {
@@ -597,4 +601,39 @@ func pathExt(name string) string {
 		return base[i:]
 	}
 	return ""
+}
+
+func (a *App) previewDestination() string {
+	if a.preview.saveDir != "" {
+		return a.preview.saveDir
+	}
+	if a.cfg != nil && a.cfg.DownloadDir != "" {
+		return a.cfg.DownloadDir
+	}
+	return "default download folder"
+}
+
+// Extras are grouped only for display. Original paths, indices and selection
+// remain intact; selecting the collapsed group includes all its files.
+func buildPreviewTree(files []engine.FileInfo, excluded map[int]bool) *fileNode {
+	var main, extras []engine.FileInfo
+	for _, f := range files {
+		if excluded[f.Index] {
+			extras = append(extras, f)
+		} else {
+			main = append(main, f)
+		}
+	}
+	if len(extras) == 0 || len(main) == 0 {
+		return buildFileTree(files)
+	}
+	root := buildFileTree(main)
+	extra := buildFileTree(extras)
+	extra.name = "Extras"
+	extra.collapsed = true
+	sortFileTree(extra, 0)
+	root.children = append(root.children, extra)
+	root.length += extra.length
+	cacheLeaves(root)
+	return root
 }

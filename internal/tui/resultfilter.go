@@ -229,6 +229,24 @@ func sizeUnit(unit string) (float64, bool) {
 }
 
 func resolutionFilter(value string) (func(scoredRow) bool, error) {
+	if strings.Contains(value, ",") {
+		var filters []func(scoredRow) bool
+		for _, part := range strings.Split(value, ",") {
+			f, err := resolutionFilter(part)
+			if err != nil {
+				return nil, err
+			}
+			filters = append(filters, f)
+		}
+		return func(row scoredRow) bool {
+			for _, f := range filters {
+				if f(row) {
+					return true
+				}
+			}
+			return false
+		}, nil
+	}
 	var want rank.Resolution
 	switch value {
 	case "480", "480p":

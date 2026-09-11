@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // keyHint is one documented shortcut. `strip` marks the few that earn a place
@@ -25,8 +26,8 @@ func inCard(key, label string) keyHint  { return keyHint{key: key, label: label}
 // globalKeys work from anywhere and are listed once, in the card, rather than
 // eating room on every screen's footer.
 var globalKeys = []keyHint{
-	inCard("tab", "next screen"),
-	inCard("esc", "back"),
+	inCard("tab / shift+tab", "home: focus controls; elsewhere: downloads / back"),
+	inCard("esc", "back or cancel current step"),
 	inCard("^d", "downloads"),
 	inCard("H", "health history"),
 	inCard("?", "this card"),
@@ -38,33 +39,37 @@ func (a *App) screenKeys() []keyHint {
 	switch a.screen {
 	case screenSearch:
 		return []keyHint{
-			onStrip("enter", "search or open"),
-			onStrip("↑↓", "menu"),
-			onStrip("tab", "screens"),
+			onStrip("enter", a.homeEnterLabel()),
+			onStrip("↑↓", "choose"),
+			inCard("tab / shift+tab", "next / previous control"),
 			inCard("paste", "a magnet, infohash, .torrent path or URL"),
-			inCard("esc", "clear the field"),
+			inCard("esc", "focus search, then clear the field"),
 		}
 
 	case screenISOs:
 		return []keyHint{
 			onStrip("↑↓", "move"),
 			onStrip("enter", "download"),
-			onStrip("tab", "screens"),
-			onStrip("esc", "home"),
+			onStrip("tab", "downloads"),
+			onStrip("esc", "back"),
 			inCard("g/G", "top / bottom"),
 			inCard("pgup/pgdn", "page"),
 		}
 
 	case screenResults:
+		if a.results.curated {
+			return []keyHint{onStrip("enter", a.resultEnterLabel()), onStrip("/", "filters"), onStrip("tab", "downloads"), onStrip("esc", "back"), inCard("↑↓", "choose a release"), inCard("v", "full list / top picks"), inCard("f", "advanced text filter"), inCard("D", "download now, skipping the preview"), inCard("Y", "copy magnet")}
+		}
 		if a.results.grouped {
 			return []keyHint{
-				onStrip("↑↓", "move"),
-				onStrip("←→", "fold"),
-				onStrip("enter", "get"),
-				onStrip("v", "flat"),
+				inCard("↑↓", "move"),
+				inCard("←→", "fold"),
+				onStrip("enter", a.resultEnterLabel()),
+				onStrip("tab", "downloads"),
+				inCard("v", "top picks"),
 				onStrip("esc", "back"),
 				inCard("space", "fold this group"),
-				inCard("D", "get now, skipping the preview"),
+				inCard("D", "download now, skipping the preview"),
 				inCard("Y", "copy magnet"),
 				inCard("o", "sort: "+a.results.sort.String()),
 				inCard("/", "smart filter: res:1080p seeders:>20 size:<8gb is:trusted"),
@@ -72,13 +77,16 @@ func (a *App) screenKeys() []keyHint {
 			}
 		}
 		return []keyHint{
-			onStrip("↑↓", "move"),
-			onStrip("enter", "get"),
-			onStrip("/", "smart filter"),
-			onStrip("o", a.results.sort.String()),
-			onStrip("v", "graph"),
+			inCard("↑↓", "move"),
+			onStrip("enter", a.resultEnterLabel()),
+			onStrip("tab", "downloads"),
+			onStrip("/", "filter"),
+			inCard("o", "sort: "+a.results.sort.String()),
+			inCard("v", "top picks"),
+			inCard("V", "release groups"),
+			inCard("f", "advanced text filter"),
 			onStrip("esc", "back"),
-			inCard("D", "get now, skipping the preview"),
+			inCard("D", "download now, skipping the preview"),
 			inCard("Y", "copy magnet"),
 			inCard("g/G", "top / bottom"),
 			inCard("pgup/pgdn", "page"),
@@ -90,9 +98,9 @@ func (a *App) screenKeys() []keyHint {
 			toggle = "toggle folder"
 		}
 		return []keyHint{
-			onStrip("enter", "download selected"),
+			onStrip("enter", a.previewDownloadLabel()),
 			onStrip("space", toggle),
-			onStrip("←→", "fold"),
+			inCard("←→", "fold"),
 			onStrip("esc", "cancel"),
 			inCard("a", "select every file"),
 			inCard("n", "select none"),
@@ -112,7 +120,8 @@ func (a *App) screenKeys() []keyHint {
 			onStrip("↑↓", "move"),
 			onStrip("enter", "open"),
 			onStrip("p", "pause"),
-			onStrip("x", "remove"),
+			onStrip("esc", "back"),
+			inCard("x", "remove"),
 			inCard("s", "seed on or off"),
 			inCard("v", "verify completed data"),
 			inCard("m", "move to another folder"),
@@ -176,7 +185,7 @@ func (a *App) screenTitle() string {
 		return "linux isos"
 	case screenResults:
 		if a.results.grouped {
-			return "results · graph"
+			return "results · grouped"
 		}
 		return "results"
 	case screenPreview:
@@ -188,27 +197,62 @@ func (a *App) screenTitle() string {
 	}
 }
 
-// viewHelp is the `?` card: every key for the screen underneath, then the ones
-// that work anywhere. It falls back to two columns on a short terminal, because
-// this is the one place every key is written down - losing the tail off the
-// bottom would defeat the point of having it.
-func (a *App) viewHelp() string {
-	here := helpSection(a.screenTitle(), a.screenKeys())
-	everywhere := helpSection("everywhere", globalKeys)
-
-	stacked := append(append([]string{}, here...), append([]string{""}, everywhere...)...)
-	body := strings.Join(stacked, "\n")
-	if len(stacked) > a.bodyHeight() {
-		body = lipgloss.JoinHorizontal(lipgloss.Top,
-			strings.Join(here, "\n"), "    ", strings.Join(everywhere, "\n"))
+// helpLines wraps the key reference into columns when space allows. Smaller
+// windows can scroll the complete reference instead of clipping shortcuts.
+func (a *App) helpLines() []string {
+	here := strings.Join(helpSection(a.screenTitle(), a.screenKeys()), "\n")
+	everywhere := strings.Join(helpSection("navigation", globalKeys), "\n")
+	width := a.contentWidth()
+	var body string
+	if width >= 80 {
+		leftWidth := (width - 4) / 2
+		left := lipgloss.NewStyle().Width(leftWidth).Render(ansi.Wrap(here, leftWidth, ""))
+		right := ansi.Wrap(everywhere, width-leftWidth-4, "")
+		body = lipgloss.JoinHorizontal(lipgloss.Top, left, "    ", right)
+	} else {
+		body = ansi.Wrap(here+"\n\n"+everywhere, width, "")
 	}
-	return a.chrome("keys", body, styleDim.Render("any key closes this"))
+	return strings.Split(body, "\n")
+}
+
+func (a *App) viewHelp() string {
+	lines := a.helpLines()
+	offset := min(a.helpOffset, max(0, len(lines)-a.bodyHeight()))
+	help := "esc close"
+	if len(lines) > a.bodyHeight() {
+		help = "↑↓ / pgup/pgdn scroll · esc close"
+	}
+	return a.chrome("keys", strings.Join(lines[offset:], "\n"), styleDim.Render(help))
 }
 
 func helpSection(title string, keys []keyHint) []string {
 	lines := []string{styleTitle.Render(title), ""}
 	for _, kh := range keys {
-		lines = append(lines, "  "+padRight(styleKey.Render(kh.key), 12)+styleDim.Render(kh.label))
+		lines = append(lines, "  "+padRight(styleKey.Render(kh.key), 16)+styleDim.Render(kh.label))
 	}
 	return lines
+}
+
+func (a *App) homeEnterLabel() string {
+	if a.search.menuFocused {
+		return "open " + a.homeDestinations()[a.search.menu].name
+	}
+	return "search"
+}
+
+func (a *App) resultEnterLabel() string {
+	if a.cfg != nil && !a.cfg.PreviewBeforeDownload {
+		return "download"
+	}
+	return "preview"
+}
+
+func (a *App) previewDownloadLabel() string {
+	if !a.preview.ready {
+		return "queue all"
+	}
+	if a.preview.selectedBytes() == 0 {
+		return "select files first"
+	}
+	return "download selected"
 }

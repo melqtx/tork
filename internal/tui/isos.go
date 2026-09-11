@@ -110,8 +110,7 @@ func (a *App) updateISOs(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "q":
 		return a, tea.Quit
 	case "esc":
-		a.screen = screenSearch
-		return a, a.search.input.Focus()
+		return a, a.navigate(screenSearch)
 	case "up", "k":
 		m.selectRow(-1, rows)
 	case "down", "j":
