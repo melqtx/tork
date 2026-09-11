@@ -113,7 +113,7 @@ func fitBlockWidth(s string, w int) string {
 	return strings.Join(lines, "\n")
 }
 
-// headerBar is the wordmark + context line plus an underline rule, with the
+// headerBar combines context and an underline, with the
 // live activity chip right-aligned so transfers stay visible from every screen.
 func (a *App) headerBar(context string) string {
 	w := a.contentWidth()

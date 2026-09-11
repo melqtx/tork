@@ -74,8 +74,10 @@ tork --torrent-url 'https://example.org/download?id=123'
 
 Nothing starts downloading until you confirm it. `enter` takes whatever is
 selected, from wherever the cursor happens to be. Tracker adverts, NFO and
-checksum files, and sample clips start deselected — the header says how many
-were skipped, and `a` puts them back. If a bare hash is still finding metadata
+checksum files, and sample clips start deselected in a collapsed Extras group — the header says how many
+were grouped, and `a` puts them back. Expand the group with `→` to inspect them,
+or select the entire group with Space. The preview shows selected size, the save
+folder, and the Enter-to-download action together above the file list. If a bare hash is still finding metadata
 peers, wait to choose individual files or press enter to queue the whole
 torrent immediately. Once metadata arrives, tork keeps a private
 bounded copy under `~/.tork/metainfo/`, so reopening or resuming that magnet no
@@ -198,12 +200,16 @@ manual check.
 Press `?` anywhere for the full list of keys on the current screen. The
 highlights:
 
-- **home** type to search, `↑↓` pick a destination, `enter` go
+- **home** type to search, `↓` focus the destination menu, `↑↓` move, `enter` activate the focused control; `esc` returns to the search field, then clears it
 - **isos** `↑↓` browse, `enter` grab the latest official image
-- **results** `enter` preview/get, `D` grab now, `Y` copy magnet, `/` smart filter, `o` sort, `v` graph
+- **results** `enter` preview (or download when preview is disabled), `D` grab now, `Y` copy magnet, `/` filters, `v` top picks / full list, `f` advanced text filter
 - **preview** `enter` download what's selected, `space` toggle a file or folder, `←→` fold, `a`/`n` select all or none
 - **downloads** `enter` open the file, `o` show it in your file manager, `p` pause/resume, `s` seed, `v` fully verify completed data, `m` move, `r` relink, `y` copy full path, `Y` copy magnet, `x` remove, `d` delete data
-- `tab` cycle, `^d` jump to downloads, `esc` back, `^c` quit
+- On home, `tab` / `shift+tab` moves between the search field and menu choices.
+- From results or Linux ISOs, `tab` opens downloads; `tab` or `esc` returns to where you were. `^d` also opens downloads.
+- `esc` goes back or cancels the current dialog; `^c` quits
+- Preview, move/relink, and removal dialogs keep focus until finished or cancelled.
+- The `?` help panel scrolls with `↑↓` or `pgup/pgdn` on smaller terminals.
 
 Queuing a download leaves you where you are and confirms with a small toast, so
 you can grab several things from one search. The header shows live transfer
@@ -219,10 +225,24 @@ the sources and the tracker total. Results that only link to a details page keep
 their own row: without a magnet there is no infohash to compare, and tork will
 not fetch every page just to find out.
 
-Result filters compose with ordinary fuzzy title matching. Press `/` and try:
+Search results start with up to three picks per resolution. Use arrows to choose
+one and Enter to preview it. Each group has a "Show more" row when more releases
+are available. Unknown resolutions remain under "Other / unspecified".
+
+Press `/` for a filter panel: choose multiple resolutions with Space, set a
+maximum size, and choose Balanced, Smaller files, or Higher quality. Enter applies;
+Escape cancels. No checked resolutions means all. Choices persist across searches
+in the current session. Size limits exclude unknown sizes. Title, year and episode
+matches rank before reported swarm counts; these counts do not guarantee speed.
+A selected release stays visible while new results stream in. Result rows use
+shorter readable titles, with source/codec, size and reported seed counts alongside
+them on wider terminals. The original release filename stays in the details.
+
+Press `v` for the full filtered list. Advanced text filters still compose with
+these choices. Press `f` and try:
 
 ```text
-res:1080p seeders:>20 size:<8gb
+res:1080p,2160p seeders:>20 size:<8gb
 linux codec:x265 -source:cam
 provider:nyaa category:anime is:trusted
 is:hdr -is:dv

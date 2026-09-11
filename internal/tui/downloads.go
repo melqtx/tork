@@ -236,8 +236,7 @@ func (a *App) updateDownloads(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "q":
 		return a, tea.Quit
 	case "esc":
-		a.screen = screenSearch
-		return a, a.search.input.Focus()
+		return a, a.navigate(a.downloadsFrom)
 	case "up", "k":
 		d.selectionPinned = true
 		d.win.move(-1, len(items), rows)
@@ -455,11 +454,12 @@ func (a *App) updatePathPrompt(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (a *App) updateRemoveConfirm(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	d := &a.downloads
 	conf := d.confirmRemove
-	d.confirmRemove = nil
 	switch key.String() {
 	case "esc", "n":
+		d.confirmRemove = nil
 		return a, nil
 	case "y", "enter":
+		d.confirmRemove = nil
 		if err := a.removeDownload(conf.item, conf.deleteData); err != nil {
 			return a, a.showError("remove failed: " + err.Error())
 		}
@@ -1068,10 +1068,10 @@ func (a *App) viewDownloads() string {
 			"",
 			styleFaint.Render("the cat's napping - nothing downloading"),
 			"",
-			styleDim.Render("press ")+styleKey.Render("tab")+styleDim.Render(" to go hunting"),
+			styleDim.Render("search for something, then press enter to preview it"),
 		)
 		body := lipgloss.Place(width, a.bodyHeight(), lipgloss.Center, lipgloss.Center, empty)
-		return a.chrome("downloads", body, hints(hint("tab", "screens"), hint("q", "quit")))
+		return a.chrome("downloads", body, hints(hint("esc", "back"), hint("?", "keys")))
 	}
 
 	listRows := a.downloadListRows()

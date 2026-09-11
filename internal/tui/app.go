@@ -33,9 +33,10 @@ type App struct {
 	st     *state.State
 	health *health.Store
 
-	screen screen
-	width  int
-	height int
+	screen        screen
+	downloadsFrom screen
+	width         int
+	height        int
 
 	search     searchModel
 	isos       isosModel
@@ -50,6 +51,7 @@ type App struct {
 	errText      string
 	errGen       uint64
 	toast        toastState
+	helpOffset   int
 	showHelp     bool      // the `?` key card, drawn over whichever screen is active
 	lastTickSave time.Time // throttles progress-only state.json writes on the tick
 	searchSeq    uint64    // generation for streamed searches; rejects late messages
@@ -70,6 +72,7 @@ func New(cfg *config.Config, eng *engine.Engine, agg *aggregator.Aggregator, st 
 	if runtime := cfg.ProxyRuntime(); runtime != nil && runtime.Enabled() {
 		a.proxy.state = proxyBadgeUnverified
 	}
+	a.results.curated = true
 	a.refreshDownloadItems()
 	return a
 }
@@ -108,20 +111,25 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == "ctrl+c" {
 			return a, tea.Quit
 		}
-		// Downloads is the one screen worth reaching mid-task - you queue
-		// something, keep searching, and want to glance at progress without
-		// walking the tab cycle. A chord rather than a letter is what makes
-		// "from anywhere" true: it needs none of the guards a single key does,
-		// so it still works while a query or a filter is being typed, where
-		// every letter has to stay a letter. Preview stays inert, like tab: it
-		// is a modal you leave with esc, not a stop on the cycle.
-		if msg.String() == "ctrl+d" && a.screen != screenPreview {
-			a.cancelResolve()
-			a.showHelp = false
-			a.screen = screenDownloads
-			return a, a.startDownloadPathCheck(false)
+		if a.screen == screenResults && a.results.pickPanel {
+			return a.updatePickFilters(msg)
+		}
+		if msg.String() == "ctrl+d" && !a.navigationLocked() {
+			return a, a.navigate(screenDownloads)
 		}
 		if a.showHelp {
+			switch msg.String() {
+			case "up", "down", "pgup", "pgdown":
+				delta := 1
+				if msg.String() == "pgup" || msg.String() == "pgdown" {
+					delta = a.bodyHeight()
+				}
+				if msg.String() == "up" || msg.String() == "pgup" {
+					delta = -delta
+				}
+				a.helpOffset = max(0, min(a.helpOffset+delta, max(0, len(a.helpLines())-a.bodyHeight())))
+				return a, nil
+			}
 			// The card is a reference, not a mode: any key puts it away, so
 			// there is no wrong guess at how to get out of it.
 			a.showHelp = false
@@ -131,18 +139,23 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "?":
 			if a.helpKeyAvailable() {
 				a.showHelp = true
+				a.helpOffset = 0
 				return a, nil
 			}
-		case "tab":
-			// tab always cycles screens (it means nothing inside a search box);
-			// only the preview modal keeps it inert.
-			if a.screen != screenPreview {
-				return a, a.cycleScreen()
+		case "tab", "shift+tab":
+			if !a.navigationLocked() {
+				if a.screen == screenSearch {
+					return a, a.cycleHomeFocus(msg.String() == "shift+tab")
+				}
+				if a.screen == screenDownloads {
+					return a, a.navigate(a.downloadsFrom)
+				}
+				return a, a.navigate(screenDownloads)
 			}
 		case "H":
 			// The health screen is reachable from anywhere a capital letter is
 			// not being typed, and is deliberately outside the tab cycle.
-			if a.health != nil && !a.typing() && a.screen != screenPreview && a.screen != screenHealth {
+			if a.health != nil && !a.typing() && !a.navigationLocked() && a.screen != screenHealth {
 				a.cancelResolve()
 				return a, a.openHealth()
 			}
@@ -298,32 +311,34 @@ func (a *App) onPreviewReady(msg previewReadyMsg) tea.Cmd {
 // typing reports whether a text input currently owns the keyboard, so global
 // single-letter shortcuts must stay inert.
 func (a *App) typing() bool {
-	return a.screen == screenSearch ||
+	return (a.screen == screenSearch && !a.search.menuFocused) ||
 		(a.screen == screenResults && a.results.filtering) ||
 		a.downloads.prompt.action != pathActionNone
 }
 
-func (a *App) cycleScreen() tea.Cmd {
+func (a *App) navigationLocked() bool {
+	return (a.screen == screenResults && a.results.pickPanel) || a.screen == screenPreview || (a.screen == screenDownloads &&
+		(a.downloads.prompt.action != pathActionNone || a.downloads.confirmRemove != nil))
+}
+
+func (a *App) focusSearch() tea.Cmd {
+	a.search.menuFocused = false
+	return a.search.input.Focus()
+}
+
+func (a *App) navigate(target screen) tea.Cmd {
 	a.cancelResolve()
-	switch a.screen {
-	case screenSearch:
-		a.screen = screenISOs
-	case screenISOs:
-		if len(a.results.rows) > 0 {
-			a.screen = screenResults
-		} else {
-			a.screen = screenDownloads
-		}
-	case screenResults:
-		a.screen = screenDownloads
-	default:
-		a.screen = screenSearch
+	a.showHelp = false
+	a.search.input.Blur()
+	if target == screenDownloads && a.screen != screenDownloads {
+		a.downloadsFrom = a.screen
 	}
-	if a.screen == screenDownloads {
+	a.screen = target
+	if target == screenSearch {
+		return a.focusSearch()
+	}
+	if target == screenDownloads {
 		return a.startDownloadPathCheck(false)
-	}
-	if a.screen == screenSearch {
-		return a.search.input.Focus()
 	}
 	return nil
 }
@@ -373,7 +388,7 @@ func (a *App) onTorrentAdded(msg torrentAddedMsg) tea.Cmd {
 // literal question mark again.
 func (a *App) helpKeyAvailable() bool {
 	if a.screen == screenSearch {
-		return strings.TrimSpace(a.search.input.Value()) == ""
+		return a.search.menuFocused || strings.TrimSpace(a.search.input.Value()) == ""
 	}
 	return !a.typing()
 }

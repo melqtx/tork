@@ -45,6 +45,16 @@ func (s sortMode) String() string {
 }
 
 type resultsModel struct {
+	curated         bool
+	picks           []pickItem
+	pickWin         listWindow
+	pickKey         string
+	pickPinned      bool
+	pickExpanded    map[rank.Resolution]bool
+	pickPrefs       pickPreferences
+	pickDraft       pickPreferences
+	pickPanel       bool
+	panelWin        listWindow
 	searchID        uint64
 	query           string
 	rows            []scoredRow     // sorted by the active sort mode
@@ -189,6 +199,9 @@ func (a *App) updateResults(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.launchCmd(msg.magnet, msg.res.Title, msg.preview)
 
 	case tea.KeyMsg:
+		if r.pickPanel {
+			return a.updatePickFilters(msg)
+		}
 		if r.filtering {
 			return a.updateResultsFilter(msg)
 		}
@@ -205,9 +218,10 @@ func (a *App) updateResultsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, tea.Quit
 	case "esc":
 		a.cancelResolve()
-		a.screen = screenSearch
-		return a, a.search.input.Focus()
+		return a, a.navigate(screenSearch)
 	case "/":
+		return a, a.openPickFilters()
+	case "f":
 		r.filtering = true
 		r.filterCommitted = false
 		return a, r.filterIn.Focus()
@@ -216,6 +230,23 @@ func (a *App) updateResultsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		r.resort()
 		return a, nil
 	case "v":
+		if r.curated {
+			r.curated = false
+			r.grouped = false
+			r.selectedKey = r.pickKey
+			r.selectionPinned = true
+			r.restoreFlatSelection()
+			return a, nil
+		}
+		r.curated = true
+		if r.selectedKey != "" {
+			r.pickKey = r.selectedKey
+			r.pickPinned = true
+		}
+		r.rebuildPicks()
+		return a, nil
+	case "V":
+		r.curated = false
 		r.grouped = !r.grouped
 		if r.grouped {
 			r.gwin.home()
@@ -229,6 +260,9 @@ func (a *App) updateResultsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			r.restoreFlatSelection()
 		}
 		return a, nil
+	}
+	if r.curated {
+		return a.updatePickKeys(msg)
 	}
 	if r.grouped {
 		return a.updateGraphKeys(msg)
@@ -568,8 +602,18 @@ func (r *resultsModel) refreshFilter() {
 			}
 		}
 	}
+	eligible := r.visible[:0]
+	for _, idx := range r.visible {
+		if r.pickPrefs.allows(r.rows[idx]) {
+			eligible = append(eligible, idx)
+		}
+	}
+	r.visible = eligible
 	r.restoreFlatSelection()
 	r.recomputeBest()
+	if r.curated {
+		r.rebuildPicks()
+	}
 	if r.grouped {
 		r.rebuildGroups()
 	}
@@ -661,11 +705,35 @@ func (a *App) graphRows() int {
 
 func (a *App) viewResults() string {
 	r := &a.results
+	if r.pickPanel {
+		return a.viewPickFilters()
+	}
+	if r.curated && !r.filtering {
+		return a.viewPicks()
+	}
 	width := a.contentWidth()
 	listH := a.listRows()
 
 	var b strings.Builder
-	b.WriteString(r.statusLine(a.agg) + "\n")
+	if r.query != "" || r.searching || len(r.rows) > 0 {
+		b.WriteString(r.statusLine(a.agg) + "\n")
+	}
+
+	if len(r.visible) == 0 {
+		title, detail := "No search yet", "esc back · type a title or paste a torrent link to begin"
+		switch {
+		case r.searching && len(r.rows) == 0:
+			title, detail = "Searching your sources…", "Results appear as each source responds. You can switch screens while waiting."
+		case len(r.rows) > 0:
+			title, detail = "No results match these filters", "/ edit filters · clear the filter to show all results"
+		case r.query != "":
+			title, detail = "No results for this search", "Check the source status above, or press esc to edit your search."
+		}
+		if !r.filtering {
+			b.WriteString("\n" + styleFg.Bold(true).Render(title) + "\n" + styleDim.Render(detail))
+			return a.chrome("results", b.String(), hints(hint("esc", "search"), hint("/", "filters"), hint("?", "keys")))
+		}
+	}
 
 	if r.grouped {
 		b.WriteString(a.graphColumns(width) + "\n")
@@ -846,7 +914,7 @@ func (r *resultsModel) statusLine(agg *aggregator.Aggregator) string {
 	var head string
 	switch n := len(r.rows); {
 	case n > 0:
-		if strings.TrimSpace(r.filterIn.Value()) != "" {
+		if strings.TrimSpace(r.filterIn.Value()) != "" || r.pickPrefs.resolutions != 0 || r.pickPrefs.size != 0 {
 			head = styleOK.Render(fmt.Sprintf("%d/%d results", len(r.visible), n))
 		} else {
 			head = styleOK.Render(fmt.Sprintf("%d results", n))
