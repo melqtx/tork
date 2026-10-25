@@ -39,7 +39,10 @@ type nyaaItem struct {
 }
 
 type nyaaFeed struct {
-	Items []nyaaItem `xml:"channel>item"`
+	XMLName xml.Name `xml:"rss"`
+	Channel *struct {
+		Items []nyaaItem `xml:"item"`
+	} `xml:"channel"`
 }
 
 func (n *Nyaa) Search(ctx context.Context, query string, out chan<- Result) error {
@@ -54,7 +57,10 @@ func (n *Nyaa) Search(ctx context.Context, query string, out chan<- Result) erro
 	if err := xml.NewDecoder(resp.Body).Decode(&feed); err != nil {
 		return fmt.Errorf("nyaa: decode rss: %w", err)
 	}
-	for _, it := range feed.Items {
+	if feed.Channel == nil {
+		return ErrFeedFormat
+	}
+	for _, it := range feed.Channel.Items {
 		if it.InfoHash == "" {
 			continue
 		}

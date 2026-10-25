@@ -31,6 +31,12 @@ type PirateBay struct {
 	browseURL string
 }
 
+// NewPirateBay searches every category; legacy movie/TV sources retain their
+// existing IDs and filters so upgrades preserve previously configured choices.
+func NewPirateBay(client *http.Client, bases ...string) *PirateBay {
+	return newPirateBay(client, "tpb", bases, nil, "/precompiled/data_top100_all.json")
+}
+
 func NewPirateBayMovies(client *http.Client, bases ...string) *PirateBay {
 	return newPirateBay(client, "tpb-movies", bases, tpbMovieCats, "/precompiled/data_top100_207.json")
 }
@@ -59,16 +65,16 @@ func newPirateBay(client *http.Client, name string, bases []string, cats map[int
 func (p *PirateBay) Name() string { return p.name }
 
 type apibayItem struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	InfoHash string `json:"info_hash"`
-	Seeders  string `json:"seeders"`
-	Leechers string `json:"leechers"`
-	Size     string `json:"size"`
-	Added    string `json:"added"`
-	Category string `json:"category"`
-	Status   string `json:"status"` // vip / trusted / member / ""
-	Username string `json:"username"`
+	ID       apiNumber `json:"id"`
+	Name     string    `json:"name"`
+	InfoHash string    `json:"info_hash"`
+	Seeders  apiNumber `json:"seeders"`
+	Leechers apiNumber `json:"leechers"`
+	Size     apiNumber `json:"size"`
+	Added    apiNumber `json:"added"`
+	Category apiNumber `json:"category"`
+	Status   string    `json:"status"` // vip / trusted / member / ""
+	Username string    `json:"username"`
 }
 
 func (p *PirateBay) Search(ctx context.Context, query string, out chan<- Result) error {
@@ -90,10 +96,16 @@ func (p *PirateBay) Search(ctx context.Context, query string, out chan<- Result)
 			}
 			continue // try next mirror
 		}
+		emitted := 0
+		eligible := 0
 		for _, it := range items {
-			if q != "" && !p.cats[atoiDefault(it.Category)] {
+			if it.ID == "0" && it.InfoHash == strings.Repeat("0", 40) {
 				continue
 			}
+			if q != "" && p.cats != nil && !p.cats[atoiDefault(string(it.Category))] {
+				continue
+			}
+			eligible++
 			r, ok := p.resultFromItem(it)
 			if !ok {
 				continue
@@ -101,6 +113,11 @@ func (p *PirateBay) Search(ctx context.Context, query string, out chan<- Result)
 			if err := emit(ctx, out, r); err != nil {
 				return err
 			}
+			emitted++
+		}
+		if eligible > 0 && emitted == 0 {
+			lastErr = ErrResponseFormat
+			continue
 		}
 		return nil // first working mirror wins
 	}
@@ -116,6 +133,22 @@ func (p *PirateBay) fetchItems(ctx context.Context, u string) ([]apibayItem, err
 	var items []apibayItem
 	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
 		return nil, fmt.Errorf("%s: decode api: %w", p.name, err)
+	}
+	if items == nil {
+		return nil, ErrResponseFormat
+	}
+	if len(items) > 0 {
+		valid := false
+		for _, item := range items {
+			if _, ok := p.resultFromItem(item); ok {
+				valid = true
+				break
+			}
+		}
+		emptySentinel := len(items) == 1 && items[0].ID == "0" && items[0].InfoHash == strings.Repeat("0", 40)
+		if !valid && !emptySentinel {
+			return nil, ErrResponseFormat
+		}
 	}
 	return items, nil
 }
@@ -134,15 +167,20 @@ func (p *PirateBay) resultFromItem(it apibayItem) (Result, bool) {
 	if title == "" {
 		title = hash
 	}
-	sizeBytes := int64Default(it.Size)
+	magnet := BuildMagnet(hash, title, DefaultTrackers)
+	if (Result{Magnet: magnet}).InfoHash() == "" {
+		return Result{}, false
+	}
+	sizeBytes := int64Default(string(it.Size))
 	return Result{
 		Title:     title,
 		Size:      humanSize(sizeBytes),
 		SizeBytes: sizeBytes,
-		Seeders:   atoiDefault(it.Seeders),
-		Leechers:  atoiDefault(it.Leechers),
-		Magnet:    BuildMagnet(hash, title, DefaultTrackers),
+		Seeders:   atoiDefault(string(it.Seeders)),
+		Leechers:  atoiDefault(string(it.Leechers)),
+		Magnet:    magnet,
 		Provider:  p.name,
+		Category:  pirateBayCategory(atoiDefault(string(it.Category))),
 		Trusted:   isTrustedTPBStatus(it.Status),
 	}, true
 }
@@ -165,4 +203,53 @@ func atoiDefault(s string) int {
 func int64Default(s string) int64 {
 	n, _ := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
 	return n
+}
+
+func pirateBayCategory(id int) string {
+	if tpbMovieCats[id] {
+		return "Movies"
+	}
+	if tpbTVCats[id] {
+		return "TV"
+	}
+	switch id / 100 {
+	case 1:
+		return "Music"
+	case 2:
+		return "Video"
+	case 3:
+		return "Applications"
+	case 4:
+		return "Games"
+	case 5:
+		return "XXX"
+	case 6:
+		return "Other"
+	}
+	return ""
+}
+
+// The search API returns numeric strings, while precompiled browse responses
+// use JSON numbers. Both represent the same fields.
+type apiNumber string
+
+func (n *apiNumber) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		*n = ""
+		return nil
+	}
+	var str string
+	if len(data) > 0 && data[0] == '"' {
+		if err := json.Unmarshal(data, &str); err != nil {
+			return err
+		}
+		*n = apiNumber(str)
+		return nil
+	}
+	var num json.Number
+	if err := json.Unmarshal(data, &num); err != nil {
+		return err
+	}
+	*n = apiNumber(num.String())
+	return nil
 }

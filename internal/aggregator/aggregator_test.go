@@ -246,3 +246,18 @@ func TestContentFilterBypassedOnAdultQuery(t *testing.T) {
 		t.Fatalf("adult query should return everything, got %d", len(rs))
 	}
 }
+
+func TestPermanentFeedErrorsAreNotRetried(t *testing.T) {
+	for _, err := range []error{provider.ErrFeedAuth, provider.ErrFeedFormat, provider.ErrFeedUnsupported, provider.ErrFeedAPI} {
+		p := &fakeProvider{name: "feed", failFor: 10, err: err}
+		a := New([]provider.Provider{p}, time.Second, 2)
+		_, events := drain(a.Search(context.Background(), "ubuntu"))
+		if p.attempts.Load() != 1 {
+			t.Fatalf("permanent feed error retried: %v", err)
+		}
+		event, ok := finalEvent(events, "feed")
+		if !ok || event.State != StateFailed {
+			t.Fatal("permanent failure was not reported")
+		}
+	}
+}

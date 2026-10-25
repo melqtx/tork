@@ -24,14 +24,41 @@ type X1337 struct {
 	active string // first mirror that worked this session
 }
 
+// Public domains listed by 1337x's official status page. Explicit custom
+// mirrors stay isolated; old built-in lists also gain the maintained aliases.
+var x1337Mirrors = []string{"https://1337x.to", "https://1337x.st", "https://x1337x.ws", "https://x1337x.eu", "https://x1337x.cc"}
+
 func NewX1337(client *http.Client, mirrors []string) *X1337 {
 	if client == nil {
 		client = DefaultClient
 	}
-	if len(mirrors) == 0 {
-		mirrors = []string{"https://1337x.to", "https://1337x.st", "https://x1337x.ws"}
+	builtinOnly := true
+	for _, mirror := range mirrors {
+		known := false
+		for _, builtin := range x1337Mirrors {
+			if strings.TrimRight(mirror, "/") == builtin {
+				known = true
+				break
+			}
+		}
+		if !known {
+			builtinOnly = false
+			break
+		}
 	}
-	return &X1337{client: client, mirrors: mirrors}
+	var clean []string
+	seen := map[string]bool{}
+	if builtinOnly {
+		mirrors = append(append([]string(nil), mirrors...), x1337Mirrors...)
+	}
+	for _, mirror := range mirrors {
+		mirror = strings.TrimRight(mirror, "/")
+		if mirror != "" && !seen[mirror] {
+			clean = append(clean, mirror)
+			seen[mirror] = true
+		}
+	}
+	return &X1337{client: client, mirrors: clean}
 }
 
 func (x *X1337) Name() string { return "1337x" }
@@ -77,6 +104,10 @@ func (x *X1337) Search(ctx context.Context, query string, out chan<- Result) err
 		}
 		if isCloudflareChallenge(doc) {
 			lastErr = fmt.Errorf("%s: %w", mirror, ErrBlocked)
+			continue
+		}
+		if doc.Find("table.table-list").Length() == 0 && !strings.Contains(strings.ToLower(doc.Find(".box-info-detail").Text()), "no results") {
+			lastErr = ErrResponseFormat
 			continue
 		}
 		x.setActive(mirror)

@@ -18,6 +18,8 @@ import (
 )
 
 type ProviderConfig struct {
+	Label     string   `yaml:"name,omitempty"`
+	APIKey    string   `yaml:"api_key,omitempty"`
 	Enabled   bool     `yaml:"enabled"`
 	Type      string   `yaml:"type,omitempty"`
 	Mirror    string   `yaml:"mirror,omitempty"`
@@ -218,19 +220,9 @@ func Default(dir string) *Config {
 		Health:                HealthConfig{Enabled: false, IntervalHours: 24},
 		MetadataCache:         MetadataCacheConfig{Enabled: true, MaxMB: 256, MaxEntries: 512},
 		Direct:                DirectConfig{MaxConnections: 4, MinChunkSize: "10MB", EnableChunking: true},
-		Providers: map[string]ProviderConfig{
-			"knaben": {Enabled: true, Type: "knaben", Mirror: "https://knaben.org"},
-			"yts":    {Enabled: true, Type: "yts", Mirror: "https://yts.mx"},
-			"nyaa":   {Enabled: true, Type: "nyaa", Mirror: "https://nyaa.si"},
-			// apibay.org is frequently slow/unreachable; Knaben already
-			// aggregates The Pirate Bay, so these are opt-in.
-			"tpb_movies": {Enabled: false, Type: "tpb_movies", Mirror: "https://apibay.org"},
-			"tpb_tv":     {Enabled: false, Type: "tpb_tv", Mirror: "https://apibay.org"},
-			"eztv":       {Enabled: false, Type: "eztv_html", Mirror: "https://eztv.re"},
-			"x1337":      {Enabled: false, Type: "1337x_html", Mirrors: []string{"https://1337x.to", "https://1337x.st", "https://x1337x.ws"}},
-		},
-		dir:          dir,
-		proxyRuntime: runtime,
+		Providers:             defaultProviders(),
+		dir:                   dir,
+		proxyRuntime:          runtime,
 	}
 }
 

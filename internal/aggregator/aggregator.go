@@ -24,9 +24,10 @@ const (
 type StatusEvent struct {
 	Provider string
 	State    ProviderState
-	Err      error // set when StateFailed
-	Count    int   // results emitted so far by this provider
-	Hidden   int   // results this provider dropped via the content filter
+	Err      error     // set when StateFailed
+	Count    int       // results emitted so far by this provider
+	Hidden   int       // results this provider dropped via the content filter
+	RetryAt  time.Time // site protection pauses subsequent searches until this time
 }
 
 type Aggregator struct {
@@ -34,13 +35,14 @@ type Aggregator struct {
 	timeout   time.Duration // per attempt
 	retries   int
 	filter    provider.ContentFilter
+	blocks    *blockedSources
 }
 
 func New(providers []provider.Provider, timeout time.Duration, retries int) *Aggregator {
 	if timeout <= 0 {
 		timeout = 15 * time.Second
 	}
-	return &Aggregator{providers: providers, timeout: timeout, retries: retries}
+	return &Aggregator{providers: providers, timeout: timeout, retries: retries, blocks: newBlockedSources()}
 }
 
 // WithFilter attaches a content filter applied to every result before it
@@ -52,6 +54,17 @@ func (a *Aggregator) WithFilter(f provider.ContentFilter) *Aggregator {
 }
 
 func (a *Aggregator) Providers() []provider.Provider { return a.providers }
+
+// WithProviders returns a new search pipeline with the same retry, timeout and
+// filtering policy. Existing searches and their lazy resolvers keep the old one.
+func (a *Aggregator) WithProviders(providers []provider.Provider) *Aggregator {
+	next := *a
+	next.providers = providers
+	// Settings may point the same source name at a different endpoint or proxy.
+	// Do not carry an old endpoint's block into a rebuilt pipeline.
+	next.blocks = newBlockedSources()
+	return &next
+}
 
 // Search fans out to all providers. Both returned channels are closed by the
 // aggregator once every provider has finished or ctx is cancelled.
@@ -82,6 +95,10 @@ func (a *Aggregator) searchOne(ctx context.Context, p provider.Provider, query s
 		case status <- ev:
 		case <-ctx.Done():
 		}
+	}
+	if until := a.BlockedUntil(providerName); !until.IsZero() {
+		sendStatus(StatusEvent{Provider: providerName, State: StateFailed, Err: provider.ErrBlocked, RetryAt: until})
+		return
 	}
 	sendStatus(StatusEvent{Provider: providerName, State: StateSearching})
 
@@ -123,11 +140,12 @@ func (a *Aggregator) searchOne(ctx context.Context, p provider.Provider, query s
 		<-forwarded
 
 		if err == nil {
+			a.ClearBlocked(providerName)
 			sendStatus(StatusEvent{Provider: providerName, State: StateDone, Count: count, Hidden: hidden})
 			return
 		}
 		// parent cancelled: quit silently; blocked: retrying is pointless
-		if ctx.Err() != nil || errors.Is(err, provider.ErrBlocked) {
+		if ctx.Err() != nil || provider.PermanentSearchError(err) {
 			break
 		}
 		if attempt < a.retries {
@@ -143,7 +161,11 @@ func (a *Aggregator) searchOne(ctx context.Context, p provider.Provider, query s
 	if ctx.Err() != nil {
 		return // cancelled searches report nothing
 	}
-	sendStatus(StatusEvent{Provider: providerName, State: StateFailed, Err: err, Count: count, Hidden: hidden})
+	var retryAt time.Time
+	if errors.Is(err, provider.ErrBlocked) {
+		retryAt = a.RecordBlocked(providerName)
+	}
+	sendStatus(StatusEvent{Provider: providerName, State: StateFailed, Err: err, Count: count, Hidden: hidden, RetryAt: retryAt})
 }
 
 // safeSearch runs a provider search, converting any panic into an error so a

@@ -5,6 +5,8 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -17,6 +19,8 @@ type RSS struct {
 	client    *http.Client
 	name      string
 	searchURL string
+	torznab   bool
+	apiKey    string
 }
 
 func NewRSS(client *http.Client, name, searchURL string) *RSS {
@@ -26,10 +30,23 @@ func NewRSS(client *http.Client, name, searchURL string) *RSS {
 	return &RSS{client: client, name: name, searchURL: searchURL}
 }
 
+// NewTorznab accepts an API endpoint, including existing query parameters.
+// Query construction preserves escaped API keys and adds the standard search
+// parameters without requiring users to hand-write a URL template.
+func NewTorznab(client *http.Client, name, endpoint, apiKey string) *RSS {
+	r := NewRSS(client, name, endpoint)
+	r.torznab, r.apiKey = true, apiKey
+	return r
+}
+
 func (r *RSS) Name() string { return r.name }
 
 type rssFeed struct {
-	Items []rssItem `xml:"channel>item"`
+	XMLName xml.Name
+	Code    string `xml:"code,attr"`
+	Channel *struct {
+		Items []rssItem `xml:"item"`
+	} `xml:"channel"`
 }
 
 type rssItem struct {
@@ -56,24 +73,88 @@ func (r *RSS) Search(ctx context.Context, query string, out chan<- Result) error
 		return errors.New("rss: missing search_url")
 	}
 	u := renderSearchURL(r.searchURL, query)
+	if r.torznab {
+		parsed, err := url.Parse(u)
+		if err != nil {
+			return ErrFeedFormat
+		}
+		q := parsed.Query()
+		q.Set("t", "search")
+		q.Set("q", query)
+		q.Set("extended", "1")
+		if r.apiKey != "" {
+			q.Set("apikey", r.apiKey)
+		}
+		parsed.RawQuery = q.Encode()
+		u = parsed.String()
+	}
 	resp, err := fetch(ctx, r.client, u)
 	if err != nil {
-		return err
+		// Never surface URLs containing credentials or raw parser messages.
+		if errors.Is(err, ErrBlocked) {
+			return ErrBlocked
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		var timeout net.Error
+		if errors.As(err, &timeout) && timeout.Timeout() {
+			return context.DeadlineExceeded
+		}
+		if strings.Contains(err.Error(), "unexpected status 401") {
+			return ErrFeedAuth
+		}
+		return errors.New("feed request failed")
 	}
 	defer resp.Body.Close()
 
 	var feed rssFeed
-	if err := xml.NewDecoder(resp.Body).Decode(&feed); err != nil {
-		return fmt.Errorf("%s: decode rss: %w", r.name, err)
+	decoder := xml.NewDecoder(resp.Body)
+	if err := decoder.Decode(&feed); err != nil {
+		return ErrFeedFormat
 	}
-	for _, it := range feed.Items {
+	if feed.XMLName.Local == "error" {
+		switch feed.Code {
+		case "100", "101", "102":
+			return ErrFeedAuth
+		}
+		return ErrFeedAPI
+	}
+	if feed.XMLName.Local != "rss" || feed.Channel == nil {
+		return ErrFeedFormat
+	}
+	// Reject extra documents and truncated/oversized bodies as malformed, rather
+	// than treating a valid prefix as a successful check.
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return ErrFeedFormat
+		}
+		if text, ok := token.(xml.CharData); ok && strings.TrimSpace(string(text)) == "" {
+			continue
+		}
+		switch token.(type) {
+		case xml.Comment, xml.ProcInst:
+			continue
+		}
+		return ErrFeedFormat
+	}
+	unsupported := false
+	for _, it := range feed.Channel.Items {
 		res, ok := r.resultFromItem(it)
 		if !ok {
+			unsupported = true
 			continue
 		}
 		if err := emit(ctx, out, res); err != nil {
 			return err
 		}
+	}
+	if unsupported {
+		return ErrFeedUnsupported
 	}
 	return nil
 }
@@ -84,7 +165,7 @@ func renderSearchURL(tmpl, query string) string {
 		return strings.ReplaceAll(tmpl, "{query}", escaped)
 	}
 	if strings.Contains(tmpl, "%s") {
-		return fmt.Sprintf(tmpl, escaped)
+		return strings.ReplaceAll(tmpl, "%s", escaped)
 	}
 	return tmpl
 }
@@ -97,11 +178,16 @@ func (r *RSS) resultFromItem(it rssItem) (Result, bool) {
 	attrs := rssAttrs(it.Attrs)
 	magnet := firstMagnet(it)
 	if magnet == "" {
-		if hash := attrs.first("infohash", "info_hash", "hash"); hash != "" {
-			magnet = BuildMagnet(hash, title, DefaultTrackers)
-		}
+		magnet = attrs.first("magneturl", "magnet")
 	}
 	if magnet == "" {
+		if hash := attrs.first("infohash", "info_hash", "hash"); hash != "" {
+			// A custom source's hash alone does not authorize announcing it to
+			// public trackers. Preserve source-supplied trackers instead.
+			magnet = BuildMagnet(hash, title, nil)
+		}
+	}
+	if (Result{Magnet: magnet}).InfoHash() == "" {
 		return Result{}, false
 	}
 

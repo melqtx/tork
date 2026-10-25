@@ -61,8 +61,9 @@ func (y *YTS) orderedBases() []string {
 }
 
 type ytsResponse struct {
-	Data struct {
-		MovieCount int `json:"movie_count"`
+	Status string `json:"status"`
+	Data   *struct {
+		MovieCount *int `json:"movie_count"`
 		Movies     []struct {
 			TitleLong string `json:"title_long"`
 			Torrents  []struct {
@@ -89,12 +90,19 @@ func (y *YTS) Search(ctx context.Context, query string, out chan<- Result) error
 			}
 			continue // try the next mirror
 		}
+		err = y.emitResults(ctx, resp, out)
+		resp.Body.Close()
+		if err != nil {
+			lastErr = err
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			continue
+		}
 		y.mu.Lock()
 		y.active = base
 		y.mu.Unlock()
-		err = y.emitResults(ctx, resp, out)
-		resp.Body.Close()
-		return err
+		return nil
 	}
 	return lastErr
 }
@@ -104,23 +112,41 @@ func (y *YTS) emitResults(ctx context.Context, resp *http.Response, out chan<- R
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return fmt.Errorf("yts: decode: %w", err)
 	}
+	if body.Status != "ok" || body.Data == nil || body.Data.MovieCount == nil || *body.Data.MovieCount < 0 {
+		return ErrResponseFormat
+	}
+	if *body.Data.MovieCount > 0 && len(body.Data.Movies) == 0 {
+		return ErrResponseFormat
+	}
+	emitted := 0
 	for _, m := range body.Data.Movies {
 		for _, t := range m.Torrents {
+			if strings.TrimSpace(m.TitleLong) == "" {
+				continue
+			}
 			title := m.TitleLong + " [" + t.Quality + "]"
+			magnet := BuildMagnet(t.Hash, title, DefaultTrackers)
+			if (Result{Magnet: magnet}).InfoHash() == "" || strings.EqualFold(t.Hash, strings.Repeat("0", 40)) {
+				continue
+			}
 			r := Result{
 				Title:     title,
 				Size:      t.Size,
 				SizeBytes: t.SizeBytes,
 				Seeders:   t.Seeds,
 				Leechers:  t.Peers,
-				Magnet:    BuildMagnet(t.Hash, title, DefaultTrackers),
+				Magnet:    magnet,
 				Provider:  y.Name(),
 				Trusted:   true, // YTS serves only its own verified encodes
 			}
 			if err := emit(ctx, out, r); err != nil {
 				return err
 			}
+			emitted++
 		}
+	}
+	if *body.Data.MovieCount > 0 && emitted == 0 {
+		return ErrResponseFormat
 	}
 	return nil
 }

@@ -11,8 +11,9 @@ import (
 )
 
 type EZTV struct {
-	client *http.Client
-	base   string
+	client              *http.Client
+	base                string
+	apiBase, lookupBase string
 }
 
 func NewEZTV(client *http.Client, base string) *EZTV {
@@ -20,14 +21,27 @@ func NewEZTV(client *http.Client, base string) *EZTV {
 		client = DefaultClient
 	}
 	if base == "" {
-		base = "https://eztv.re"
+		base = "https://eztvx.to"
 	}
-	return &EZTV{client: client, base: base}
+	e := &EZTV{client: client, base: strings.TrimRight(base, "/")}
+	// Old default domains now block HTML search. Use the site's documented
+	// public API for those defaults; retain explicit custom HTML mirrors.
+	for _, host := range []string{"eztvx.to", "eztv.re", "eztv.ag", "eztv.it", "eztv.ch", "eztv.li"} {
+		if e.base == "https://"+host {
+			e.apiBase = "https://eztvx.to"
+			e.lookupBase = "https://api.tvmaze.com"
+			break
+		}
+	}
+	return e
 }
 
 func (e *EZTV) Name() string { return "eztv" }
 
 func (e *EZTV) Search(ctx context.Context, query string, out chan<- Result) error {
+	if e.apiBase != "" {
+		return e.searchAPI(ctx, query, out)
+	}
 	slug := strings.ReplaceAll(strings.TrimSpace(query), " ", "-")
 	u := fmt.Sprintf("%s/search/%s", e.base, slug)
 	resp, err := fetch(ctx, e.client, u)
@@ -39,6 +53,13 @@ func (e *EZTV) Search(ctx context.Context, query string, out chan<- Result) erro
 	doc, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
 		return fmt.Errorf("eztv: parse html: %w", err)
+	}
+
+	if isCloudflareChallenge(doc) {
+		return ErrBlocked
+	}
+	if doc.Find("table.forum_header_border").Length() == 0 {
+		return ErrResponseFormat
 	}
 
 	var emitErr error
