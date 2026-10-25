@@ -13,7 +13,8 @@ actual swarm, and keep downloads in one calm little terminal app.
 
 ## What it does
 
-- Search Knaben, YTS, Nyaa, plus your own RSS or Torznab feeds.
+- Search Knaben, YTS, Nyaa, TheRARBG, LimeTorrents, and all Pirate Bay categories,
+  plus your own RSS or Torznab feeds.
 - Fold the same torrent listed on several indexes into a single row, and grab it
   with every tracker those indexes knew about between them.
 - Group duplicate releases, rank the useful ones, and surface seeders, size,
@@ -195,25 +196,191 @@ The check sends the generic `1080p` canary query to enabled providers. Press
 `H` in tork to view saved source and swarm history, or `r` there to record a
 manual check.
 
+## Search sources
+
+Open **sources** from the home menu to see every built-in index, including
+TheRARBG, LimeTorrents, The Pirate Bay (all categories), EZTV, and 1337x.
+Use `↑↓` to choose a source and
+`space` or `enter` to enable or disable it. Changes save to
+`~/.tork/config.yaml` and apply to the next search. Current search results and
+their magnet resolvers remain usable, even if their source is disabled or
+removed. Knaben, YTS, and Nyaa remain enabled by default; existing choices
+survive upgrades.
+
+Enabled sources are checked automatically when you open Sources or enable one.
+Recent readings are reused for five minutes. Press `r` to recheck all enabled
+sources, or `t` to test the selected source (including a disabled one). Checks
+send the `1080p` canary using the configured proxy and search timeout. A valid
+empty feed is **working · 0 results**. Authentication failures, blocks,
+timeouts, non-feed responses, and unsupported torrent links are separate
+outcomes. Individual tests never change enabled/disabled choices. Search
+reachability does not guarantee that a download will work.
+
+A source blocked by site protection pauses for ten minutes in the current
+session; other enabled sources keep returning results. Searches retry it after
+the pause expires. `t` retries immediately in Sources or the `s` search-status
+panel. A successful check clears the pause. No source is silently disabled,
+and retrying never changes your proxy or mirror settings. Rebuilding the source
+configuration resets pauses so a changed endpoint can be tried immediately.
+
+The default EZTV integration uses its [official JSON API](https://eztvx.to/api/)
+instead of the blocked HTML search. Show names are resolved to IMDb IDs using
+[TVmaze's public API](https://www.tvmaze.com/api); those lookups use the same
+configured proxy. Searches inspect up to 200 releases for each of the three
+closest matching shows. Explicit custom EZTV HTML mirrors remain supported.
+1337x tries its maintained public domains; site-side blocking is reported as
+**blocked**, and never as a successful empty response. Its operator publishes
+domain and availability notices on the [official status page](https://1337x-status.org/).
+
+### Add a source
+
+Press `a` in Sources to open the ready-to-use source catalog. Type a name to
+filter, choose with `↑↓`, and press `enter` to add it. Tork saves it enabled,
+checks it in the background, and keeps the picker open so you can add another.
+Press `esc` when finished to see source check outcomes. No endpoint URL, account,
+API key, or additional software is needed for a built-in source. A failed
+network check leaves your explicit enabled choice intact; disable it with
+`enter` or `space` if you do not want to search it.
+
+- **TheRARBG** adds broad movie, TV, games, software, music and book search.
+  This is TheRARBG, a separate public index, not the original RARBG service.
+- **LimeTorrents** adds broad movie, TV, games, software, music and anime search.
+  Search returns listings immediately; a selected listing's magnet is fetched
+  on demand. Sponsored download links are not search results.
+- **The Pirate Bay** searches every category, including applications and games.
+  The older movie-only and TV-only configurations remain compatible, but the
+  add catalog offers the all-category option to avoid confusing duplicates.
+
+The new sources are opt-in. Updating Tork does not silently expand the list of
+sites an existing installation searches. Source categories continue through the
+shared content filter, including adult categories from all-category searches.
+
+### Advanced: connect your own feed
+
+Choose **Custom RSS / Torznab…** at the bottom of the add catalog. Enter a name,
+choose the type with `←→` on the Type row, and enter its endpoint. `tab` moves
+between fields; `esc` cancels without saving.
+
+- **Torznab API:** use a public indexer's Torznab endpoint, including one copied
+  from Jackett or Prowlarr. Enter its API key in the masked field. If a copied
+  URL already includes `apikey=...`, testing moves that key into the masked
+  field. Tork supplies `t=search`, `q`, and `extended=1` itself, preserving other
+  query parameters such as categories.
+- **RSS search feed:** use a search URL with `{query}` where the escaped search
+  text belongs. A regular website address is not a search feed.
+
+Press `ctrl+s` to test and save in one step, or `ctrl+t` to test first.
+If the check fails, the editor stays open for repair; press `ctrl+s` again to
+save it disabled. A successful check
+saves the source enabled. Failed or partially supported sources can
+be saved **disabled** for later repair. Changing a draft invalidates its check;
+an old response cannot validate new settings. Custom-source saves make the
+config owner-readable/writable only (`0600` on Unix), including RSS URLs that
+contain credentials. Never share a credential-bearing config file.
+
+Use `e` to edit a custom source; it keeps the same result identity when renamed.
+Retest edited settings before saving if you want the source enabled. Use `x` to
+remove a custom source, then `y` to confirm or `esc` to cancel. Built-ins can be
+disabled; their mirror URLs are still edited in `config.yaml`.
+
+Supported feed entries carry a valid v1 magnet in a link, GUID, enclosure, or
+Torznab `magneturl` attribute, or a valid v1 infohash attribute. Custom hash-only
+entries do not get extra public trackers injected. Private trackers and feeds
+that only supply `.torrent` download URLs are unsupported in this release.
+Unsupported entries are reported instead of silently appearing as an empty
+successful search. Usable results from a partially supported feed still reach
+search, without retrying the same permanent format error.
+
+Advanced config example (a Torznab endpoint does not need `{query}`):
+
+```yaml
+providers:
+  my_public_index:
+    name: My public index
+    enabled: false
+    type: torznab
+    search_url: http://localhost:9117/api/v2.0/indexers/INDEXER/results/torznab/api
+    api_key: YOUR_API_KEY
+  my_rss_index:
+    name: My RSS index
+    enabled: false
+    type: rss
+    search_url: 'https://example.org/search/rss?q={query}'
+```
+
+Configure and maintain indexers in your indexer manager, then add their
+individual Torznab endpoints here. See the [Torznab specification](https://torznab.github.io/spec-1.3-draft/torznab/Specification-v1.3.html)
+and [Jackett API documentation](https://github.com/Jackett/Jackett#api-usage).
+Authentication, site protection, and upstream network routing managed by that
+service remain its responsibility. Tork's requests to the configured endpoint
+and its downloads continue to use Tork's configured route.
+
+The screen shows checks from the current session, or the latest saved health
+check for a source when available. Individual source tests are kept in memory;
+`tork doctor --record` and the health screen retain their existing history flow.
+To run live metadata-only probes of built-ins without starting a download engine
+or editing your config:
+
+```sh
+TORK_LIVE_SOURCES=1 go test ./internal/sources -run '^TestLiveBuiltinSources$' -v -count=1
+TORK_LIVE_SOURCES=1 go test ./internal/sources -run '^TestLiveBroadSources$' -v -count=1
+```
+
 ## Keys
 
 Press `?` anywhere for the full list of keys on the current screen. The
 highlights:
 
 - **home** type to search, `↓` focus the destination menu, `↑↓` move, `enter` activate the focused control; `esc` returns to the search field, then clears it
+- **sources** `↑↓` choose, `space` / `enter` enable or disable, `t` test, `a` add, `e` edit custom, `x` remove custom, `esc` home
 - **isos** `↑↓` browse, `enter` grab the latest official image
-- **results** `enter` preview (or download when preview is disabled), `D` grab now, `Y` copy magnet, `/` filters, `v` top picks / full list, `f` advanced text filter
+- **results** `enter` preview (or download when preview is disabled), `/` edit search, `tab` browse categories and destinations, `f` text filter, `o` sort, `z` hide zero seeders, `r` reset filters, `ctrl+f` resolution/size filters, `s` source status, `D` grab now, `Y` copy magnet
 - **preview** `enter` download what's selected, `space` toggle a file or folder, `←→` fold, `a`/`n` select all or none
 - **downloads** `enter` open the file, `o` show it in your file manager, `p` pause/resume, `s` seed, `v` fully verify completed data, `m` move, `r` relink, `y` copy full path, `Y` copy magnet, `x` remove, `d` delete data
 - On home, `tab` / `shift+tab` moves between the search field and menu choices.
-- From results or Linux ISOs, `tab` opens downloads; `tab` or `esc` returns to where you were. `^d` also opens downloads.
-- `esc` goes back or cancels the current dialog; `^c` quits
+- In results, `tab` switches between the list and browse menu; choose Downloads there, or use `^d`. From Linux ISOs, `tab` opens downloads. In downloads, `tab` or `esc` returns to where you were.
+- `F1` home, `F2` latest results, `F3` downloads, `F4` sources. These also work from the search field.
+- `esc` goes back or cancels the current dialog; `^c` closes the UI
 - Preview, move/relink, and removal dialogs keep focus until finished or cancelled.
 - The `?` help panel scrolls with `↑↓` or `pgup/pgdn` on smaller terminals.
 
 Queuing a download leaves you where you are and confirms with a small toast, so
-you can grab several things from one search. The header shows live transfer
-count and speed from every screen.
+you can grab several things from one search. Live transfer count and speed stay
+visible beside the screen title, or in the footer on home. The top bar has no
+function-key navigation labels; shortcuts remain available in `?` help. Home has no duplicate
+wordmark/header above its search area.
+
+On macOS and Linux, the interactive UI connects to a persistent local session.
+Closing the UI with `^c` (or `q` where offered), closing the terminal, or losing
+the terminal connection leaves approved downloads and seeding running. Reopen
+`tork` to reconnect to the same search, selection, and downloads. Pending previews
+still require approval; detaching never starts downloading their files.
+
+```sh
+tork          # start or reconnect to the UI
+tork status   # check the background session without opening the UI
+tork stop     # save state and stop transfers, keeping downloaded files
+```
+
+One terminal can attach at a time. The worker uses a user-private Unix socket;
+it does not expose a remote-control TCP port. It owns the engine and resume state
+until `tork stop`, and saves progress while the UI is closed. After stopping or
+rebooting, start `tork` to resume saved downloads; this does not install an OS
+startup service. The computer must stay awake for transfers to run.
+
+Use `tork --foreground` for the previous behavior (closing the UI stops transfers).
+Windows currently retains that foreground behavior. Stop the background session
+before running foreground/autopilot transfers, changing `-d` or `--evil`, changing
+proxy/engine settings, or testing a rebuilt binary. `--evil` applies to new downloads
+in that worker session; it preserves previously saved seeding choices. A rebuilt
+client detects an older worker and asks you to stop it before reconnecting.
+`--config-dir DIR` gives the interactive UI, `status`, and `stop` a separate config
+and session, which is useful for testing. Worker startup diagnostics go to
+`~/.tork/session/worker.log` (or the equivalent custom config directory).
+
+Clipboard copies run in the attached terminal, using its clipboard and tmux/SSH
+environment. The UI confirms a copy only after that terminal reports the write;
+closing the terminal cancels pending copies without stopping downloads.
 
 A result tagged `yts+2` is one torrent that three indexes listed. Rather than
 spend three lines on it, tork keeps the fullest release name, the best swarm
@@ -225,20 +392,36 @@ the sources and the tracker total. Results that only link to a details page keep
 their own row: without a magnet there is no infohash to compare, and tork will
 not fetch every page just to find out.
 
-Search results start with up to three picks per resolution. Use arrows to choose
-one and Enter to preview it. Each group has a "Show more" row when more releases
-are available. Unknown resolutions remain under "Other / unspecified".
+Search opens a browse workspace with an editable search field above one ranked
+results table. Tork keeps its centered layout and green palette. On wide
+terminals, a sidebar filters by All, Games, Movies, TV, Anime, Software, Music,
+Books, or Other and opens Downloads, Sources, or Home. On narrow terminals,
+Tab opens the same menu without squeezing the result titles. Categories use
+individual result metadata; unrecognized categories remain under Other.
 
-Press `/` for a filter panel: choose multiple resolutions with Space, set a
-maximum size, and choose Balanced, Smaller files, or Higher quality. Enter applies;
-Escape cancels. No checked resolutions means all. Choices persist across searches
+Press `/` to edit the search in place, `f` to filter the current list, `o` to
+cycle relevance/seeders/size, and `z` to show only results with reported seeders.
+Category changes do not repeat network searches. `r` clears text, size,
+resolution and seeder filters while keeping the selected category. Enter keeps
+the existing file preview flow, and Escape returns to the same results.
+
+The selected-result details stay below a fixed-height list. Optional resolution
+picks and release groups remain available with `v` and `V`.
+
+Press `ctrl+f` for resolution and size preferences: choose multiple resolutions
+with Space, set a maximum size, and choose Balanced, Smaller files, or Higher quality.
+Enter applies; Escape cancels. No checked resolutions means all. Choices persist across searches
 in the current session. Size limits exclude unknown sizes. Title, year and episode
 matches rank before reported swarm counts; these counts do not guarantee speed.
 A selected release stays visible while new results stream in. Result rows use
-shorter readable titles, with source/codec, size and reported seed counts alongside
+shorter readable titles, with source, size and reported seed counts alongside
 them on wider terminals. The original release filename stays in the details.
+The source summary separates indexes with results, empty responses, failures,
+and searches still running. Press `s` to inspect each source's outcome for this
+search, then `s` or Escape to return to the selected release. Search results keep
+arriving while the status panel is open.
 
-Press `v` for the full filtered list. Advanced text filters still compose with
+Advanced text filters still compose with
 these choices. Press `f` and try:
 
 ```text
