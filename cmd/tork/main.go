@@ -6,12 +6,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
-	"sort"
 	"strings"
 	"time"
 
@@ -20,12 +18,15 @@ import (
 
 	"github.com/melqtx/tork/internal/aggregator"
 	"github.com/melqtx/tork/internal/autopilot"
+	"github.com/melqtx/tork/internal/clipboard"
 	"github.com/melqtx/tork/internal/config"
 	"github.com/melqtx/tork/internal/engine"
 	"github.com/melqtx/tork/internal/health"
 	"github.com/melqtx/tork/internal/intake"
 	"github.com/melqtx/tork/internal/provider"
 	"github.com/melqtx/tork/internal/proxy"
+	"github.com/melqtx/tork/internal/session"
+	"github.com/melqtx/tork/internal/sources"
 	"github.com/melqtx/tork/internal/state"
 	"github.com/melqtx/tork/internal/tui"
 )
@@ -59,6 +60,18 @@ func main() {
 
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "_session":
+			if err := runSessionDaemon(os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, "tork:", err)
+				os.Exit(1)
+			}
+			return
+		case "status", "stop":
+			if err := runSessionControl(os.Args[1], os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, "tork:", err)
+				os.Exit(1)
+			}
+			return
 		case "-h", "--help", "help":
 			printHelp()
 			return
@@ -107,12 +120,15 @@ Usage:
   tork autopilot [--dry-run] [--headless] [--yes] [--evil] [-n N] [-d DIR] "query"
   tork doctor [--record] [--engine] [--proxy-check] [-d DIR]
   tork proxy tor|set [SOCKS5_URL]|off|status
+  tork status | stop
   tork --version
 
 Commands:
   autopilot   search, explain the best choices, then queue them
   doctor      read-only config, disk, state, and provider diagnostic
   proxy       configure or inspect strict SOCKS5 routing
+  status      show the background transfer session (macOS/Linux)
+  stop        save and stop the background transfer session
 
 Flags:
   -d, --download-dir DIR   where to save downloads (default: your OS
@@ -121,9 +137,13 @@ Flags:
                            end in .torrent
       --evil               evil mode: downloads never seed after they finish
                            (applies to new downloads this session only)
+      --foreground         stop transfers when the UI quits
+      --config-dir DIR     use a separate config and transfer session
 
 The interactive UI stores config and state under ~/.tork and downloads into
-your OS Downloads folder by default. Press H inside it for the health screen.
+your OS Downloads folder by default. On macOS/Linux, closing the UI leaves
+downloads and seeding running. Reopen tork to reconnect; use tork stop to stop.
+F1 home · F2 results · F3 downloads · F4 sources. Press H for health history.
 `)
 }
 
@@ -201,7 +221,7 @@ func runProxy(args []string) error {
 			return err
 		}
 		if update.Changed {
-			fmt.Println("proxy disabled; tork will use its normal direct mode next launch")
+			fmt.Println("proxy disabled; restart tork to apply it (run tork stop first if a background session is running)")
 		} else {
 			fmt.Println("proxy is already disabled")
 		}
@@ -259,6 +279,7 @@ func saveProxy(raw string) error {
 	}
 	fmt.Printf("proxy configured: SOCKS5 %s · strict TCP-only torrent mode\n", update.Endpoint)
 	fmt.Println("verify it with: tork doctor --proxy-check")
+	fmt.Println("restart tork to apply changes; run tork stop first if a background session is running")
 	return nil
 }
 
@@ -459,7 +480,9 @@ func runAutopilot(args []string) error {
 
 	app := tui.New(cfg, eng, agg, st, store)
 	app.ShowDownloads()
-	p := tea.NewProgram(app, tea.WithAltScreen())
+	output := clipboard.NewOutput(os.Stdout)
+	app.SetClipboardOutput(output)
+	p := tea.NewProgram(app, tea.WithAltScreen(), tea.WithOutput(output))
 	if _, err := p.Run(); err != nil {
 		return err
 	}
@@ -486,6 +509,8 @@ func run() error {
 	fs.StringVar(dlDir, "d", "", "shorthand for --download-dir")
 	evil := fs.Bool("evil", false, "evil mode: never seed after downloads complete")
 	torrentURL := fs.String("torrent-url", "", "explicit .torrent download URL (allows non-.torrent paths)")
+	foreground := fs.Bool("foreground", false, "stop transfers when the UI quits")
+	configDir := fs.String("config-dir", "", "use a separate config directory and background session")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
 	}
@@ -494,7 +519,7 @@ func run() error {
 		return err
 	}
 
-	cfg, err := config.Load()
+	cfg, err := loadSessionConfig(*configDir, false)
 	if err != nil {
 		return err
 	}
@@ -503,6 +528,16 @@ func run() error {
 		if err := cfg.OverrideDownloadDir(*dlDir); err != nil {
 			return err
 		}
+	}
+	if session.Supported && !*foreground {
+		if !term.IsTerminal(os.Stdin.Fd()) {
+			return errors.New("the interactive UI needs a terminal; use autopilot --headless for scripts")
+		}
+		downloadOverride := ""
+		if *dlDir != "" {
+			downloadOverride = cfg.DownloadDir
+		}
+		return runSessionUI(cfg, openTarget, downloadOverride, *evil)
 	}
 
 	eng, err := engine.New(cfg)
@@ -541,7 +576,9 @@ func run() error {
 			return err
 		}
 	}
-	p := tea.NewProgram(app, tea.WithAltScreen())
+	output := clipboard.NewOutput(os.Stdout)
+	app.SetClipboardOutput(output)
+	p := tea.NewProgram(app, tea.WithAltScreen(), tea.WithOutput(output))
 	if _, err := p.Run(); err != nil {
 		return err
 	}
@@ -666,69 +703,5 @@ func pathOrPartExists(path string) bool {
 }
 
 func enabledProviders(cfg *config.Config) []provider.Provider {
-	var out []provider.Provider
-	client := cfg.ProxyHTTPClient()
-
-	for _, name := range []string{"knaben", "yts", "nyaa", "tpb_movies", "tpb_tv", "eztv", "x1337"} {
-		p, ok := cfg.Providers[name]
-		if !ok || !p.Enabled {
-			continue
-		}
-		out = appendProvider(out, client, name, p)
-	}
-
-	var custom []string
-	for name := range cfg.Providers {
-		switch name {
-		case "knaben", "yts", "nyaa", "tpb_movies", "tpb_tv", "eztv", "x1337":
-			continue
-		}
-		custom = append(custom, name)
-	}
-	sort.Strings(custom)
-	for _, name := range custom {
-		p := cfg.Providers[name]
-		if !p.Enabled {
-			continue
-		}
-		out = appendProvider(out, client, name, p)
-	}
-	return out
-}
-
-func appendProvider(out []provider.Provider, client *http.Client, name string, p config.ProviderConfig) []provider.Provider {
-	switch providerType(name, p.Type) {
-	case "knaben":
-		return append(out, provider.NewKnaben(client, p.Mirror))
-	case "yts":
-		return append(out, provider.NewYTS(client, p.Mirror))
-	case "nyaa":
-		return append(out, provider.NewNyaa(client, p.Mirror))
-	case "eztv_html":
-		return append(out, provider.NewEZTV(client, p.Mirror))
-	case "1337x_html":
-		return append(out, provider.NewX1337(client, p.BaseURLs()))
-	case "tpb_movies":
-		return append(out, provider.NewPirateBayMovies(client, p.BaseURLs()...))
-	case "tpb_tv":
-		return append(out, provider.NewPirateBayTV(client, p.BaseURLs()...))
-	case "rss", "torznab":
-		return append(out, provider.NewRSS(client, name, p.SearchURL))
-	}
-	return out
-}
-
-func providerType(name, typ string) string {
-	if typ != "" {
-		return typ
-	}
-	switch name {
-	case "knaben", "yts", "nyaa", "tpb_movies", "tpb_tv", "rss", "torznab":
-		return name
-	case "eztv":
-		return "eztv_html"
-	case "x1337":
-		return "1337x_html"
-	}
-	return name
+	return sources.Enabled(cfg)
 }

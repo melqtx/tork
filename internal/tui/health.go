@@ -58,13 +58,18 @@ func (a *App) refreshCompass() {
 // the result as a manual-kind snapshot: it was asked for, so it must not stand
 // in for the day's scheduled reading.
 func (a *App) runHealthCheck() tea.Cmd {
+	agg := a.agg
+	if a.nextAgg != nil {
+		agg = a.nextAgg
+	}
+	providers, timeout := agg.Providers(), a.cfg.SearchTimeout()
 	return func() (msg tea.Msg) {
 		defer guard(&msg, func(r any) tea.Msg {
 			return healthDoneMsg{err: fmt.Errorf("health check panicked: %v", r)}
 		})
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		_, err := health.Run(ctx, health.KindManual, a.agg.Providers(), a.eng.Snapshots(), a.cfg.SearchTimeout(), a.health)
+		_, err := health.Run(ctx, health.KindManual, providers, a.eng.Snapshots(), timeout, a.health)
 		return healthDoneMsg{err: err}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/melqtx/tork/internal/rank"
 )
 
@@ -83,7 +84,9 @@ func queryMatch(query string, row scoredRow) int {
 	return score
 }
 func (r *resultsModel) pickBetter(i, j int) bool {
-	a, b := r.rows[i], r.rows[j]
+	return r.pickRowsBetter(r.rows[i], r.rows[j])
+}
+func (r *resultsModel) pickRowsBetter(a, b scoredRow) bool {
 	am, bm := queryMatch(r.query, a), queryMatch(r.query, b)
 	if am != bm {
 		return am > bm
@@ -111,15 +114,33 @@ func (r *resultsModel) pickBetter(i, j int) bool {
 	}
 	return rowIdentity(a) < rowIdentity(b)
 }
+
+// Resolution groups help video searches, but hide useful games, software and
+// books behind "Other". Use one ranked list when most results lack resolution.
+func (r *resultsModel) resolutionPicks() bool {
+	known := 0
+	for _, idx := range r.visible {
+		if r.rows[idx].tags.Resolution != rank.ResUnknown {
+			known++
+		}
+	}
+	return known > 0 && known*2 >= len(r.visible)
+}
+
 func (r *resultsModel) rebuildPicks() {
 	oldKey := r.pickKey
 	if !r.pickPinned {
 		oldKey = ""
 	}
 	oldOffset := r.pickWin.offset
+	grouped := r.resolutionPicks()
 	groups := map[rank.Resolution][]int{}
 	for _, idx := range r.visible {
-		groups[r.rows[idx].tags.Resolution] = append(groups[r.rows[idx].tags.Resolution], idx)
+		res := rank.ResUnknown
+		if grouped {
+			res = r.rows[idx].tags.Resolution
+		}
+		groups[res] = append(groups[res], idx)
 	}
 	r.picks = nil
 	for _, res := range resolutionOrder {
@@ -128,9 +149,11 @@ func (r *resultsModel) rebuildPicks() {
 			continue
 		}
 		sort.SliceStable(indices, func(i, j int) bool { return r.pickBetter(indices[i], indices[j]) })
-		r.picks = append(r.picks, pickItem{row: -1, resolution: res, label: fmt.Sprintf("%s · %s", resolutionName(res), plural(len(indices), "release"))})
+		if grouped {
+			r.picks = append(r.picks, pickItem{row: -1, resolution: res, label: fmt.Sprintf("%s · %s", resolutionName(res), plural(len(indices), "release"))})
+		}
 		limit := len(indices)
-		if !r.pickExpanded[res] && limit > 3 {
+		if grouped && !r.pickExpanded[res] && limit > 3 {
 			limit = 3
 		}
 		shown := append([]int(nil), indices[:limit]...)
@@ -145,7 +168,7 @@ func (r *resultsModel) rebuildPicks() {
 		for _, idx := range shown {
 			r.picks = append(r.picks, pickItem{row: idx, resolution: res, key: rowIdentity(r.rows[idx])})
 		}
-		if len(indices) > 3 {
+		if grouped && len(indices) > 3 {
 			label := fmt.Sprintf("Show %d more releases", len(indices)-3)
 			if r.pickExpanded[res] {
 				label = "Show fewer releases"
@@ -184,7 +207,12 @@ func (r *resultsModel) movePick(delta, height int) {
 		r.pickKey = r.picks[r.pickWin.cursor].key
 	}
 }
-func (a *App) pickRows() int { return max(1, a.bodyHeight()-7) }
+func (a *App) pickRows() int {
+	if a.bodyHeight() < 10 {
+		return max(1, a.bodyHeight()-3)
+	}
+	return max(1, a.bodyHeight()-7)
+}
 func (a *App) updatePickKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	r := &a.results
 	switch msg.String() {
@@ -235,7 +263,10 @@ func (a *App) updatePickKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (a *App) viewPicks() string {
 	r := &a.results
 	w := a.contentWidth()
-	summary := pickModes[r.pickPrefs.preference] + " · top 3 per resolution · / filters"
+	summary := pickModes[r.pickPrefs.preference] + " · ranked by relevance"
+	if r.resolutionPicks() {
+		summary = pickModes[r.pickPrefs.preference] + " · top 3 per resolution"
+	}
 	if r.pickPrefs.resolutions != 0 {
 		var names []string
 		for _, res := range resolutionOrder {
@@ -251,18 +282,48 @@ func (a *App) viewPicks() string {
 	if r.filterIn.Value() != "" {
 		summary += " · text: " + r.filterIn.Value()
 	}
-	body := styleDim.Render(summary) + "\n" + r.statusLine(a.agg) + "\n"
+	if w < 76 {
+		summary = pickModes[r.pickPrefs.preference]
+		if r.pickPrefs.resolutions != 0 || r.pickPrefs.size != 0 || r.filterIn.Value() != "" {
+			summary += " · filtered"
+		}
+	}
+	if w < 40 {
+		summary = ""
+	}
+	count := fmt.Sprintf("%d results", len(r.rows))
+	if len(r.visible) != len(r.rows) {
+		count = fmt.Sprintf("%d/%d results", len(r.visible), len(r.rows))
+	}
+	if r.searching {
+		count += " · live"
+	}
+	left := styleBrand.Render(count)
+	if r.merged > 0 {
+		left += styleFaint.Render(fmt.Sprintf(" · %d merged", r.merged))
+	}
+	hidden := 0
+	for _, ev := range r.status {
+		hidden += ev.Hidden
+	}
+	if hidden > 0 {
+		left += styleFaint.Render(fmt.Sprintf(" · %d hidden", hidden))
+	}
+	body := splitResultLine(left, styleDim.Render(summary), w) + "\n" + a.resultSourceSummary(w) + "\n"
 	if len(r.picks) == 0 {
 		label := "No matches with these filters. Press / to adjust or reset."
 		if r.searching {
 			label = "Searching… picks appear as sources respond."
+		} else if len(r.rows) == 0 {
+			label = "No results. Try another search, or press s to check sources."
 		}
 		if r.query == "" {
 			label = "Type a search on home to get started."
 		}
 		return a.chrome("results · "+r.query, body+"\n"+styleDim.Render(label), a.keyStrip(a.helpBudget(w)))
 	}
-	body += renderWindow(&r.pickWin, len(r.picks), min(len(r.picks), a.pickRows()), w, func(i int, selected bool) string {
+	body += " " + releaseHeader(w-1) + "\n"
+	body += renderWindow(&r.pickWin, len(r.picks), a.pickRows(), w, func(i int, selected bool) string {
 		it := r.picks[i]
 		if it.row == -1 {
 			return styleTitle.Render(it.label)
@@ -272,7 +333,9 @@ func (a *App) viewPicks() string {
 		}
 		return renderReleaseRow(r.rows[it.row], w-1)
 	})
-	body += "\n" + rule(w) + "\n"
+	if a.bodyHeight() < 10 {
+		return a.chrome("results · "+r.query, body, a.keyStrip(a.helpBudget(w)))
+	}
 	it := r.picks[r.pickWin.cursor]
 	if it.row >= 0 {
 		row := r.rows[it.row]
@@ -294,9 +357,25 @@ func (a *App) viewPicks() string {
 		if qYear != "" && qYear != titleYear {
 			reason = "year differs or unlisted · " + reason
 		}
-		body += styleFg.Render(row.res.Title) + "\n" + styleDim.Render(releaseQuality(row)+" · "+sourceTag(row.res, true)) + "\n" + styleDim.Render(reason)
+		label := "Selected · " + sourceTag(row.res, true)
+		body += "\n" + detailRule(label, w) + "\n" + styleFg.Render(row.res.Title) + "\n"
+		facts := releaseQuality(row)
+		if row.res.SizeBytes > 0 {
+			facts += " · " + humanBytes(row.res.SizeBytes)
+		}
+		facts += fmt.Sprintf(" · %d seeds", max(0, row.res.Seeders))
+		body += styleDim.Render(facts) + "\n" + styleDim.Render(reason)
 	} else {
-		body += styleDim.Render("enter " + strings.ToLower(it.label))
+		body += "\n" + detailRule("More releases", w) + "\n" + styleDim.Render("enter "+strings.ToLower(it.label))
 	}
 	return a.chrome("results · "+r.query, body, a.keyStrip(a.helpBudget(w)))
+}
+
+func detailRule(label string, width int) string {
+	label = truncate(label, width)
+	line := styleKey.Render(label)
+	if remaining := width - lipgloss.Width(label) - 2; remaining > 0 {
+		line += "  " + rule(remaining)
+	}
+	return truncate(line, width)
 }

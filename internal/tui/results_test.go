@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/melqtx/tork/internal/aggregator"
 	"github.com/melqtx/tork/internal/provider"
@@ -153,3 +155,19 @@ func TestStatusLineReportsMerges(t *testing.T) {
 		t.Fatalf("status line %q does not report merged listings", got)
 	}
 }
+
+func TestPartialFeedFailureKeepsUsefulResultsVisible(t *testing.T) {
+	r := newTestResults()
+	r.insertRow(provider.Result{Title: "Ubuntu", Provider: "feed", Magnet: provider.BuildMagnet(rowHash, "Ubuntu", nil)})
+	r.status["feed"] = aggregator.StatusEvent{Provider: "feed", State: aggregator.StateFailed, Count: 1, Err: provider.ErrFeedUnsupported}
+	agg := aggregator.New([]provider.Provider{partialFeedProvider{}}, time.Second, 0)
+	line := r.statusLine(agg)
+	if !strings.Contains(line, "feed partial") || !strings.Contains(line, "1 results") {
+		t.Fatal("useful partial source was shown as unavailable")
+	}
+}
+
+type partialFeedProvider struct{}
+
+func (partialFeedProvider) Name() string                                                 { return "feed" }
+func (partialFeedProvider) Search(context.Context, string, chan<- provider.Result) error { return nil }

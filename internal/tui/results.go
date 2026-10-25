@@ -45,6 +45,12 @@ func (s sortMode) String() string {
 }
 
 type resultsModel struct {
+	browser         bool
+	editSearch      bool
+	navFocused      bool
+	navCursor       int
+	category        int
+	hideDead        bool
 	curated         bool
 	picks           []pickItem
 	pickWin         listWindow
@@ -54,6 +60,8 @@ type resultsModel struct {
 	pickPrefs       pickPreferences
 	pickDraft       pickPreferences
 	pickPanel       bool
+	sourcePanel     bool
+	sourceWin       listWindow
 	panelWin        listWindow
 	searchID        uint64
 	query           string
@@ -74,6 +82,7 @@ type resultsModel struct {
 	status          map[string]aggregator.StatusEvent
 	searching       bool
 	resolving       bool
+	resolveYank     bool
 	resolveID       uint64
 	resolveCancel   context.CancelFunc
 	weights         rank.Weights
@@ -126,6 +135,9 @@ func (r *resultsModel) betterThan(a, b scoredRow) bool {
 			return a.res.SizeBytes > b.res.SizeBytes
 		}
 	default:
+		if r.browser {
+			return r.pickRowsBetter(a, b)
+		}
 		if a.score != b.score {
 			return a.score > b.score
 		}
@@ -194,11 +206,14 @@ func (a *App) updateResults(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, a.showError("resolve failed: " + msg.err.Error())
 		}
 		if msg.yank {
-			return a, yankDownloadValue("magnet", msg.magnet)
+			return a, a.yankDownloadValue("magnet", msg.magnet)
 		}
 		return a, a.launchCmd(msg.magnet, msg.res.Title, msg.preview)
 
 	case tea.KeyMsg:
+		if r.sourcePanel {
+			return a.updateResultSources(msg)
+		}
 		if r.pickPanel {
 			return a.updatePickFilters(msg)
 		}
@@ -206,6 +221,9 @@ func (a *App) updateResults(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a.updateResultsFilter(msg)
 		}
 		return a.updateResultsKeys(msg)
+	}
+	if r.browser && r.editSearch {
+		return a.updateBrowseSearch(msg)
 	}
 	return a, nil
 }
@@ -216,10 +234,38 @@ func (a *App) updateResultsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q":
 		return a, tea.Quit
+	case "s":
+		r.sourcePanel = true
+		return a, nil
 	case "esc":
 		a.cancelResolve()
 		return a, a.navigate(screenSearch)
 	case "/":
+		if r.browser {
+			return a, a.editBrowseSearch()
+		}
+		return a, a.openPickFilters()
+	case "c", "left":
+		if r.browser {
+			r.navFocused = true
+			r.navCursor = r.category
+			return a, nil
+		}
+	case "z":
+		if r.browser {
+			r.hideDead = !r.hideDead
+			r.refreshFilter()
+			return a, nil
+		}
+	case "r":
+		if r.browser {
+			r.hideDead = false
+			r.pickPrefs = pickPreferences{}
+			r.filterIn.SetValue("")
+			r.refreshFilter()
+			return a, nil
+		}
+	case "ctrl+f":
 		return a, a.openPickFilters()
 	case "f":
 		r.filtering = true
@@ -230,6 +276,7 @@ func (a *App) updateResultsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		r.resort()
 		return a, nil
 	case "v":
+		r.browser = false
 		if r.curated {
 			r.curated = false
 			r.grouped = false
@@ -246,6 +293,7 @@ func (a *App) updateResultsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		r.rebuildPicks()
 		return a, nil
 	case "V":
+		r.browser = false
 		r.curated = false
 		r.grouped = !r.grouped
 		if r.grouped {
@@ -363,7 +411,7 @@ func (a *App) actOnResult(res provider.Result, preview bool) tea.Cmd {
 // listing only carries a details-page link (the `Y` shortcut).
 func (a *App) yankResult(res provider.Result) tea.Cmd {
 	if res.Magnet != "" {
-		return yankDownloadValue("magnet", res.Magnet)
+		return a.yankDownloadValue("magnet", res.Magnet)
 	}
 	if a.results.resolving {
 		return nil
@@ -379,6 +427,7 @@ func (a *App) startResolve(res provider.Result, preview, yank bool) tea.Cmd {
 		return a.showError(res.Provider + ": cannot resolve magnet")
 	}
 	a.results.resolving = true
+	a.results.resolveYank = yank
 	a.results.resolveID++
 	searchID := a.results.searchID
 	resolveID := a.results.resolveID
@@ -466,6 +515,7 @@ func (a *App) findResolver(name string) provider.MagnetResolver {
 }
 
 func (a *App) addTorrentCmd(magnet, name string) tea.Cmd {
+	a.pendingAdds++
 	return func() (msg tea.Msg) {
 		defer guard(&msg, func(r any) tea.Msg {
 			return torrentAddedMsg{magnet: magnet, name: name, err: fmt.Errorf("add panicked: %v", r)}
@@ -557,7 +607,7 @@ func (r *resultsModel) resort() {
 // refreshFilter recomputes visible rows and match highlights, first re-ordering
 // rows when a merge (or a sort-mode change) invalidated their position.
 func (r *resultsModel) refreshFilter() {
-	if r.resortPending {
+	if r.resortPending || r.browser {
 		r.resortPending = false
 		sort.SliceStable(r.rows, func(i, j int) bool { return r.betterThan(r.rows[i], r.rows[j]) })
 	}
@@ -604,7 +654,7 @@ func (r *resultsModel) refreshFilter() {
 	}
 	eligible := r.visible[:0]
 	for _, idx := range r.visible {
-		if r.pickPrefs.allows(r.rows[idx]) {
+		if r.pickPrefs.allows(r.rows[idx]) && (!r.hideDead || r.rows[idx].res.Seeders > 0) && (r.category == 0 || browseCategory(r.rows[idx]) == browseCategories[r.category]) {
 			eligible = append(eligible, idx)
 		}
 	}
@@ -685,6 +735,9 @@ func (a *App) resultsDetailVisible() bool { return a.bodyHeight() >= 14 }
 // selected result gets a five-line decision panel, so the list pays that space
 // up front and paging stays aligned with what is actually visible.
 func (a *App) listRows() int {
+	if a.results.browser {
+		return a.browseRows()
+	}
 	rows := max(1, a.bodyHeight()-2)
 	if a.resultsDetailVisible() {
 		rows = max(1, rows-6)
@@ -704,9 +757,15 @@ func (a *App) graphRows() int {
 }
 
 func (a *App) viewResults() string {
+	if a.results.sourcePanel {
+		return a.viewResultSources()
+	}
 	r := &a.results
 	if r.pickPanel {
 		return a.viewPickFilters()
+	}
+	if r.browser {
+		return a.viewBrowse()
 	}
 	if r.curated && !r.filtering {
 		return a.viewPicks()
@@ -899,12 +958,10 @@ func (r *resultsModel) statusLine(agg *aggregator.Aggregator) string {
 			chip = providerTag(name) + " " + styleOK.Render(fmt.Sprintf("✓%d", ev.Count))
 		case ev.State == aggregator.StateDone:
 			chip = styleDim.Render(name + " ·0") // reachable, no matches - not an error
+		case ev.State == aggregator.StateFailed && ev.Count > 0:
+			chip = styleDim.Render(name + " partial")
 		default:
-			reason := "unavailable"
-			if ev.Err != nil && strings.Contains(ev.Err.Error(), "blocked") {
-				reason = "blocked"
-			}
-			chip = styleDim.Render(name + " " + reason)
+			chip = styleDim.Render(name + " " + searchSourceFailure(ev.Err))
 			failed++
 		}
 		chips = append(chips, chip)

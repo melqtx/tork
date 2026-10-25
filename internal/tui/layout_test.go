@@ -133,3 +133,38 @@ func TestHomeHeroIsVerticallyCentered(t *testing.T) {
 		t.Fatalf("home tagline rendered on row %d of %d, want the hero in the visual center", row, a.height)
 	}
 }
+
+func TestContextHeaderHasNoFunctionKeyToolbar(t *testing.T) {
+	for _, width := range []int{84, 100, 144} {
+		a := navigationApp()
+		a.width = width
+		a.screen = screenResults
+		header := a.headerBar("results · " + strings.Repeat("long query ", 30))
+		for _, want := range []string{"F1 home", "F2 results", "F3 downloads", "F4 sources"} {
+			if strings.Contains(header, want) {
+				t.Fatalf("unwanted toolbar %q at width %d", want, width)
+			}
+		}
+		assertRenderFits(t, header, width)
+		a.screen = screenSearch
+		view := a.View()
+		if strings.Contains(strings.Split(view, "\n")[0], "home") {
+			t.Fatal("redundant home header remains")
+		}
+		if len(strings.Split(view, "\n")) != a.height {
+			t.Fatal("home header removal changed terminal row count")
+		}
+	}
+}
+
+func TestHomeTransferActivityDoesNotHideHelp(t *testing.T) {
+	for _, width := range []int{40, 60, 84, 120} {
+		a := navigationApp()
+		a.width = width
+		a.downloads.snaps = []engine.Snapshot{{State: engine.StateDownloading, SpeedBps: 12345678}}
+		lines := strings.Split(a.View(), "\n")
+		if !strings.Contains(lines[len(lines)-1], "? keys") {
+			t.Fatalf("home activity clipped help at width %d", width)
+		}
+	}
+}

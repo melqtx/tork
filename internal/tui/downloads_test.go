@@ -12,6 +12,7 @@ import (
 
 	"github.com/anacrolix/torrent/metainfo"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/melqtx/tork/internal/clipboard"
 	"github.com/melqtx/tork/internal/config"
 	"github.com/melqtx/tork/internal/engine"
 	"github.com/melqtx/tork/internal/state"
@@ -226,7 +227,7 @@ func TestClipboardSequenceCopiesFullText(t *testing.T) {
 	t.Setenv("TMUX", "")
 	t.Setenv("STY", "")
 
-	got := clipboardSequence("/home/cat/Downloads/image.iso").String()
+	got := clipboard.Sequence("/home/cat/Downloads/image.iso").String()
 	want := "\x1b]52;c;L2hvbWUvY2F0L0Rvd25sb2Fkcy9pbWFnZS5pc28=\x07"
 	if got != want {
 		t.Fatalf("clipboard sequence = %q, want %q", got, want)

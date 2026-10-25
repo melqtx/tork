@@ -205,3 +205,57 @@ func TestPicksFollowBestUntilUserMoves(t *testing.T) {
 		t.Fatal("untouched selection should follow best match")
 	}
 }
+
+func TestNonVideoSearchUsesOneRankedList(t *testing.T) {
+	a := picksApp()
+	a.results.query = "gta 5"
+	addPick(a, 1, "Overhaulin S07E07 GTA 720p", 2000, 1<<30)
+	for i := 2; i < 12; i++ {
+		addPick(a, i, fmt.Sprintf("GTA 5 PC edition %d", i), 30, 10<<30)
+	}
+	if a.results.resolutionPicks() || len(pickTitles(&a.results)) != 11 {
+		t.Fatal("non-video results hidden in resolution groups")
+	}
+	if !strings.HasPrefix(pickTitles(&a.results)[0], "GTA 5") {
+		t.Fatal("unrelated video ranked above game")
+	}
+	view := a.View()
+	for _, unwanted := range []string{"Other / unspecified", "top 3 per resolution", "Show 8 more", "F1 home", "F2 results"} {
+		if strings.Contains(view, unwanted) {
+			t.Fatalf("non-video view contains %q", unwanted)
+		}
+	}
+}
+
+func TestPickDetailPanelStaysPinnedAcrossExpansionAndResize(t *testing.T) {
+	a := picksApp()
+	for i := 1; i <= 40; i++ {
+		addPick(a, i, fmt.Sprintf("Dune 2021 1080p release%d", i), 30, 3<<30)
+	}
+	for _, size := range [][2]int{{40, 14}, {100, 30}, {160, 60}} {
+		a.width, a.height = size[0], size[1]
+		for _, expanded := range []bool{false, true, false} {
+			a.results.pickExpanded = map[rank.Resolution]bool{rank.Res1080: expanded}
+			a.results.rebuildPicks()
+			for _, end := range []bool{false, true} {
+				if end {
+					a.results.pickWin.end(len(a.results.picks), a.pickRows())
+				} else {
+					a.results.pickWin.home()
+					a.results.movePick(0, a.pickRows())
+				}
+				view := a.View()
+				assertRenderFits(t, view, a.width)
+				lines := strings.Split(view, "\n")
+				if len(lines) != a.height {
+					t.Fatal("frame height changed")
+				}
+				// Two header rows + three summary/column rows + the fixed viewport.
+				detail := lines[5+a.pickRows()]
+				if !strings.Contains(detail, "Selected") && !strings.Contains(detail, "More releases") {
+					t.Fatalf("detail panel moved: %q", detail)
+				}
+			}
+		}
+	}
+}

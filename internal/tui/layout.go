@@ -43,10 +43,12 @@ func (a *App) contentWidth() int {
 	return w
 }
 
-// bodyHeight is the vertical space for a screen's body, between the 2-line
-// header and the 2-line footer.
+// bodyHeight reserves navigation and footer rows. Home only has a footer.
 func (a *App) bodyHeight() int {
 	h := a.termHeight() - 4
+	if a.screen == screenSearch {
+		h += 2 // home already has its own wordmark; no duplicate header
+	}
 	if h < 1 {
 		h = 1
 	}
@@ -113,19 +115,15 @@ func fitBlockWidth(s string, w int) string {
 	return strings.Join(lines, "\n")
 }
 
-// headerBar combines context and an underline, with the
-// live activity chip right-aligned so transfers stay visible from every screen.
+// headerBar shows search context and live transfers without a shortcut toolbar.
 func (a *App) headerBar(context string) string {
 	w := a.contentWidth()
-	left := styleBrand.Render("tork")
-	if context != "" {
-		left += styleFaint.Render("  ·  ") + styleDim.Render(context)
-	}
+	left := styleDim.Render(context)
 	right := a.activityChip()
 	if right == "" || w < 10 {
 		return padRight(truncate(left, w), w) + "\n" + rule(w)
 	}
-	// Keep the wordmark visible and bound the activity chip on cramped screens.
+	// Bound activity on cramped screens, keeping the current context visible.
 	right = truncate(right, max(1, w-7))
 	left = truncate(left, max(1, w-lipgloss.Width(right)-2))
 	gap := max(2, w-lipgloss.Width(left)-lipgloss.Width(right))
@@ -157,7 +155,20 @@ func (a *App) footerLine(width int, help, right string) string {
 // footerBar is a rule plus a help/status line (errors take over when present).
 func (a *App) footerBar(help string) string {
 	w := a.contentWidth()
-	return rule(w) + "\n" + a.footerLine(w, help, a.proxyStatusTail())
+	return rule(w) + "\n" + a.footerLine(w, help, a.footerTail())
+}
+
+func (a *App) footerTail() string {
+	tail := a.proxyStatusTail()
+	if a.screen == screenSearch {
+		if activity := a.activityChip(); activity != "" {
+			if tail != "" {
+				tail += " · "
+			}
+			tail += activity
+		}
+	}
+	return tail
 }
 
 // chrome composes a full screen: centered column, header on top, body filling
@@ -171,7 +182,10 @@ func (a *App) chrome(context, body, help string) string {
 		body = overlayBottomRight(body, toastBox(a.toast), a.contentWidth())
 		body = fitBlockWidth(body, a.contentWidth())
 	}
-	col := a.headerBar(context) + "\n" + body + "\n" + a.footerBar(help)
+	col := body + "\n" + a.footerBar(help)
+	if a.screen != screenSearch {
+		col = a.headerBar(context) + "\n" + col
+	}
 	return a.center(col)
 }
 

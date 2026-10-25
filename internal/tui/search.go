@@ -19,7 +19,7 @@ type homeDest struct {
 }
 
 func (a *App) homeDestinations() []homeDest {
-	menu := []homeDest{{"downloads", screenDownloads}, {"linux isos", screenISOs}}
+	menu := []homeDest{{"downloads", screenDownloads}, {"linux isos", screenISOs}, {"sources", screenSources}}
 	if a.results.query != "" {
 		menu = append(menu, homeDest{"back to results", screenResults})
 	}
@@ -169,20 +169,27 @@ func (a *App) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // startSearch cancels any in-flight search and fans a new one out.
 func (a *App) startSearch(query string) tea.Cmd {
-	if len(a.agg.Providers()) == 0 {
-		return a.showError("no search providers are enabled in config.yaml")
+	agg := a.agg
+	if a.nextAgg != nil {
+		agg = a.nextAgg
+	}
+	if len(agg.Providers()) == 0 {
+		return a.showError("no sources enabled · open sources from home")
 	}
 	if a.results.cancel != nil {
 		a.results.cancel()
 	}
 	a.cancelResolve()
+	a.agg, a.nextAgg = agg, nil
 	ctx, cancel := context.WithCancel(context.Background())
 	resultCh, statusCh := a.agg.Search(ctx, query)
 	a.searchSeq++
 
 	prefs := a.results.pickPrefs
+	category, hideDead, sort := a.results.category, a.results.hideDead, a.results.sort
 	a.results = newResultsModel(a.cfg.Ranking)
-	a.results.curated = true
+	a.results.browser = true
+	a.results.category, a.results.hideDead, a.results.sort = category, hideDead, sort
 	a.results.pickPrefs = prefs
 	a.results.searchID = a.searchSeq
 	a.results.query = query
@@ -245,7 +252,7 @@ func (a *App) homeMenuView() string {
 	if a.results.query != "" {
 		resultDesc = a.results.query
 	}
-	descs := []string{a.downloadsSummary(), "official images", resultDesc}
+	descs := []string{a.downloadsSummary(), "official images", a.sourcesSummary(), resultDesc}
 	menu := a.homeDestinations()
 	rows := make([]string, len(menu))
 	for i, d := range menu {
@@ -268,4 +275,17 @@ func (a *App) downloadsSummary() string {
 	default:
 		return fmt.Sprintf("%d saved downloads", n)
 	}
+}
+
+func (a *App) sourcesSummary() string {
+	if a.cfg == nil {
+		return "choose search indexes"
+	}
+	enabled := 0
+	for _, p := range a.cfg.Providers {
+		if p.Enabled {
+			enabled++
+		}
+	}
+	return fmt.Sprintf("%d enabled · add more indexes", enabled)
 }

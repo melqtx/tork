@@ -26,6 +26,8 @@ func inCard(key, label string) keyHint  { return keyHint{key: key, label: label}
 // globalKeys work from anywhere and are listed once, in the card, rather than
 // eating room on every screen's footer.
 var globalKeys = []keyHint{
+	inCard("F1 / F2", "home / latest results"),
+	inCard("F3 / F4", "downloads / sources"),
 	inCard("tab / shift+tab", "home: focus controls; elsewhere: downloads / back"),
 	inCard("esc", "back or cancel current step"),
 	inCard("^d", "downloads"),
@@ -38,9 +40,13 @@ var globalKeys = []keyHint{
 func (a *App) screenKeys() []keyHint {
 	switch a.screen {
 	case screenSearch:
+		choose := inCard("↑↓", "choose")
+		if a.search.menuFocused {
+			choose.strip = true
+		}
 		return []keyHint{
 			onStrip("enter", a.homeEnterLabel()),
-			onStrip("↑↓", "choose"),
+			choose,
 			inCard("tab / shift+tab", "next / previous control"),
 			inCard("paste", "a magnet, infohash, .torrent path or URL"),
 			inCard("esc", "focus search, then clear the field"),
@@ -57,11 +63,19 @@ func (a *App) screenKeys() []keyHint {
 		}
 
 	case screenResults:
+		if a.results.browser && !a.results.pickPanel && !a.results.sourcePanel {
+			return []keyHint{onStrip("enter", "preview"), onStrip("/", "search"), onStrip("tab", "browse"), onStrip("f", "filter"), inCard("c / ←", "categories"), inCard("o", "sort: relevance / seeders / size"), inCard("z", "hide zero seeders"), inCard("r", "reset filters"), inCard("ctrl+f", "resolution and size filters"), inCard("s", "source status"), inCard("D", "download now"), inCard("Y", "copy magnet"), onStrip("esc", "home"), inCard("pgup/pgdn", "page"), inCard("g/G", "top / bottom")}
+		}
+
+		if a.results.sourcePanel {
+			return []keyHint{onStrip("↑↓", "choose source"), onStrip("t", "retry source"), onStrip("s / esc", "back to results"), inCard("pgup/pgdn", "page"), inCard("g/G", "top / bottom")}
+		}
 		if a.results.curated {
-			return []keyHint{onStrip("enter", a.resultEnterLabel()), onStrip("/", "filters"), onStrip("tab", "downloads"), onStrip("esc", "back"), inCard("↑↓", "choose a release"), inCard("v", "full list / top picks"), inCard("f", "advanced text filter"), inCard("D", "download now, skipping the preview"), inCard("Y", "copy magnet")}
+			return []keyHint{onStrip("enter", a.resultEnterLabel()), onStrip("/", "filters"), onStrip("tab", "downloads"), onStrip("esc", "back"), inCard("↑↓", "choose a release"), inCard("s", "source status for this search"), inCard("v", "full list / top picks"), inCard("f", "advanced text filter"), inCard("D", "download now, skipping the preview"), inCard("Y", "copy magnet")}
 		}
 		if a.results.grouped {
 			return []keyHint{
+				inCard("s", "source status for this search"),
 				inCard("↑↓", "move"),
 				inCard("←→", "fold"),
 				onStrip("enter", a.resultEnterLabel()),
@@ -77,6 +91,7 @@ func (a *App) screenKeys() []keyHint {
 			}
 		}
 		return []keyHint{
+			inCard("s", "source status for this search"),
 			inCard("↑↓", "move"),
 			onStrip("enter", a.resultEnterLabel()),
 			onStrip("tab", "downloads"),
@@ -106,6 +121,18 @@ func (a *App) screenKeys() []keyHint {
 			inCard("n", "select none"),
 			inCard("g/G", "top / bottom"),
 		}
+
+	case screenSources:
+		if a.sources.catalog != nil {
+			return []keyHint{onStrip("↑↓", "choose"), onStrip("enter", "add & check"), onStrip("esc", "back")}
+		}
+		if a.sources.editor != nil {
+			return []keyHint{onStrip("^t", "test"), onStrip("^s", "test & save"), onStrip("tab", "next field"), onStrip("esc", "cancel"), inCard("←→ / space", "change source type")}
+		}
+		if a.sources.removing != "" {
+			return []keyHint{onStrip("y", "remove source"), onStrip("esc", "cancel")}
+		}
+		return []keyHint{onStrip("a", "add sources"), onStrip("enter", "enable / disable"), onStrip("r", "check enabled"), onStrip("esc", "back"), inCard("t", "test selected source"), inCard("↑↓", "choose"), inCard("space", "enable / disable"), inCard("e", "edit custom source"), inCard("x", "remove custom source"), inCard("pgup/pgdn", "page"), inCard("g/G", "top / bottom")}
 
 	case screenHealth:
 		return []keyHint{
@@ -171,8 +198,8 @@ func stripWidth(parts []string, sep int) int {
 // helpBudget is the room the strip has on the footer line once the proxy badge
 // sharing that line is paid for.
 func (a *App) helpBudget(width int) int {
-	if tail := a.proxyStatusTail(); tail != "" {
-		width -= lipgloss.Width(tail) + 2
+	if tail := a.footerTail(); tail != "" {
+		width -= lipgloss.Width(truncate(tail, max(1, width/2))) + 2
 	}
 	return max(20, width)
 }
@@ -190,6 +217,8 @@ func (a *App) screenTitle() string {
 		return "results"
 	case screenPreview:
 		return "preview"
+	case screenSources:
+		return "sources"
 	case screenHealth:
 		return "health"
 	default:
@@ -201,7 +230,11 @@ func (a *App) screenTitle() string {
 // windows can scroll the complete reference instead of clipping shortcuts.
 func (a *App) helpLines() []string {
 	here := strings.Join(helpSection(a.screenTitle(), a.screenKeys()), "\n")
-	everywhere := strings.Join(helpSection("navigation", globalKeys), "\n")
+	navigation := append([]keyHint(nil), globalKeys...)
+	if a.background {
+		navigation[len(navigation)-1].label = "close UI; transfers keep running"
+	}
+	everywhere := strings.Join(helpSection("navigation", navigation), "\n")
 	width := a.contentWidth()
 	var body string
 	if width >= 80 {

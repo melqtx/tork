@@ -161,6 +161,7 @@ func (a *App) viewISOs() string {
 // the engine. It reuses torrentAddedMsg, so a resolved image flows into the
 // same download/state path as any other add.
 func (a *App) downloadISOCmd(d isos.Distro) tea.Cmd {
+	a.pendingAdds++
 	return func() (msg tea.Msg) {
 		defer guard(&msg, func(r any) tea.Msg {
 			return torrentAddedMsg{name: d.Name, err: fmt.Errorf("resolve panicked: %v", r)}
