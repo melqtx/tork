@@ -5,8 +5,6 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
-
-	"github.com/charmbracelet/lipgloss"
 )
 
 // Keep spelling, year and episode markers; only trim recognized release
@@ -46,12 +44,15 @@ func releaseQuality(row scoredRow) string {
 		parts = append(parts, "HDR")
 	}
 	if len(parts) == 0 {
-		return "source unknown"
+		if row.res.Category != "" {
+			return row.res.Category
+		}
+		return sourceTag(row.res, true)
 	}
 	return strings.Join(parts, " · ")
 }
 func renderReleaseRow(row scoredRow, width int) string {
-	title := readableReleaseTitle(row.res.Title)
+	l := newReleaseLayout(width)
 	size := "size ?"
 	if row.res.SizeBytes > 0 {
 		size = humanBytes(row.res.SizeBytes)
@@ -60,14 +61,56 @@ func renderReleaseRow(row scoredRow, width int) string {
 	if row.res.Seeders <= 0 {
 		availability = "no seeds"
 	}
-	right := size + " · " + availability
-	quality := ""
+	quality := releaseQuality(row)
+	if quality == "source unknown" {
+		quality = "—"
+	}
+	return l.render(readableReleaseTitle(row.res.Title), quality, size, availability, false)
+}
+
+// The header and every release use the same grid. Drop optional columns on
+// small terminals instead of letting a large swarm count move the title.
+type releaseLayout struct{ title, quality, size, seeds int }
+
+func newReleaseLayout(width int) releaseLayout {
+	l := releaseLayout{title: width}
+	if width >= 20 {
+		l.size = 9
+		l.title -= l.size + 2
+	}
+	if width >= 44 {
+		l.seeds = 12
+		l.title -= l.seeds + 2
+	}
 	if width >= 76 {
-		quality = padRight(truncate(releaseQuality(row), 25), 25) + "  "
+		l.quality = 24
+		l.title -= l.quality + 2
 	}
-	if width < 44 {
-		right = size
+	return l
+}
+
+func (l releaseLayout) render(title, quality, size, seeds string, header bool) string {
+	parts := []string{padRight(truncate(title, l.title), l.title)}
+	if l.quality > 0 {
+		parts = append(parts, padRight(truncate(quality, l.quality), l.quality))
 	}
-	titleWidth := max(1, width-lipgloss.Width(quality)-lipgloss.Width(right)-2)
-	return truncate(padRight(truncate(title, titleWidth), titleWidth)+"  "+styleDim.Render(quality+right), width)
+	if l.size > 0 {
+		parts = append(parts, padLeft(truncate(size, l.size), l.size))
+	}
+	if l.seeds > 0 {
+		parts = append(parts, padLeft(truncate(seeds, l.seeds), l.seeds))
+	}
+	if header {
+		return styleFaint.Render(strings.Join(parts, "  "))
+	}
+	// Keep titles bright while the supporting columns recede.
+	line := styleFg.Render(parts[0])
+	if len(parts) > 1 {
+		line += "  " + styleDim.Render(strings.Join(parts[1:], "  "))
+	}
+	return line
+}
+
+func releaseHeader(width int) string {
+	return newReleaseLayout(width).render("Release", "Details", "Size", "Availability", true)
 }

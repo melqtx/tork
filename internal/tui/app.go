@@ -3,6 +3,7 @@
 package tui
 
 import (
+	"io"
 	"strings"
 	"time"
 
@@ -24,14 +25,16 @@ const (
 	screenPreview
 	screenDownloads
 	screenHealth
+	screenSources
 )
 
 type App struct {
-	cfg    *config.Config
-	eng    *engine.Engine
-	agg    *aggregator.Aggregator
-	st     *state.State
-	health *health.Store
+	cfg     *config.Config
+	eng     *engine.Engine
+	agg     *aggregator.Aggregator
+	nextAgg *aggregator.Aggregator // saved source choices for the next search
+	st      *state.State
+	health  *health.Store
 
 	screen        screen
 	downloadsFrom screen
@@ -44,17 +47,21 @@ type App struct {
 	preview    previewModel
 	downloads  downloadsModel
 	compass    compassModel
+	sources    sourcesModel
 	proxy      proxyBadge
 	proxyCheck proxyChecker
 	startup    tea.Cmd // optional one-shot action requested on the command line
 
-	errText      string
-	errGen       uint64
-	toast        toastState
-	helpOffset   int
-	showHelp     bool      // the `?` key card, drawn over whichever screen is active
-	lastTickSave time.Time // throttles progress-only state.json writes on the tick
-	searchSeq    uint64    // generation for streamed searches; rejects late messages
+	errText         string
+	errGen          uint64
+	toast           toastState
+	helpOffset      int
+	showHelp        bool      // the `?` key card, drawn over whichever screen is active
+	lastTickSave    time.Time // throttles progress-only state.json writes on the tick
+	searchSeq       uint64    // generation for streamed searches; rejects late messages
+	background      bool      // UI is attached to a persistent local session
+	pendingAdds     int       // approved add commands not yet recorded in state
+	clipboardOutput io.Writer // shared with the foreground renderer
 }
 
 func New(cfg *config.Config, eng *engine.Engine, agg *aggregator.Aggregator, st *state.State, hs *health.Store) *App {
@@ -80,6 +87,8 @@ func New(cfg *config.Config, eng *engine.Engine, agg *aggregator.Aggregator, st 
 // ShowDownloads opens the app on the downloads screen (used after autopilot
 // queues torrents so the user lands straight on progress).
 func (a *App) ShowDownloads() { a.screen = screenDownloads }
+
+func (a *App) SetClipboardOutput(out io.Writer) { a.clipboardOutput = out }
 
 func (a *App) Init() tea.Cmd {
 	// pick up torrents resumed from state.json at startup
@@ -109,7 +118,23 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
+			a.closeSourceEditor()
 			return a, tea.Quit
+		}
+		if !a.navigationLocked() && !a.showHelp {
+			switch msg.String() {
+			case "f1":
+				return a, a.navigate(screenSearch)
+			case "f2":
+				if a.results.query != "" {
+					return a, a.navigate(screenResults)
+				}
+				return a, a.showToast("Search first to see results", toastOK, toastQuick)
+			case "f3":
+				return a, a.navigate(screenDownloads)
+			case "f4":
+				return a, a.navigate(screenSources)
+			}
 		}
 		if a.screen == screenResults && a.results.pickPanel {
 			return a.updatePickFilters(msg)
@@ -134,6 +159,19 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// there is no wrong guess at how to get out of it.
 			a.showHelp = false
 			return a, nil
+		}
+		if a.screen == screenResults && a.results.browser && !a.results.sourcePanel && !a.results.pickPanel && !a.results.filtering {
+			if a.results.editSearch {
+				return a.updateBrowseSearch(msg)
+			}
+			if msg.String() == "tab" || msg.String() == "shift+tab" {
+				a.results.navFocused = !a.results.navFocused
+				a.results.navCursor = a.results.category
+				return a, nil
+			}
+			if a.results.navFocused && msg.String() != "?" {
+				return a.updateBrowseNav(msg)
+			}
 		}
 		switch msg.String() {
 		case "?":
@@ -216,6 +254,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
+	case sourceDraftCheckedMsg:
+		return a, a.onSourceDraftChecked(msg)
+	case sourceConfigSavedMsg:
+		return a, a.onSourceConfigSaved(msg)
+	case sourceSavedMsg:
+		return a, a.onSourceSaved(msg)
+	case sourceCheckedMsg:
+		a.onSourceChecked(msg)
+		return a, nil
+
 	case healthDoneMsg:
 		return a, a.onHealthDone(msg)
 
@@ -236,6 +284,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.updateResults(msg)
 	case screenPreview:
 		return a.updatePreview(msg)
+	case screenSources:
+		return a.updateSources(msg)
 	case screenHealth:
 		return a.updateHealth(msg)
 	default:
@@ -256,6 +306,8 @@ func (a *App) View() string {
 		return a.viewResults()
 	case screenPreview:
 		return a.viewPreview()
+	case screenSources:
+		return a.viewSources()
 	case screenHealth:
 		return a.viewHealth()
 	default:
@@ -311,13 +363,15 @@ func (a *App) onPreviewReady(msg previewReadyMsg) tea.Cmd {
 // typing reports whether a text input currently owns the keyboard, so global
 // single-letter shortcuts must stay inert.
 func (a *App) typing() bool {
-	return (a.screen == screenSearch && !a.search.menuFocused) ||
-		(a.screen == screenResults && a.results.filtering) ||
+	return (a.screen == screenSources && (a.sources.editor != nil || a.sources.catalog != nil)) ||
+		(a.screen == screenSearch && !a.search.menuFocused) ||
+		(a.screen == screenResults && (a.results.filtering || a.results.editSearch)) ||
 		a.downloads.prompt.action != pathActionNone
 }
 
 func (a *App) navigationLocked() bool {
-	return (a.screen == screenResults && a.results.pickPanel) || a.screen == screenPreview || (a.screen == screenDownloads &&
+	return (a.screen == screenSources && (a.sources.editor != nil || a.sources.catalog != nil || a.sources.removing != "")) ||
+		(a.screen == screenResults && a.results.pickPanel) || a.screen == screenPreview || (a.screen == screenDownloads &&
 		(a.downloads.prompt.action != pathActionNone || a.downloads.confirmRemove != nil))
 }
 
@@ -327,6 +381,7 @@ func (a *App) focusSearch() tea.Cmd {
 }
 
 func (a *App) navigate(target screen) tea.Cmd {
+	a.results.editSearch = false
 	a.cancelResolve()
 	a.showHelp = false
 	a.search.input.Blur()
@@ -340,6 +395,9 @@ func (a *App) navigate(target screen) tea.Cmd {
 	if target == screenDownloads {
 		return a.startDownloadPathCheck(false)
 	}
+	if target == screenSources {
+		return a.checkEnabledSources(false)
+	}
 	return nil
 }
 
@@ -349,6 +407,9 @@ func (a *App) navigate(target screen) tea.Cmd {
 // things off one search a round trip through three screens. The header's
 // activity chip is what keeps the new download visible from wherever you are.
 func (a *App) onTorrentAdded(msg torrentAddedMsg) tea.Cmd {
+	if a.pendingAdds > 0 {
+		a.pendingAdds--
+	}
 	a.isos.resolving = false
 	if msg.err != nil {
 		return a.showError("add failed: " + msg.err.Error())

@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,15 +12,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/atotto/clipboard"
-	"github.com/aymanbagabas/go-osc52/v2"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/charmbracelet/x/term"
 
 	"github.com/anacrolix/torrent/metainfo"
+	"github.com/melqtx/tork/internal/clipboard"
 	"github.com/melqtx/tork/internal/engine"
+	"github.com/melqtx/tork/internal/session"
 	"github.com/melqtx/tork/internal/state"
 )
 
@@ -279,11 +281,11 @@ func (a *App) updateDownloads(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case "y":
 		if it, ok := a.selectedDownload(items); ok {
-			return a, yankDownloadValue("path", it.DataPath)
+			return a, a.yankDownloadValue("path", it.DataPath)
 		}
 	case "Y":
 		if it, ok := a.selectedDownload(items); ok {
-			return a, yankDownloadValue("magnet", it.Magnet)
+			return a, a.yankDownloadValue("magnet", it.Magnet)
 		}
 	case "x":
 		if it, ok := a.selectedDownload(items); ok {
@@ -319,41 +321,40 @@ func verificationBlocksKey(key string) bool {
 	}
 }
 
-func yankDownloadValue(what, value string) tea.Cmd {
+func (a *App) yankDownloadValue(what, value string) tea.Cmd {
+	background := a.background
+	output := a.clipboardOutput
 	return func() tea.Msg {
 		text := strings.TrimSpace(value)
 		if text == "" {
 			return yankDoneMsg{what: what, err: fmt.Errorf("copy needs a known %s", what)}
 		}
-		if err := writeClipboard(text); err != nil {
+		if background {
+			return session.ClipboardRequest{Text: text, Reply: func(err error) tea.Msg {
+				if err != nil {
+					return yankDoneMsg{what: what, err: fmt.Errorf("copy %s failed: %w", what, err)}
+				}
+				return yankDoneMsg{what: what}
+			}}
+		}
+		if err := writeClipboard(text, output); err != nil {
 			return yankDoneMsg{what: what, err: fmt.Errorf("copy %s failed: %w", what, err)}
 		}
 		return yankDoneMsg{what: what}
 	}
 }
 
-// writeClipboard prefers the OS clipboard: bubbletea's renderer writes frames
-// to stdout from its own goroutine, so emitting OSC 52 here can interleave
-// with a frame mid-sequence. The escape-sequence path survives only as a
-// fallback for hosts without a clipboard helper (e.g. a bare SSH session).
-func writeClipboard(text string) error {
-	if err := clipboard.WriteAll(text); err == nil {
-		return nil
+// Foreground copies share the renderer's output lock and refuse log/file
+// output. Background copies always go through the attached session client.
+func writeClipboard(text string, output ...io.Writer) error {
+	if !term.IsTerminal(os.Stdout.Fd()) {
+		return fmt.Errorf("clipboard copy needs an attached terminal")
 	}
-	_, err := clipboardSequence(text).WriteTo(os.Stdout)
-	return err
-}
-
-func clipboardSequence(text string) osc52.Sequence {
-	seq := osc52.New(text)
-	switch {
-	case os.Getenv("TMUX") != "":
-		return seq.Tmux()
-	case os.Getenv("STY") != "":
-		return seq.Screen()
-	default:
-		return seq
+	var out io.Writer = os.Stdout
+	if len(output) > 0 && output[0] != nil {
+		out = output[0]
 	}
+	return clipboard.Write(text, out)
 }
 
 func revealDownload(it downloadItem) tea.Cmd {
@@ -1080,7 +1081,16 @@ func (a *App) viewDownloads() string {
 	var b strings.Builder
 	b.WriteString(a.downloadsOverview(metrics, width))
 	b.WriteString("\n")
+	section := ""
 	for i := start; i < end; i++ {
+		label := "Active & waiting"
+		if items[i].State == engine.StateDone || items[i].State == engine.StateSeeding {
+			label = "Completed & seeding"
+		}
+		if label != section {
+			b.WriteString(styleTitle.Render(label) + "\n")
+			section = label
+		}
 		b.WriteString(a.renderDownloadItem(items[i], i == d.win.cursor, width))
 		if i < end-1 {
 			b.WriteString("\n")
@@ -1358,7 +1368,7 @@ func (a *App) downloadListRows() int {
 	if body >= 20 && a.contentWidth() >= 44 {
 		detailLines = 7 // one breathing line plus the six-line bordered card
 	}
-	return max(1, (body-overviewLines-detailLines)/2)
+	return max(1, (body-overviewLines-detailLines-2)/2)
 }
 
 // downloadsContext summarises the list in the header: what is moving, what is

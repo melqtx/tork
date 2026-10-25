@@ -121,19 +121,32 @@ func TestNavigationCannotEscapeDownloadDialogs(t *testing.T) {
 	}
 }
 
-func TestFunctionKeysDoNotNavigateOrClutterHome(t *testing.T) {
+func TestFunctionKeysNavigateAndPreserveSearch(t *testing.T) {
 	a := navigationApp()
-	for _, key := range []tea.KeyType{tea.KeyF1, tea.KeyF2, tea.KeyF3, tea.KeyF4} {
-		a.Update(tea.KeyMsg{Type: key})
-		if a.screen != screenSearch {
-			t.Fatal("function key unexpectedly navigated")
+	a.search.input.SetValue("saved query")
+	a.results.query = ""
+	a.Update(tea.KeyMsg{Type: tea.KeyF2})
+	if a.screen != screenSearch {
+		t.Fatal("opened nonexistent results")
+	}
+	a.results.query = "saved query"
+	for _, tt := range []struct {
+		key  tea.KeyType
+		want screen
+	}{{tea.KeyF2, screenResults}, {tea.KeyF3, screenDownloads}, {tea.KeyF4, screenSources}, {tea.KeyF1, screenSearch}} {
+		a.Update(tea.KeyMsg{Type: tt.key})
+		if a.screen != tt.want {
+			t.Fatalf("%s did not navigate", tea.KeyMsg{Type: tt.key})
 		}
 	}
-	if strings.Contains(a.View(), "F1") || strings.Contains(a.View(), "F2") {
-		t.Fatal("function-key chrome remains")
+	if a.search.input.Value() != "saved query" || !a.search.input.Focused() {
+		t.Fatal("home shortcut lost the query or focus")
+	}
+	if strings.Contains(a.View(), "tork  ·  home") {
+		t.Fatal("redundant home header remains")
 	}
 	a.results.query = ""
-	if len(a.homeDestinations()) != 2 {
+	if len(a.homeDestinations()) != 3 {
 		t.Fatal("empty results should not clutter home")
 	}
 }
