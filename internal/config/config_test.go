@@ -25,8 +25,8 @@ func TestLoadFromWritesDefaultsOnFirstRun(t *testing.T) {
 	if !cfg.SeedAfterComplete || cfg.MaxConnections != 50 || cfg.SearchTimeoutSeconds != 15 {
 		t.Errorf("unexpected defaults: %+v", cfg)
 	}
-	if len(cfg.Providers) != 7 {
-		t.Errorf("expected 7 providers, got %d", len(cfg.Providers))
+	if len(cfg.Providers) != len(BuiltinSources()) {
+		t.Errorf("expected %d providers, got %d", len(BuiltinSources()), len(cfg.Providers))
 	}
 	if !cfg.Providers["knaben"].Enabled || !cfg.Providers["yts"].Enabled || !cfg.Providers["nyaa"].Enabled {
 		t.Error("knaben/yts/nyaa should be enabled by default")
@@ -305,7 +305,7 @@ func TestLoadFromRecoversFromCorruptConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("corrupt config should not fail startup: %v", err)
 	}
-	if cfg.MaxConnections != 50 || len(cfg.Providers) != 7 {
+	if cfg.MaxConnections != 50 || len(cfg.Providers) != len(BuiltinSources()) {
 		t.Errorf("did not fall back to defaults: %+v", cfg)
 	}
 	if _, err := os.Stat(path + ".bak"); err != nil {

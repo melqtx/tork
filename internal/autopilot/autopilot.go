@@ -2,6 +2,7 @@ package autopilot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -26,6 +27,16 @@ func ShortReason(err error) string {
 	}
 	s := strings.ToLower(err.Error())
 	switch {
+	case errors.Is(err, provider.ErrResponseFormat):
+		return provider.ErrResponseFormat.Error()
+	case errors.Is(err, provider.ErrFeedAPI):
+		return provider.ErrFeedAPI.Error()
+	case errors.Is(err, provider.ErrFeedFormat):
+		return provider.ErrFeedFormat.Error()
+	case errors.Is(err, provider.ErrFeedAuth):
+		return provider.ErrFeedAuth.Error()
+	case errors.Is(err, provider.ErrFeedUnsupported):
+		return provider.ErrFeedUnsupported.Error()
 	case strings.Contains(s, "no such host"), strings.Contains(s, "name resolution"):
 		return "unreachable (dns)"
 	case strings.Contains(s, "timeout"), strings.Contains(s, "deadline exceeded"):

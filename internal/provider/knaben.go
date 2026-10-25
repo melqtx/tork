@@ -60,11 +60,28 @@ func (k *Knaben) Search(ctx context.Context, query string, out chan<- Result) er
 		return fmt.Errorf("knaben: parse html: %w", err)
 	}
 
+	if isCloudflareChallenge(doc) {
+		return ErrBlocked
+	}
+	// Empty searches retain this table and its headers. A login/error page
+	// without the search document is not a successful zero-result response.
+	table := doc.Find("table").FilterFunction(func(_ int, table *goquery.Selection) bool {
+		headers := map[string]bool{}
+		table.Find("thead th").Each(func(_ int, th *goquery.Selection) {
+			headers[strings.ToLower(strings.TrimSpace(th.Text()))] = true
+		})
+		return headers["title"] && headers["size"] && headers["seeders"] && headers["leechers"] && table.Find("tbody").Length() > 0
+	}).First()
+	if table.Length() == 0 {
+		return ErrResponseFormat
+	}
+
 	var emitErr error
-	doc.Find("tr[data-id]").EachWithBreak(func(_ int, row *goquery.Selection) bool {
+	emitted := 0
+	table.Find("tbody tr[data-id]").EachWithBreak(func(_ int, row *goquery.Selection) bool {
 		anchor := row.Find(`a[href^="magnet:"]`).First()
 		magnet, ok := anchor.Attr("href")
-		if !ok {
+		if !ok || (Result{Magnet: magnet}).InfoHash() == "" {
 			return true
 		}
 		tds := row.Find("td")
@@ -94,7 +111,11 @@ func (k *Knaben) Search(ctx context.Context, query string, out chan<- Result) er
 			emitErr = err
 			return false
 		}
+		emitted++
 		return true
 	})
+	if emitErr == nil && emitted == 0 && table.Find("tbody tr").Length() > 0 {
+		return ErrResponseFormat
+	}
 	return emitErr
 }
