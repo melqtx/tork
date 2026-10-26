@@ -50,7 +50,19 @@ func TestLiveBroadSources(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			out := make(chan provider.Result, 200)
+			search := func(query string) ([]provider.Result, error) {
+				out := make(chan provider.Result)
+				done := make(chan error, 1)
+				go func() {
+					done <- p.Search(ctx, query, out)
+					close(out)
+				}()
+				var results []provider.Result
+				for r := range out {
+					results = append(results, r)
+				}
+				return results, <-done
+			}
 			query := "ubuntu"
 			if id == "tpb" {
 				query = "linux"
@@ -58,13 +70,9 @@ func TestLiveBroadSources(t *testing.T) {
 			if id == "eztv" {
 				query = "severance s02e01"
 			}
-			if err := p.Search(ctx, query, out); err != nil {
+			results, err := search(query)
+			if err != nil {
 				t.Fatalf("live search failed: %v", err)
-			}
-			close(out)
-			var results []provider.Result
-			for r := range out {
-				results = append(results, r)
 			}
 			if len(results) == 0 {
 				t.Fatalf("live %q search returned no results", query)
@@ -86,8 +94,8 @@ func TestLiveBroadSources(t *testing.T) {
 			}
 			t.Logf("search_results=%d; selected_result_magnet=valid; category=%s", len(results), first.Category)
 			if id == "knaben" {
-				empty := make(chan provider.Result, 200)
-				if err := p.Search(ctx, "torknomatchd4b619580f12", empty); err != nil {
+				empty, err := search("torknomatchd4b619580f12")
+				if err != nil {
 					t.Fatalf("real empty search failed validation: %v", err)
 				}
 				if len(empty) != 0 {

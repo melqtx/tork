@@ -21,6 +21,8 @@ import (
 // checks run against something it can actually stat.
 func testConfig(t *testing.T) *config.Config {
 	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DOWNLOAD_DIR", t.TempDir())
 	cfg, err := config.LoadFrom(t.TempDir())
 	if err != nil {
 		t.Fatalf("load config: %v", err)
@@ -76,6 +78,7 @@ func TestRunDoctorHealthy(t *testing.T) {
 func TestDoctorMissingConfigExplainsDefaults(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Default(dir)
+	cfg.SetDownloadDir(filepath.Join(dir, "downloads"))
 	if err := os.MkdirAll(cfg.DownloadDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -360,6 +363,7 @@ func TestDoctorDefaultChecksDoNotWriteDownloadOrHealthFiles(t *testing.T) {
 func TestDoctorMetadataCacheCheckIsReadOnly(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Default(dir)
+	cfg.SetDownloadDir(filepath.Join(dir, "downloads"))
 	if err := os.MkdirAll(cfg.DownloadDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
