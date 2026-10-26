@@ -34,7 +34,7 @@ actual swarm, and keep downloads in one calm little terminal app.
 brew tap melqtx/tap && brew install tork             # macOS (Homebrew)
 yay -S tork                                          # Arch (AUR)
 nix run github:melqtx/tork                           # Nix
-go install github.com/melqtx/tork/cmd/tork@latest    # Go 1.26+
+go install github.com/melqtx/tork/cmd/tork@latest    # Go 1.26.10+
 ```
 
 If Go on macOS is picking Nix's compiler, use Apple Clang for the install:
@@ -45,7 +45,7 @@ CC=/usr/bin/clang CXX=/usr/bin/clang++ go install github.com/melqtx/tork/cmd/tor
 
 ## Build from source
 
-Building tork requires Go 1.26 or newer. From the repository root, run it
+Building tork requires Go 1.26.10 or newer. From the repository root, run it
 directly without creating a binary:
 
 ```sh
