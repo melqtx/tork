@@ -2,6 +2,7 @@
   lib,
   buildGoModule,
   fetchFromGitHub,
+  writableTmpDirAsHomeHook,
   version ? "0.5.0",
   vendorHash ? "sha256-gQLqY3trLGP/2teQlR+px+/iIKyzEs90pi52ufRXufc=",
   source ? fetchFromGitHub {
@@ -28,13 +29,7 @@ buildGoModule rec {
     "-X main.version=${version}"
   ];
 
-  # Nix builds with HOME=/homeless-shelter. A few integration-style tests create
-  # an isolated tork config, which derives its default download directory from
-  # HOME, so give the check phase a writable private home instead.
-  preCheck = ''
-    export HOME="$TMPDIR/home"
-    mkdir -p "$HOME"
-  '';
+  nativeBuildInputs = [ writableTmpDirAsHomeHook ];
 
   meta = {
     description = "Terminal torrent search and download client";
