@@ -102,6 +102,12 @@ func Build(id string, p config.ProviderConfig, client *http.Client) (provider.Pr
 		return provider.NewRARBG(client, p.BaseURLs()...), nil
 	case "limetorrents":
 		return provider.NewLimeTorrents(client, p.BaseURLs()...), nil
+	case "torrentscsv":
+		return provider.NewTorrentsCSV(client, p.Mirror), nil
+	case "archive":
+		return provider.NewInternetArchive(client, p.Mirror), nil
+	case "subsplease":
+		return provider.NewSubsPlease(client, p.Mirror), nil
 	case "tpb_movies":
 		return provider.NewPirateBayMovies(client, p.BaseURLs()...), nil
 	case "tpb_tv":

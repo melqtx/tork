@@ -218,7 +218,13 @@ manual check.
 ## Search sources
 
 Open **sources** from the home menu to see every built-in index, including
-TheRARBG, LimeTorrents, The Pirate Bay (all categories), EZTV, and 1337x.
+TheRARBG, LimeTorrents, The Pirate Bay (all categories), EZTV, 1337x,
+[Torrents.csv](https://codeberg.org/heretic/torrents-csv-server) (an
+open-source index with live seeder counts), the
+[Internet Archive](https://archive.org) (public-domain films, audio, software
+and books, seeded by the Archive with an HTTPS webseed), and
+[SubsPlease](https://subsplease.org) (anime magnets straight from the release
+group).
 Use `↑↓` to choose a source and
 `space` or `enter` to enable or disable it. Changes save to
 `~/.tork/config.yaml` and apply to the next search. Current search results and
