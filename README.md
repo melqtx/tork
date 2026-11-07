@@ -43,6 +43,25 @@ If Go on macOS is picking Nix's compiler, use Apple Clang for the install:
 CC=/usr/bin/clang CXX=/usr/bin/clang++ go install github.com/melqtx/tork/cmd/tork@latest
 ```
 
+## Update
+
+Installs made with `go install` or from source can update themselves:
+
+```sh
+tork update           # or: tork -update / tork --update
+tork update --check   # only report whether a newer release exists
+tork update --force   # rebuild the latest release even if already current
+```
+
+`tork update` asks the Go module system for the newest tagged release, builds
+it from source with `go install` (so the source is verified against
+sum.golang.org), and swaps the new binary in for the running one. Every
+download, cache, and intermediate file lives in one temporary directory that
+is removed afterwards. It needs Go 1.26.10+ on `PATH`. Homebrew, AUR, and Nix
+installs are left to their package manager. On Windows the previous binary is
+renamed to `tork.exe.old` while it is still running and deleted the next time
+tork starts.
+
 ## Build from source
 
 Building tork requires Go 1.26.10 or newer. From the repository root, run it
