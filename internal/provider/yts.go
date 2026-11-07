@@ -10,13 +10,22 @@ import (
 	"sync"
 )
 
-// ytsMirrors are YTS domains tried in order. yts.mx is often DNS-blocked by
-// ISPs, so the alternates matter for reliability.
+// ytsMirrors are YTS API hosts tried in order. The API itself announces
+// movies-api.accel.li as its base URL ("NOTICE: Base URL moving to …" on
+// yts.bz, yts.lt and yts.am, which still answer with the same API).
 var ytsMirrors = []string{
-	"https://yts.mx",
-	"https://yts.rs",
+	"https://movies-api.accel.li",
+	"https://yts.bz",
 	"https://yts.lt",
 	"https://yts.am",
+}
+
+// ytsRetired are hosts that must never be queried even when an older config
+// still names them: yts.mx no longer resolves, and yts.rs serves a different,
+// non-YTS API - a lookalike, not a mirror.
+var ytsRetired = map[string]bool{
+	"https://yts.mx": true,
+	"https://yts.rs": true,
 }
 
 type YTS struct {
@@ -35,7 +44,7 @@ func NewYTS(client *http.Client, base string) *YTS {
 	bases := []string{}
 	seen := map[string]bool{}
 	for _, b := range append([]string{strings.TrimRight(base, "/")}, ytsMirrors...) {
-		if b != "" && !seen[b] {
+		if b != "" && !seen[b] && !ytsRetired[b] {
 			seen[b] = true
 			bases = append(bases, b)
 		}

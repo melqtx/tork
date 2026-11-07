@@ -16,7 +16,7 @@ func Available(cfg *config.Config) []Source {
 		}
 		out = append(out, s)
 	}
-	priority := map[string]int{"tpb": 1, "therarbg": 2, "limetorrents": 3, "x1337": 4, "eztv": 5, "knaben": 6, "yts": 7, "nyaa": 8}
+	priority := map[string]int{"tpb": 1, "therarbg": 2, "limetorrents": 3, "x1337": 4, "eztv": 5, "torrentscsv": 6, "archive": 7, "subsplease": 8, "knaben": 9, "yts": 10, "nyaa": 11}
 	sort.SliceStable(out, func(i, j int) bool { return priority[out[i].ID] < priority[out[j].ID] })
 	return out
 }
@@ -35,6 +35,12 @@ func Description(s Source) string {
 		return "Movies, TV, games, software and music. May be blocked on some networks."
 	case "eztv_html":
 		return "TV releases via EZTV's API, with TVmaze show-title lookup."
+	case "torrentscsv":
+		return "Open-source community index with live seeder counts. JSON API; no setup."
+	case "archive":
+		return "Internet Archive: public-domain films, audio, software and books, seeded by the Archive."
+	case "subsplease":
+		return "Anime simulcasts straight from the SubsPlease release group."
 	case "yts":
 		return "Movies from YTS."
 	case "nyaa":

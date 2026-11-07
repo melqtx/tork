@@ -23,7 +23,7 @@ type BuiltinSource struct {
 func BuiltinSources() []BuiltinSource {
 	return []BuiltinSource{
 		{"knaben", "Knaben", "knaben", ProviderConfig{Enabled: true, Type: "knaben", Mirror: "https://knaben.org"}},
-		{"yts", "YTS", "yts", ProviderConfig{Enabled: true, Type: "yts", Mirror: "https://yts.mx"}},
+		{"yts", "YTS", "yts", ProviderConfig{Enabled: true, Type: "yts", Mirror: "https://movies-api.accel.li"}},
 		{"nyaa", "Nyaa", "nyaa", ProviderConfig{Enabled: true, Type: "nyaa", Mirror: "https://nyaa.si"}},
 		// Knaben already aggregates TPB; additional sources remain opt-in.
 		{"tpb_movies", "Pirate Bay (movies)", "tpb-movies", ProviderConfig{Type: "tpb_movies", Mirror: "https://apibay.org"}},
@@ -33,6 +33,9 @@ func BuiltinSources() []BuiltinSource {
 		{"tpb", "The Pirate Bay", "tpb", ProviderConfig{Type: "tpb", Mirror: "https://apibay.org"}},
 		{"therarbg", "TheRARBG", "therarbg", ProviderConfig{Type: "therarbg", Mirror: "https://therarbg.to"}},
 		{"limetorrents", "LimeTorrents", "limetorrents", ProviderConfig{Type: "limetorrents", Mirror: "https://www.limetorrents.fun"}},
+		{"torrentscsv", "Torrents.csv", "torrentscsv", ProviderConfig{Type: "torrentscsv", Mirror: "https://torrents-csv.com"}},
+		{"archive", "Internet Archive", "archive", ProviderConfig{Type: "archive", Mirror: "https://archive.org"}},
+		{"subsplease", "SubsPlease", "subsplease", ProviderConfig{Type: "subsplease", Mirror: "https://subsplease.org"}},
 	}
 }
 

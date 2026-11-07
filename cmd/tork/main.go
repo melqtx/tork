@@ -25,6 +25,7 @@ import (
 	"github.com/melqtx/tork/internal/intake"
 	"github.com/melqtx/tork/internal/provider"
 	"github.com/melqtx/tork/internal/proxy"
+	"github.com/melqtx/tork/internal/selfupdate"
 	"github.com/melqtx/tork/internal/session"
 	"github.com/melqtx/tork/internal/sources"
 	"github.com/melqtx/tork/internal/state"
@@ -58,8 +59,18 @@ func main() {
 		}
 	}()
 
+	// A Windows self-update has to leave the previous, still-running binary
+	// behind as tork.exe.old; it can be deleted now that it is not running.
+	selfupdate.RemoveLeftover()
+
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "update", "-update", "--update":
+			if err := runUpdate(os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, "tork:", err)
+				os.Exit(1)
+			}
+			return
 		case "_session":
 			if err := runSessionDaemon(os.Args[2:]); err != nil {
 				fmt.Fprintln(os.Stderr, "tork:", err)
@@ -121,6 +132,7 @@ Usage:
   tork doctor [--record] [--engine] [--proxy-check] [-d DIR]
   tork proxy tor|set [SOCKS5_URL]|off|status
   tork status | stop
+  tork update [--check] [--force]
   tork --version
 
 Commands:
@@ -129,6 +141,8 @@ Commands:
   proxy       configure or inspect strict SOCKS5 routing
   status      show the background transfer session (macOS/Linux)
   stop        save and stop the background transfer session
+  update      rebuild the latest release from source and replace this
+              binary (needs Go; also accepts -update / --update)
 
 Flags:
   -d, --download-dir DIR   where to save downloads (default: your OS
@@ -194,6 +208,41 @@ func runDoctor(args []string) (failed bool, err error) {
 		}
 	}
 	return rep.Failed(), nil
+}
+
+// runUpdate rebuilds the latest tagged release from source and swaps it in
+// for the running binary. See internal/selfupdate for how it stays clean.
+func runUpdate(args []string) error {
+	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	check := fs.Bool("check", false, "only report whether a newer release exists")
+	force := fs.Bool("force", false, "rebuild the latest release even when already up to date")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("usage: tork update [--check] [--force]")
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	u, err := selfupdate.New(resolveVersion(), os.Stdout)
+	if err != nil {
+		return err
+	}
+	res, err := u.Run(ctx, selfupdate.Options{CheckOnly: *check, Force: *force})
+	if err != nil {
+		return err
+	}
+	if res.Updated && session.Supported {
+		// The worker keeps running the binary it was started from. It already
+		// refuses to attach a newer build, but say so up front.
+		if cfg, err := loadSessionConfig("", true); err == nil {
+			if _, err := session.Control(cfg.Dir(), "status"); err == nil {
+				fmt.Println("a background session is still running the previous version; run tork stop, then reopen tork")
+			}
+		}
+	}
+	return nil
 }
 
 func runProxy(args []string) error {
