@@ -62,7 +62,7 @@ func (a *App) editBrowseSearch() tea.Cmd {
 func (a *App) updateBrowseSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if key, ok := msg.(tea.KeyMsg); ok {
 		switch key.String() {
-		case "esc", "down", "tab":
+		case "esc", "down", "tab", "shift+tab":
 			a.results.editSearch = false
 			a.search.input.Blur()
 			return a, nil

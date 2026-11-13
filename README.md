@@ -338,7 +338,8 @@ highlights:
 - **preview** `enter` download what's selected, `space` toggle a file or folder, `←→` fold, `a`/`n` select all or none
 - **downloads** `enter` open the file, `o` show it in your file manager, `p` pause/resume, `s` seed, `v` fully verify completed data, `m` move, `r` relink, `y` copy full path, `Y` copy magnet, `x` remove, `d` delete data
 - On home, `tab` / `shift+tab` moves between the search field and menu choices.
-- In results, `tab` switches between the list and browse menu; choose Downloads there, or use `^d`. From Linux ISOs, `tab` opens downloads. In downloads, `tab` or `esc` returns to where you were.
+- In results, `tab` / `shift+tab` switches between the list and browse menu. While editing the search, either key returns to the list without submitting the draft. Choose Downloads from the browse menu, or use `^d` / `F3` directly; Linux ISOs are a separate choice on Home.
+- From Linux ISOs, `tab` / `shift+tab` opens downloads. In downloads, either key or `esc` returns to where you were.
 - `F1` home, `F2` latest results, `F3` downloads, `F4` sources. These also work from the search field.
 - `esc` goes back or cancels the current dialog; `^c` closes the UI
 - Preview, move/relink, and removal dialogs keep focus until finished or cancelled.
