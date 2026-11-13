@@ -103,6 +103,7 @@ type Config struct {
 	SearchTimeoutSeconds  int                       `yaml:"search_timeout_seconds"`
 	PreviewBeforeDownload bool                      `yaml:"preview_before_download"`
 	HideNSFW              bool                      `yaml:"hide_nsfw"`
+	HideLinuxISOs         bool                      `yaml:"hide_linux_isos,omitempty"`
 	Ranking               rank.Weights              `yaml:"ranking"`
 	Autopilot             AutopilotConfig           `yaml:"autopilot"`
 	Health                HealthConfig              `yaml:"health"`

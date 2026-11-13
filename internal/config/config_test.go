@@ -59,6 +59,34 @@ func TestLoadReadOnlyDoesNotCreateFiles(t *testing.T) {
 	}
 }
 
+func TestLoadHideLinuxISOs(t *testing.T) {
+	for _, loader := range []struct {
+		name string
+		load func(string) (*Config, error)
+	}{{"normal", LoadFrom}, {"read-only", LoadReadOnlyFrom}} {
+		for _, tc := range []struct {
+			name string
+			yaml string
+			hide bool
+		}{{"missing", "", false}, {"visible", "hide_linux_isos: false\n", false}, {"hidden", "hide_linux_isos: true\n", true}} {
+			t.Run(loader.name+"/"+tc.name, func(t *testing.T) {
+				dir := t.TempDir()
+				data := "download_dir: " + filepath.Join(dir, "downloads") + "\n" + tc.yaml
+				if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(data), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				cfg, err := loader.load(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if cfg.HideLinuxISOs != tc.hide {
+					t.Fatalf("HideLinuxISOs = %v, want %v", cfg.HideLinuxISOs, tc.hide)
+				}
+			})
+		}
+	}
+}
+
 func TestLoadReadOnlyPreservesHealthOptIn(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), ".tork")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
