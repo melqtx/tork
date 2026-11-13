@@ -53,11 +53,9 @@ func renderWindow(w *listWindow, total, visible, width int, render func(i int, s
 	for i := start; i < end; i++ {
 		content := truncate(render(i, i == w.cursor), rowWidth)
 		if i == w.cursor {
-			// Nested foreground styles reset the terminal background too. Give the
-			// selected row one continuous style so its highlight survives cells
-			// rendered with their own colors.
-			b.WriteString(styleSelBar.Background(colSel).Render("▍"))
-			b.WriteString(styleSelected.Render(padRight(ansi.Strip(content), rowWidth)))
+			// Apply one style across the gutter, columns and padding. Inline
+			// cell colors must not reset the background partway through the row.
+			b.WriteString(styleSelected.Render("▍" + padRight(ansi.Strip(content), rowWidth)))
 		} else {
 			b.WriteString(" " + padRight(content, rowWidth))
 		}

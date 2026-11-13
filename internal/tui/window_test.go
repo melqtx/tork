@@ -6,7 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 )
 
@@ -116,6 +118,59 @@ func TestRenderWindowHighlightsEntireSelectedRow(t *testing.T) {
 						}
 					}
 				})
+			}
+		}
+	}
+}
+
+func TestResultViewsHighlightEntireRow(t *testing.T) {
+	oldProfile, oldDark := lipgloss.ColorProfile(), lipgloss.HasDarkBackground()
+	t.Cleanup(func() {
+		lipgloss.SetColorProfile(oldProfile)
+		lipgloss.SetHasDarkBackground(oldDark)
+	})
+	for _, profile := range []termenv.Profile{termenv.ANSI256, termenv.TrueColor} {
+		for _, dark := range []bool{false, true} {
+			for _, width := range []int{80, 160} {
+				for _, mode := range []string{"browse", "flat", "grouped", "picks"} {
+					t.Run(fmt.Sprintf("%s/width=%d/dark=%v/profile=%d", mode, width, dark, profile), func(t *testing.T) {
+						lipgloss.SetColorProfile(profile)
+						lipgloss.SetHasDarkBackground(dark)
+						a := browseTestApp()
+						a.width, a.height = width, 30
+						a.results.browser = mode == "browse"
+						a.results.curated = mode == "picks"
+						a.results.grouped = mode == "grouped"
+						a.results.refreshFilter()
+						wantWidth := a.contentWidth()
+						if mode == "browse" {
+							wantWidth = a.browseWidth()
+						}
+						previous := ""
+						for step := 0; step < 2; step++ {
+							selected := ""
+							for _, line := range strings.Split(a.View(), "\n") {
+								plain := ansi.Strip(line)
+								if strings.Contains(plain, "▍") {
+									if selected != "" {
+										t.Fatal("multiple result rows are highlighted")
+									}
+									selected = plain
+									if got := backgroundCells(line); got != wantWidth {
+										t.Fatalf("background covers %d cells, want %d: %q", got, wantWidth, line)
+									}
+								} else if backgroundCells(line) != 0 {
+									t.Fatalf("highlight leaked onto another row: %q", line)
+								}
+							}
+							if selected == "" || selected == previous {
+								t.Fatal("highlight did not follow the selected result")
+							}
+							previous = selected
+							a.Update(tea.KeyMsg{Type: tea.KeyDown})
+						}
+					})
+				}
 			}
 		}
 	}

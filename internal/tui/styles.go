@@ -22,7 +22,7 @@ var (
 	colMuted  = lipgloss.AdaptiveColor{Light: "242", Dark: "245"}
 	colFaint  = lipgloss.AdaptiveColor{Light: "240", Dark: "240"}
 	colBorder = lipgloss.AdaptiveColor{Light: "244", Dark: "238"}
-	colSel    = lipgloss.AdaptiveColor{Light: "153", Dark: "236"} // selection background
+	colSel    = lipgloss.AdaptiveColor{Light: "151", Dark: "23"}  // sage / teal selection background
 	colGreen  = lipgloss.AdaptiveColor{Light: "28", Dark: "114"}  // seeders / healthy
 	colAmber  = lipgloss.AdaptiveColor{Light: "130", Dark: "179"} // caution
 	colRose   = lipgloss.AdaptiveColor{Light: "124", Dark: "174"}
