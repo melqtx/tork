@@ -28,7 +28,6 @@ func inCard(key, label string) keyHint  { return keyHint{key: key, label: label}
 var globalKeys = []keyHint{
 	inCard("F1 / F2", "home / latest results"),
 	inCard("F3 / F4", "downloads / sources"),
-	inCard("tab / shift+tab", "home: focus controls; elsewhere: downloads / back"),
 	inCard("esc", "back or cancel current step"),
 	inCard("^d", "downloads"),
 	inCard("H", "health history"),
@@ -57,6 +56,7 @@ func (a *App) screenKeys() []keyHint {
 			onStrip("↑↓", "move"),
 			onStrip("enter", "download"),
 			onStrip("tab", "downloads"),
+			inCard("shift+tab", "downloads"),
 			onStrip("esc", "back"),
 			inCard("g/G", "top / bottom"),
 			inCard("pgup/pgdn", "page"),
@@ -64,14 +64,20 @@ func (a *App) screenKeys() []keyHint {
 
 	case screenResults:
 		if a.results.browser && !a.results.pickPanel && !a.results.sourcePanel {
-			return []keyHint{onStrip("enter", "preview"), onStrip("/", "search"), onStrip("tab", "browse"), onStrip("f", "filter"), inCard("c / ←", "categories"), inCard("o", "sort: relevance / seeders / size"), inCard("z", "hide zero seeders"), inCard("r", "reset filters"), inCard("ctrl+f", "resolution and size filters"), inCard("s", "source status"), inCard("D", "download now"), inCard("Y", "copy magnet"), onStrip("esc", "home"), inCard("pgup/pgdn", "page"), inCard("g/G", "top / bottom")}
+			tabLabel := "browse"
+			if a.results.filtering {
+				tabLabel = "downloads"
+			} else if a.results.navFocused || a.results.editSearch {
+				tabLabel = "results"
+			}
+			return []keyHint{onStrip("enter", "preview"), onStrip("/", "search"), onStrip("tab", tabLabel), inCard("shift+tab", tabLabel), onStrip("f", "filter"), inCard("c / ←", "categories"), inCard("o", "sort: relevance / seeders / size"), inCard("z", "hide zero seeders"), inCard("r", "reset filters"), inCard("ctrl+f", "resolution and size filters"), inCard("s", "source status"), inCard("D", "download now"), inCard("Y", "copy magnet"), onStrip("esc", "home"), inCard("pgup/pgdn", "page"), inCard("g/G", "top / bottom")}
 		}
 
 		if a.results.sourcePanel {
-			return []keyHint{onStrip("↑↓", "choose source"), onStrip("t", "retry source"), onStrip("s / esc", "back to results"), inCard("pgup/pgdn", "page"), inCard("g/G", "top / bottom")}
+			return []keyHint{onStrip("↑↓", "choose source"), onStrip("t", "retry source"), onStrip("s / esc", "back to results"), inCard("tab / shift+tab", "downloads"), inCard("pgup/pgdn", "page"), inCard("g/G", "top / bottom")}
 		}
 		if a.results.curated {
-			return []keyHint{onStrip("enter", a.resultEnterLabel()), onStrip("/", "filters"), onStrip("tab", "downloads"), onStrip("esc", "back"), inCard("↑↓", "choose a release"), inCard("s", "source status for this search"), inCard("v", "full list / top picks"), inCard("f", "advanced text filter"), inCard("D", "download now, skipping the preview"), inCard("Y", "copy magnet")}
+			return []keyHint{onStrip("enter", a.resultEnterLabel()), onStrip("/", "filters"), onStrip("tab", "downloads"), inCard("shift+tab", "downloads"), onStrip("esc", "back"), inCard("↑↓", "choose a release"), inCard("s", "source status for this search"), inCard("v", "full list / top picks"), inCard("f", "advanced text filter"), inCard("D", "download now, skipping the preview"), inCard("Y", "copy magnet")}
 		}
 		if a.results.grouped {
 			return []keyHint{
@@ -80,6 +86,7 @@ func (a *App) screenKeys() []keyHint {
 				inCard("←→", "fold"),
 				onStrip("enter", a.resultEnterLabel()),
 				onStrip("tab", "downloads"),
+				inCard("shift+tab", "downloads"),
 				inCard("v", "top picks"),
 				onStrip("esc", "back"),
 				inCard("space", "fold this group"),
@@ -95,6 +102,7 @@ func (a *App) screenKeys() []keyHint {
 			inCard("↑↓", "move"),
 			onStrip("enter", a.resultEnterLabel()),
 			onStrip("tab", "downloads"),
+			inCard("shift+tab", "downloads"),
 			onStrip("/", "filter"),
 			inCard("o", "sort: "+a.results.sort.String()),
 			inCard("v", "top picks"),
@@ -127,12 +135,12 @@ func (a *App) screenKeys() []keyHint {
 			return []keyHint{onStrip("↑↓", "choose"), onStrip("enter", "add & check"), onStrip("esc", "back")}
 		}
 		if a.sources.editor != nil {
-			return []keyHint{onStrip("^t", "test"), onStrip("^s", "test & save"), onStrip("tab", "next field"), onStrip("esc", "cancel"), inCard("←→ / space", "change source type")}
+			return []keyHint{onStrip("^t", "test"), onStrip("^s", "test & save"), onStrip("tab", "next field"), inCard("shift+tab", "previous field"), onStrip("esc", "cancel"), inCard("←→ / space", "change source type")}
 		}
 		if a.sources.removing != "" {
 			return []keyHint{onStrip("y", "remove source"), onStrip("esc", "cancel")}
 		}
-		return []keyHint{onStrip("a", "add sources"), onStrip("enter", "enable / disable"), onStrip("r", "check enabled"), onStrip("esc", "back"), inCard("t", "test selected source"), inCard("↑↓", "choose"), inCard("space", "enable / disable"), inCard("e", "edit custom source"), inCard("x", "remove custom source"), inCard("pgup/pgdn", "page"), inCard("g/G", "top / bottom")}
+		return []keyHint{onStrip("a", "add sources"), onStrip("enter", "enable / disable"), onStrip("r", "check enabled"), onStrip("esc", "back"), inCard("tab / shift+tab", "downloads"), inCard("t", "test selected source"), inCard("↑↓", "choose"), inCard("space", "enable / disable"), inCard("e", "edit custom source"), inCard("x", "remove custom source"), inCard("pgup/pgdn", "page"), inCard("g/G", "top / bottom")}
 
 	case screenHealth:
 		return []keyHint{
@@ -140,6 +148,7 @@ func (a *App) screenKeys() []keyHint {
 			onStrip("r", "re-check"),
 			onStrip("esc", "back"),
 			onStrip("q", "quit"),
+			inCard("tab / shift+tab", "downloads"),
 		}
 
 	default:
@@ -148,6 +157,7 @@ func (a *App) screenKeys() []keyHint {
 			onStrip("enter", "open"),
 			onStrip("p", "pause"),
 			onStrip("esc", "back"),
+			inCard("tab / shift+tab", "back"),
 			inCard("x", "remove"),
 			inCard("s", "seed on or off"),
 			inCard("v", "verify completed data"),

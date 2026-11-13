@@ -24,6 +24,41 @@ func browseTestApp() *App {
 	a.results.refreshFilter()
 	return a
 }
+
+func TestBrowseTabKeysLeaveSearchWithoutSubmitting(t *testing.T) {
+	for _, key := range []tea.KeyType{tea.KeyTab, tea.KeyShiftTab} {
+		t.Run(tea.KeyMsg{Type: key}.String(), func(t *testing.T) {
+			a := browseTestApp()
+			a.results.category = 2
+			a.results.filterIn.SetValue("seeders:>5")
+			a.results.refreshFilter()
+			selected := rowIdentity(a.results.rows[a.results.visible[a.results.win.cursor]])
+			a.editBrowseSearch()
+			a.search.input.SetValue("unsubmitted draft")
+
+			a.Update(tea.KeyMsg{Type: key})
+			if a.results.editSearch || a.search.input.Focused() || a.results.navFocused || a.screen != screenResults {
+				t.Fatal("Tab must leave the search field and focus the results list")
+			}
+			if a.results.query != "linux" || a.results.category != 2 || a.results.filterIn.Value() != "seeders:>5" || a.searchSeq != 0 {
+				t.Fatal("leaving search submitted the draft or changed the current search")
+			}
+			if got := rowIdentity(a.results.rows[a.results.visible[a.results.win.cursor]]); got != selected {
+				t.Fatal("leaving search changed the selected result")
+			}
+
+			a.Update(tea.KeyMsg{Type: key})
+			if !a.results.navFocused {
+				t.Fatal("next Tab must focus the browse menu")
+			}
+			a.Update(tea.KeyMsg{Type: key})
+			if a.results.navFocused || a.screen != screenResults {
+				t.Fatal("Tab must return from the browse menu to results")
+			}
+		})
+	}
+}
+
 func TestBrowseFiltersWithoutLosingSearch(t *testing.T) {
 	a := browseTestApp()
 	a.Update(tea.KeyMsg{Type: tea.KeyTab})
