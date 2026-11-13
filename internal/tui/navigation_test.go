@@ -1,11 +1,13 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/melqtx/tork/internal/aggregator"
+	"github.com/melqtx/tork/internal/config"
 )
 
 func navigationApp() *App {
@@ -94,6 +96,69 @@ func TestTabMovesHomeFocusAndDownloadsReturnsToResults(t *testing.T) {
 		a.Update(tea.KeyMsg{Type: back})
 		if a.screen != screenResults || a.results.filterIn.Value() != "res:1080p" {
 			t.Fatal("back should preserve results")
+		}
+	}
+}
+
+func TestHomeMenuRespectsHideLinuxISOs(t *testing.T) {
+	for _, hide := range []bool{false, true} {
+		for _, query := range []string{"", "saved query"} {
+			t.Run(fmt.Sprintf("hide=%v/query=%q", hide, query), func(t *testing.T) {
+				a := navigationApp()
+				a.cfg = &config.Config{HideLinuxISOs: hide}
+				a.results.query = query
+				want := []screen{screenDownloads}
+				if !hide {
+					want = append(want, screenISOs)
+				}
+				want = append(want, screenSources)
+				if query != "" {
+					want = append(want, screenResults)
+				}
+				menu := a.homeDestinations()
+				if len(menu) != len(want) {
+					t.Fatalf("menu has %d entries, want %d", len(menu), len(want))
+				}
+				for i, target := range want {
+					if menu[i].screen != target {
+						t.Fatalf("entry %d targets %v, want %v", i, menu[i].screen, target)
+					}
+				}
+				view := a.homeMenuView()
+				if strings.Contains(view, "linux isos") == hide {
+					t.Fatal("ISO menu visibility does not match config")
+				}
+				for _, line := range strings.Split(view, "\n") {
+					if strings.Contains(line, "sources") && !strings.Contains(line, "0 enabled · add more indexes") {
+						t.Fatal("source description shifted after hiding ISOs")
+					}
+					if strings.Contains(line, "back to results") && !strings.Contains(line, query) {
+						t.Fatal("results description lost the saved query")
+					}
+				}
+				for _, key := range []tea.KeyType{tea.KeyTab, tea.KeyShiftTab} {
+					a.focusSearch()
+					for i := range want {
+						index := i
+						if key == tea.KeyShiftTab {
+							index = len(want) - 1 - i
+						}
+						a.Update(tea.KeyMsg{Type: key})
+						if !a.search.menuFocused || a.search.menu != index || a.screen != screenSearch {
+							t.Fatal("Tab did not focus the expected visible destination")
+						}
+					}
+					a.Update(tea.KeyMsg{Type: key})
+					if a.search.menuFocused || !a.search.input.Focused() {
+						t.Fatal("Tab did not wrap back to search")
+					}
+				}
+				a.Update(tea.KeyMsg{Type: tea.KeyDown})
+				a.Update(tea.KeyMsg{Type: tea.KeyEnter})
+				if a.screen != screenDownloads {
+					t.Fatal("Home selection did not open downloads")
+				}
+			})
 		}
 	}
 }

@@ -19,7 +19,11 @@ type homeDest struct {
 }
 
 func (a *App) homeDestinations() []homeDest {
-	menu := []homeDest{{"downloads", screenDownloads}, {"linux isos", screenISOs}, {"sources", screenSources}}
+	menu := []homeDest{{"downloads", screenDownloads}}
+	if a.cfg == nil || !a.cfg.HideLinuxISOs {
+		menu = append(menu, homeDest{"linux isos", screenISOs})
+	}
+	menu = append(menu, homeDest{"sources", screenSources})
 	if a.results.query != "" {
 		menu = append(menu, homeDest{"back to results", screenResults})
 	}
@@ -252,15 +256,20 @@ func (a *App) homeMenuView() string {
 	if a.results.query != "" {
 		resultDesc = a.results.query
 	}
-	descs := []string{a.downloadsSummary(), "official images", a.sourcesSummary(), resultDesc}
+	descs := map[screen]string{
+		screenDownloads: a.downloadsSummary(),
+		screenISOs:      "official images",
+		screenSources:   a.sourcesSummary(),
+		screenResults:   resultDesc,
+	}
 	menu := a.homeDestinations()
 	rows := make([]string, len(menu))
 	for i, d := range menu {
 		name := padRight(d.name, 16)
 		if a.search.menuFocused && i == a.search.menu {
-			rows[i] = styleBrand.Render("→ ") + styleFg.Bold(true).Render(name) + " " + styleDim.Render(descs[i])
+			rows[i] = styleBrand.Render("→ ") + styleFg.Bold(true).Render(name) + " " + styleDim.Render(descs[d.screen])
 		} else {
-			rows[i] = styleFaint.Render("  ") + styleDim.Render(name) + " " + styleFaint.Render(descs[i])
+			rows[i] = styleFaint.Render("  ") + styleDim.Render(name) + " " + styleFaint.Render(descs[d.screen])
 		}
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)

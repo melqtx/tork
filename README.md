@@ -62,6 +62,15 @@ go build -o ./bin/tork ./cmd/tork
 Config lives in `~/.tork/`; downloads land in `~/Downloads/tork` (change with
 `tork -d DIR`).
 
+To hide Linux ISOs from the Home menu, add this to `~/.tork/config.yaml`:
+
+```yaml
+hide_linux_isos: true
+```
+
+Restart tork to apply it; run `tork stop` first if it runs in the background.
+Set it to `false` or remove the line to show Linux ISOs again.
+
 Already have a torrent? Paste its magnet link, bare infohash, local `.torrent`
 path, or `.torrent` URL into the same home search box. To go straight to the
 quiet file preview:
