@@ -1,8 +1,13 @@
 package tui
 
 import (
+	"fmt"
+	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 func TestListWindowMove(t *testing.T) {
@@ -78,4 +83,75 @@ func TestRenderWindowPadsAndSelects(t *testing.T) {
 	if lines[2] != "" || lines[3] != "" {
 		t.Errorf("padding lines not empty: %q, %q", lines[2], lines[3])
 	}
+}
+
+// A colored cell used to reset the selection background for every later column.
+// Count the cells that actually carry a background, including trailing padding.
+func TestRenderWindowHighlightsEntireSelectedRow(t *testing.T) {
+	oldProfile, oldDark := lipgloss.ColorProfile(), lipgloss.HasDarkBackground()
+	t.Cleanup(func() {
+		lipgloss.SetColorProfile(oldProfile)
+		lipgloss.SetHasDarkBackground(oldDark)
+	})
+	for _, profile := range []termenv.Profile{termenv.ANSI256, termenv.TrueColor} {
+		for _, dark := range []bool{false, true} {
+			for _, width := range []int{1, 20, 80, 160} {
+				t.Run(fmt.Sprintf("profile=%d/dark=%v/width=%d", profile, dark, width), func(t *testing.T) {
+					lipgloss.SetColorProfile(profile)
+					lipgloss.SetHasDarkBackground(dark)
+					w := listWindow{cursor: 1}
+					out := renderWindow(&w, 3, 3, width, func(_ int, _ bool) string {
+						return styleFg.Render("Linux 界") + "  " + styleDim.Render("2.0 GiB") + "  " + styleSeeders.Render("42") + "  " + providerTag("knaben")
+					})
+					for row, line := range strings.Split(out, "\n") {
+						if got := lipgloss.Width(line); got != width {
+							t.Fatalf("row %d width = %d, want %d", row, got, width)
+						}
+						want := 0
+						if row == 1 {
+							want = width
+						}
+						if got := backgroundCells(line); got != want {
+							t.Fatalf("row %d background covers %d cells, want %d: %q", row, got, want, line)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+// Interpret SGR state so a reset between columns cannot pass the test.
+func backgroundCells(line string) int {
+	sgr := regexp.MustCompile(`\x1b\[([0-9;]*)m`)
+	background, cells, position := false, 0, 0
+	for _, match := range sgr.FindAllStringSubmatchIndex(line, -1) {
+		if background {
+			cells += lipgloss.Width(line[position:match[0]])
+		}
+		params := strings.Split(line[match[2]:match[3]], ";")
+		for i := 0; i < len(params); i++ {
+			switch params[i] {
+			case "", "0", "49":
+				background = false
+			case "38", "48":
+				if params[i] == "48" {
+					background = true
+				}
+				// Color indices and RGB components are not SGR commands.
+				if i+1 < len(params) {
+					if params[i+1] == "5" {
+						i += 2
+					} else if params[i+1] == "2" {
+						i += 4
+					}
+				}
+			}
+		}
+		position = match[1]
+	}
+	if background {
+		cells += lipgloss.Width(line[position:])
+	}
+	return cells
 }
