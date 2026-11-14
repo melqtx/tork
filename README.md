@@ -1,109 +1,264 @@
 # tork
 
-```
- /\_/\
-( ^.^ )  a cozy terminal for torrent search + verified downloads
- > ^ <
-```
+Search torrents, choose your files, and manage downloads from your terminal.
 
-You name it, the cat fetches it. Search public torrent indexes, compare the
-actual swarm, and keep downloads in one calm little terminal app.
+Search several indexes at once, compare sizes and seeders, and preview files
+before starting a download. Matching torrents from different indexes share one
+row and combine their trackers. Official Linux images have their own browser.
 
-![tork home screen](docs/home.png)
+![Tork running in Ghostty: search results, downloads, and source management](docs/demo.gif)
 
-## What it does
-
-- Search Knaben, YTS, Nyaa, TheRARBG, LimeTorrents, and all Pirate Bay categories,
-  plus your own RSS or Torznab feeds.
-- Fold the same torrent listed on several indexes into a single row, and grab it
-  with every tracker those indexes knew about between them.
-- Group duplicate releases, rank the useful ones, and surface seeders, size,
-  source, and noisy results before you download.
-- Preview a magnet, queue it with one key, then pause, verify, seed, move, or
-  relink it from the downloads screen.
-- Browse and grab current official Linux ISOs from Ubuntu, Debian, Fedora,
-  Arch, NixOS, Proxmox, and more. No sketchy mirror hunting.
-- Run `tork doctor` when a provider or local setup feels off, and use the swarm
-  compass to see whether your sources and downloads are healthy over time.
-
-![tork search results](docs/results.png)
+[Install](#install) · [Get started](#get-started) · [Keys](#keys) ·
+[Search sources](#search-sources) · [Configuration](#configuration) ·
+[Troubleshooting](#troubleshooting) · [Build from source](#build-from-source)
 
 ## Install
 
-```sh
-brew tap melqtx/tap && brew install tork             # macOS (Homebrew)
-yay -S tork                                          # Arch (AUR)
-nix run github:melqtx/tork                           # Nix
-go install github.com/melqtx/tork/cmd/tork@latest    # Go 1.26.10+
-```
-
-If Go on macOS is picking Nix's compiler, use Apple Clang for the install:
+### macOS (Homebrew)
 
 ```sh
-CC=/usr/bin/clang CXX=/usr/bin/clang++ go install github.com/melqtx/tork/cmd/tork@latest
+brew tap melqtx/tap
+brew install tork
 ```
 
-## Build from source
-
-Building tork requires Go 1.26.10 or newer. From the repository root, run it
-directly without creating a binary:
+### Arch Linux (AUR)
 
 ```sh
-go run ./cmd/tork
+yay -S tork
 ```
 
-Or build and run a local binary:
+### Nix
 
 ```sh
-go build -o ./bin/tork ./cmd/tork
-./bin/tork
+nix run github:melqtx/tork
 ```
 
-Config lives in `~/.tork/`; downloads land in `~/Downloads/tork` (change with
-`tork -d DIR`).
+### Go
 
-To hide Linux ISOs from the Home menu, add this to `~/.tork/config.yaml`:
+Requires Go 1.26.10 or newer and a C compiler.
 
-```yaml
-hide_linux_isos: true
+```sh
+go install github.com/melqtx/tork/cmd/tork@latest
 ```
 
-Restart tork to apply it; run `tork stop` first if it runs in the background.
-Set it to `false` or remove the line to show Linux ISOs again.
+Make sure Go's binary directory is on your `PATH`. See
+[Build from source](#build-from-source) to run the current code locally.
 
-Already have a torrent? Paste its magnet link, bare infohash, local `.torrent`
-path, or `.torrent` URL into the same home search box. To go straight to the
-quiet file preview:
+## Get started
+
+```sh
+tork
+```
+
+1. Type a search and press **Enter**.
+2. Use **↑↓** to compare results. Check the size, source, and reported seeders.
+3. Press **Enter** to preview. Use **Space** to choose files, then **Enter** to
+   start the download.
+4. Press **Ctrl+D** or **F3** to open Downloads. **F2** returns to your latest search.
+
+These steps use the default preview setting. **D** on a result downloads it
+without the preview. Seeder counts help compare results; they do not guarantee speed.
+
+Already have a torrent? Paste a magnet, infohash, torrent URL, or local `.torrent`
+path into the Home search field, or pass it on the command line:
 
 ```sh
 tork 'magnet:?xt=urn:btih:…'
-tork ~/Downloads/linux.iso.torrent
+tork ./linux.iso.torrent
 tork 'https://example.org/linux.iso.torrent'
 tork --torrent-url 'https://example.org/download?id=123'
 ```
 
-Nothing starts downloading until you confirm it. `enter` takes whatever is
-selected, from wherever the cursor happens to be. Tracker adverts, NFO and
-checksum files, and sample clips start deselected in a collapsed Extras group — the header says how many
-were grouped, and `a` puts them back. Expand the group with `→` to inspect them,
-or select the entire group with Space. The preview shows selected size, the save
-folder, and the Enter-to-download action together above the file list. If a bare hash is still finding metadata
-peers, wait to choose individual files or press enter to queue the whole
-torrent immediately. Once metadata arrives, tork keeps a private
-bounded copy under `~/.tork/metainfo/`, so reopening or resuming that magnet no
-longer depends on finding a metadata peer.
+Downloads go to your OS Downloads folder under `tork`. To use another folder:
 
-Cache defaults are conservative and can be changed in `~/.tork/config.yaml`:
+```sh
+tork -d /path/to/downloads
+```
+
+### Keep transfers running
+
+On **macOS and Linux**, closing the UI leaves approved downloads and seeding
+running. Reopen `tork` to reconnect to the same session.
+
+```sh
+tork status    # show the background session status
+tork stop      # save state and stop transfers; keep the files
+```
+
+Only one terminal can attach at a time. Transfers need the computer to stay
+awake; tork does not install an OS startup service.
+
+Use `tork --foreground` to stop transfers when the UI closes. Windows uses this
+foreground behavior. Stop an existing background session before switching modes
+or changing its download folder, proxy, or engine settings.
+
+## Keys
+
+Press **?** for all keys on the current screen.
+
+| Key | Action |
+| --- | --- |
+| **↑↓** | Move through results or menu choices |
+| **Enter** | Open the selection; confirm a preview to download |
+| **Space** | Choose a file or folder in the preview |
+| **Tab / Shift+Tab** | Move between Home controls or the results list and browse menu |
+| **Ctrl+D / F3** | Open Downloads |
+| **F1 / F2 / F4** | Home / latest results / Sources |
+| **Esc** | Go back or cancel the current step |
+| **Ctrl+C** | Close the UI |
+
+Dialogs keep focus until you finish or cancel them. From Downloads, **Tab**, **Shift+Tab**,
+or **Esc** returns to the previous screen.
+
+In search results:
+
+| Key | Action |
+| --- | --- |
+| **/** | Edit the search; Tab or Shift+Tab returns without submitting the draft |
+| **f** | Filter the current results |
+| **Ctrl+F** | Choose resolution, maximum size, and ranking preferences |
+| **o** | Sort by relevance, seeders, or size |
+| **z** | Hide results with no reported seeders |
+| **r** | Reset filters while keeping the selected category |
+| **s** | Check each source's outcome for this search |
+| **Y** | Copy the selected magnet |
+| **v / V** | Switch to resolution picks / release groups |
+
+In Downloads, **p** pauses or resumes, **v** verifies completed files, **m** moves
+them, and **r** relinks files already on disk. **y** copies the path, **Y** copies
+the magnet, **x** removes the saved download, and **d** also deletes its files.
+
+<details>
+<summary>Advanced search filters</summary>
+
+Press **f** and combine plain text with filters:
+
+```text
+ubuntu seeders:>5 size:<8gb
+res:1080p,2160p codec:x265 -source:cam
+provider:nyaa category:anime is:trusted
+is:hdr -is:dv
+```
+
+Fields: `res`, `seeders`, `size`, `source`, `codec`, `provider`, and `category`.
+Attributes: `is:trusted`, `is:hdr`, `is:dv`, and `is:pack`.
+Use `-` before a filter to exclude matches. Size limits exclude unknown sizes.
+
+</details>
+
+## Search sources
+
+Open **Sources** with **F4**. Knaben, YTS, and Nyaa are enabled by default.
+The Pirate Bay, EZTV, 1337x, TheRARBG, and LimeTorrents are also built in.
+
+- **Enter / Space:** enable or disable a source.
+- **a:** add a source from the catalog; type its name to find it.
+- **t:** test the selected source. **r:** recheck all enabled sources.
+
+Changes save to your config and apply to the next search. Current results stay
+usable. Adding more sources is optional; an upgrade keeps your existing choices.
+
+Some sites block automated requests or become unavailable. Tork shows those
+failures separately from an empty search. Blocked sources pause for ten minutes;
+**t** retries immediately. Other sources keep working.
+
+<details>
+<summary>Add your own RSS or Torznab source</summary>
+
+In Sources, press **a** and choose **Custom RSS / Torznab…**. Give it a name,
+choose the type, and enter the endpoint. For Torznab, enter the API key in the
+masked field. Jackett and Prowlarr can provide Torznab endpoints.
+
+- **RSS:** the search URL needs `{query}` where the search text belongs.
+- **Torznab:** use the API endpoint; tork adds the search parameters.
+- **Ctrl+T:** test the draft. **Ctrl+S:** test and save.
+- **e / x** in Sources: edit or remove a custom source.
+
+Entries must include a valid v1 magnet or infohash. Private trackers and feeds
+that only return `.torrent` download URLs are not supported. A normal website URL
+is not an RSS search feed. If a check fails, fix the draft or follow the prompt to
+save it disabled.
+
+Custom-source saves keep the config private (`0600` on Unix). Keep API keys and
+credential-bearing URLs out of shared configs.
+
+</details>
+
+## Configuration
+
+Config lives in `~/.tork/config.yaml`. Common options, shown with their defaults:
+
+```yaml
+hide_linux_isos: false
+preview_before_download: true
+seed_after_complete: true
+hide_nsfw: true
+```
+
+Set `hide_linux_isos: true` to hide Linux ISOs from Home. Set it to `false`, or
+remove the line, to show them again. Set `seed_after_complete: false` to stop
+seeding when a new download finishes.
+
+Restart tork after editing the config. If it runs in the background, close the
+UI and run `tork stop` first. To use a separate config and session:
+
+```sh
+tork --config-dir ./my-tork-config
+```
+
+### SOCKS5 proxy
+
+For a local Tor proxy:
+
+```sh
+tork proxy tor
+tork proxy status
+tork doctor --proxy-check
+```
+
+Or set your own endpoint:
+
+```sh
+tork proxy set socks5://127.0.0.1:1080
+```
+
+For credentials, run `tork proxy set` without the URL and use the hidden prompt.
+Both `socks5://` and `socks5h://` resolve names through the proxy. Use
+`tork proxy off` to disable it; restart the background session after changes.
+
+Proxy mode uses the configured route for searches and downloads and fails closed.
+It disables DHT, uTP, UDP trackers, incoming peers, UPnP, and WebTorrent, which can
+reduce peer availability. A proxy is not a guarantee of anonymity. The Tor badge
+appears only after a live exit check; a failed check is shown as unavailable.
+
+<details>
+<summary>Cache, direct downloads, torrent limits, and health checks</summary>
+
+These settings are optional. Edit only the ones you need.
 
 ```yaml
 metadata_cache:
   enabled: true
   max_mb: 256
   max_entries: 512
+
+direct:
+  max_connections: 4
+  min_chunk_size: "10MB"
+  enable_chunking: true
+
+health:
+  enabled: false
+  interval_hours: 24
 ```
 
-Advanced torrent-client limits are optional; zero or omitted values retain the
-anacrolix defaults:
+The metadata cache avoids finding the same torrent metadata again. Direct HTTP
+downloads use parallel byte ranges when supported and fall back to one connection
+otherwise. Published checksums, when available, are checked before the final file
+is accepted. **v** in Downloads rechecks completed torrent pieces or direct-file
+checksums. Mismatches are moved aside with a `.corrupt` suffix before retrying.
+
+Advanced torrent overrides use zero or omitted values to keep library defaults:
 
 ```yaml
 torrent_tuning:
@@ -120,354 +275,28 @@ torrent_tuning:
   no_upload: false
 ```
 
-Transfer rates are client-wide bytes per second; dial rate is dials per second.
-`no_upload` prevents all torrent uploads, including seeding. The torrent library
-does not expose its webseed concurrency as a runtime client setting, so tork
-does not claim to configure it here.
+Rate limits are client-wide bytes per second; dial rate is dials per second.
+`no_upload: true` also prevents seeding.
 
-Direct HTTP downloads use verified byte ranges when the server supports them:
+Automatic health checks are off by default. Enabling them sends the generic
+`1080p` canary to enabled sources when the saved check is old enough. **H** opens
+saved health history. Health data stays local.
 
-```yaml
-direct:
-  max_connections: 4
-  min_chunk_size: "10MB"
-  enable_chunking: true
-```
+</details>
 
-The connection limit is per direct download. tork confirms range support and a
-stable resource before splitting; small, unknown-length, or incompatible
-responses automatically use one sequential connection. Paused segmented
-transfers resume from an internal `.part.meta` sidecar, and the final filename
-still appears only after its published SHA-1, SHA-256, or SHA-512 digest is
-verified.
+<details>
+<summary>Autopilot (experimental)</summary>
 
-## SOCKS5 proxy
-
-For the usual local Tor setup, one command is enough:
+Autopilot turns a request into a reviewable download plan. Start with a dry run:
 
 ```sh
-tork proxy tor
-tork doctor --proxy-check
+tork autopilot --dry-run --min-seeders 5 --max-size 8GB "ubuntu amd64"
 ```
 
-`tork proxy status` shows the redacted endpoint and strict-mode limits without
-making a network request. To use another unauthenticated SOCKS5 proxy:
-
-```sh
-tork proxy set socks5://127.0.0.1:1080
-```
-
-For an authenticated endpoint, run `tork proxy set` without an argument and
-enter the URL through hidden terminal input, so it never appears in shell
-history or a process list. You can also configure tork by hand:
-
-```yaml
-proxy:
-  socks5: "socks5://user:password@127.0.0.1:9050"
-```
-
-`socks5://` and `socks5h://` both resolve destination names at the proxy.
-Username and password are optional and must be URL-encoded. For Tor, the usual
-local endpoint is `socks5://127.0.0.1:9050`.
-
-Credentials require `~/.tork/config.yaml` to be a regular file with mode
-`0600`. A normal tork launch tightens an insecure regular config once; `tork
-doctor` stays read-only and reports the problem instead.
-
-Proxy mode is strict: searches, ISO requests, HTTP trackers, and outgoing TCP
-peers use the proxy. tork disables DHT, uTP, UDP trackers, inbound peers, port
-forwarding, and WebTorrent rather than risk a direct connection. Downloads may
-find fewer peers as a result. The TUI keeps a visible `SOCKS strict` badge; it
-becomes `((o)) Tor strict` only after a live verification confirms a Tor exit. A
-check-service outage is shown as unavailable, not as a leak, and tork never
-falls back to a direct connection.
-
-## Keep an eye on it
-
-`tork doctor` is read-only by default and checks config, disk, state, cached
-metadata, and provider reachability. Add `--engine` for an opt-in listener
-check, `--record` to save provider results in `~/.tork/health.json`, or
-`--proxy-check` to ask the Tor Project's check service what egress IP it sees
-through your configured proxy. That proves this explicit HTTP check used the
-route; it is not a promise of anonymity or a claim about your normal
-connection. Health history contains local provider timings plus torrent names
-and swarm counts; it is never uploaded.
-
-Automatic checks are off by default. Enable a local daily check with:
-
-```yaml
-health:
-  enabled: true
-  interval_hours: 24
-```
-
-The check sends the generic `1080p` canary query to enabled providers. Press
-`H` in tork to view saved source and swarm history, or `r` there to record a
-manual check.
-
-## Search sources
-
-Open **sources** from the home menu to see every built-in index, including
-TheRARBG, LimeTorrents, The Pirate Bay (all categories), EZTV, and 1337x.
-Use `↑↓` to choose a source and
-`space` or `enter` to enable or disable it. Changes save to
-`~/.tork/config.yaml` and apply to the next search. Current search results and
-their magnet resolvers remain usable, even if their source is disabled or
-removed. Knaben, YTS, and Nyaa remain enabled by default; existing choices
-survive upgrades.
-
-Enabled sources are checked automatically when you open Sources or enable one.
-Recent readings are reused for five minutes. Press `r` to recheck all enabled
-sources, or `t` to test the selected source (including a disabled one). Checks
-send the `1080p` canary using the configured proxy and search timeout. A valid
-empty feed is **working · 0 results**. Authentication failures, blocks,
-timeouts, non-feed responses, and unsupported torrent links are separate
-outcomes. Individual tests never change enabled/disabled choices. Search
-reachability does not guarantee that a download will work.
-
-A source blocked by site protection pauses for ten minutes in the current
-session; other enabled sources keep returning results. Searches retry it after
-the pause expires. `t` retries immediately in Sources or the `s` search-status
-panel. A successful check clears the pause. No source is silently disabled,
-and retrying never changes your proxy or mirror settings. Rebuilding the source
-configuration resets pauses so a changed endpoint can be tried immediately.
-
-The default EZTV integration uses its [official JSON API](https://eztvx.to/api/)
-instead of the blocked HTML search. Show names are resolved to IMDb IDs using
-[TVmaze's public API](https://www.tvmaze.com/api); those lookups use the same
-configured proxy. Searches inspect up to 200 releases for each of the three
-closest matching shows. Explicit custom EZTV HTML mirrors remain supported.
-1337x tries its maintained public domains; site-side blocking is reported as
-**blocked**, and never as a successful empty response. Its operator publishes
-domain and availability notices on the [official status page](https://1337x-status.org/).
-
-### Add a source
-
-Press `a` in Sources to open the ready-to-use source catalog. Type a name to
-filter, choose with `↑↓`, and press `enter` to add it. Tork saves it enabled,
-checks it in the background, and keeps the picker open so you can add another.
-Press `esc` when finished to see source check outcomes. No endpoint URL, account,
-API key, or additional software is needed for a built-in source. A failed
-network check leaves your explicit enabled choice intact; disable it with
-`enter` or `space` if you do not want to search it.
-
-- **TheRARBG** adds broad movie, TV, games, software, music and book search.
-  This is TheRARBG, a separate public index, not the original RARBG service.
-- **LimeTorrents** adds broad movie, TV, games, software, music and anime search.
-  Search returns listings immediately; a selected listing's magnet is fetched
-  on demand. Sponsored download links are not search results.
-- **The Pirate Bay** searches every category, including applications and games.
-  The older movie-only and TV-only configurations remain compatible, but the
-  add catalog offers the all-category option to avoid confusing duplicates.
-
-The new sources are opt-in. Updating Tork does not silently expand the list of
-sites an existing installation searches. Source categories continue through the
-shared content filter, including adult categories from all-category searches.
-
-### Advanced: connect your own feed
-
-Choose **Custom RSS / Torznab…** at the bottom of the add catalog. Enter a name,
-choose the type with `←→` on the Type row, and enter its endpoint. `tab` moves
-between fields; `esc` cancels without saving.
-
-- **Torznab API:** use a public indexer's Torznab endpoint, including one copied
-  from Jackett or Prowlarr. Enter its API key in the masked field. If a copied
-  URL already includes `apikey=...`, testing moves that key into the masked
-  field. Tork supplies `t=search`, `q`, and `extended=1` itself, preserving other
-  query parameters such as categories.
-- **RSS search feed:** use a search URL with `{query}` where the escaped search
-  text belongs. A regular website address is not a search feed.
-
-Press `ctrl+s` to test and save in one step, or `ctrl+t` to test first.
-If the check fails, the editor stays open for repair; press `ctrl+s` again to
-save it disabled. A successful check
-saves the source enabled. Failed or partially supported sources can
-be saved **disabled** for later repair. Changing a draft invalidates its check;
-an old response cannot validate new settings. Custom-source saves make the
-config owner-readable/writable only (`0600` on Unix), including RSS URLs that
-contain credentials. Never share a credential-bearing config file.
-
-Use `e` to edit a custom source; it keeps the same result identity when renamed.
-Retest edited settings before saving if you want the source enabled. Use `x` to
-remove a custom source, then `y` to confirm or `esc` to cancel. Built-ins can be
-disabled; their mirror URLs are still edited in `config.yaml`.
-
-Supported feed entries carry a valid v1 magnet in a link, GUID, enclosure, or
-Torznab `magneturl` attribute, or a valid v1 infohash attribute. Custom hash-only
-entries do not get extra public trackers injected. Private trackers and feeds
-that only supply `.torrent` download URLs are unsupported in this release.
-Unsupported entries are reported instead of silently appearing as an empty
-successful search. Usable results from a partially supported feed still reach
-search, without retrying the same permanent format error.
-
-Advanced config example (a Torznab endpoint does not need `{query}`):
-
-```yaml
-providers:
-  my_public_index:
-    name: My public index
-    enabled: false
-    type: torznab
-    search_url: http://localhost:9117/api/v2.0/indexers/INDEXER/results/torznab/api
-    api_key: YOUR_API_KEY
-  my_rss_index:
-    name: My RSS index
-    enabled: false
-    type: rss
-    search_url: 'https://example.org/search/rss?q={query}'
-```
-
-Configure and maintain indexers in your indexer manager, then add their
-individual Torznab endpoints here. See the [Torznab specification](https://torznab.github.io/spec-1.3-draft/torznab/Specification-v1.3.html)
-and [Jackett API documentation](https://github.com/Jackett/Jackett#api-usage).
-Authentication, site protection, and upstream network routing managed by that
-service remain its responsibility. Tork's requests to the configured endpoint
-and its downloads continue to use Tork's configured route.
-
-The screen shows checks from the current session, or the latest saved health
-check for a source when available. Individual source tests are kept in memory;
-`tork doctor --record` and the health screen retain their existing history flow.
-To run live metadata-only probes of built-ins without starting a download engine
-or editing your config:
-
-```sh
-TORK_LIVE_SOURCES=1 go test ./internal/sources -run '^TestLiveBuiltinSources$' -v -count=1
-TORK_LIVE_SOURCES=1 go test ./internal/sources -run '^TestLiveBroadSources$' -v -count=1
-```
-
-## Keys
-
-Press `?` anywhere for the full list of keys on the current screen. The
-highlights:
-
-- **home** type to search, `↓` focus the destination menu, `↑↓` move, `enter` activate the focused control; `esc` returns to the search field, then clears it
-- **sources** `↑↓` choose, `space` / `enter` enable or disable, `t` test, `a` add, `e` edit custom, `x` remove custom, `esc` home
-- **isos** `↑↓` browse, `enter` grab the latest official image
-- **results** `enter` preview (or download when preview is disabled), `/` edit search, `tab` browse categories and destinations, `f` text filter, `o` sort, `z` hide zero seeders, `r` reset filters, `ctrl+f` resolution/size filters, `s` source status, `D` grab now, `Y` copy magnet
-- **preview** `enter` download what's selected, `space` toggle a file or folder, `←→` fold, `a`/`n` select all or none
-- **downloads** `enter` open the file, `o` show it in your file manager, `p` pause/resume, `s` seed, `v` fully verify completed data, `m` move, `r` relink, `y` copy full path, `Y` copy magnet, `x` remove, `d` delete data
-- On home, `tab` / `shift+tab` moves between the search field and menu choices.
-- In results, `tab` / `shift+tab` switches between the list and browse menu. While editing the search, either key returns to the list without submitting the draft. Choose Downloads from the browse menu, or use `^d` / `F3` directly; Linux ISOs are a separate choice on Home.
-- From Linux ISOs, `tab` / `shift+tab` opens downloads. In downloads, either key or `esc` returns to where you were.
-- `F1` home, `F2` latest results, `F3` downloads, `F4` sources. These also work from the search field.
-- `esc` goes back or cancels the current dialog; `^c` closes the UI
-- Preview, move/relink, and removal dialogs keep focus until finished or cancelled.
-- The `?` help panel scrolls with `↑↓` or `pgup/pgdn` on smaller terminals.
-
-Queuing a download leaves you where you are and confirms with a small toast, so
-you can grab several things from one search. Live transfer count and speed stay
-visible beside the screen title, or in the footer on home. The top bar has no
-function-key navigation labels; shortcuts remain available in `?` help. Home has no duplicate
-wordmark/header above its search area.
-
-On macOS and Linux, the interactive UI connects to a persistent local session.
-Closing the UI with `^c` (or `q` where offered), closing the terminal, or losing
-the terminal connection leaves approved downloads and seeding running. Reopen
-`tork` to reconnect to the same search, selection, and downloads. Pending previews
-still require approval; detaching never starts downloading their files.
-
-```sh
-tork          # start or reconnect to the UI
-tork status   # check the background session without opening the UI
-tork stop     # save state and stop transfers, keeping downloaded files
-```
-
-One terminal can attach at a time. The worker uses a user-private Unix socket;
-it does not expose a remote-control TCP port. It owns the engine and resume state
-until `tork stop`, and saves progress while the UI is closed. After stopping or
-rebooting, start `tork` to resume saved downloads; this does not install an OS
-startup service. The computer must stay awake for transfers to run.
-
-Use `tork --foreground` for the previous behavior (closing the UI stops transfers).
-Windows currently retains that foreground behavior. Stop the background session
-before running foreground/autopilot transfers, changing `-d` or `--evil`, changing
-proxy/engine settings, or testing a rebuilt binary. `--evil` applies to new downloads
-in that worker session; it preserves previously saved seeding choices. A rebuilt
-client detects an older worker and asks you to stop it before reconnecting.
-`--config-dir DIR` gives the interactive UI, `status`, and `stop` a separate config
-and session, which is useful for testing. Worker startup diagnostics go to
-`~/.tork/session/worker.log` (or the equivalent custom config directory).
-
-Clipboard copies run in the attached terminal, using its clipboard and tmux/SSH
-environment. The UI confirms a copy only after that terminal reports the write;
-closing the terminal cancels pending copies without stopping downloads.
-
-A result tagged `yts+2` is one torrent that three indexes listed. Rather than
-spend three lines on it, tork keeps the fullest release name, the best swarm
-numbers any of them reported, and — the part that matters once the download
-starts — the combined tracker list, so it announces to every swarm all three
-knew about instead of the slice one listing happened to carry. The status line
-counts how many listings were folded away; press `v` and the detail panel names
-the sources and the tracker total. Results that only link to a details page keep
-their own row: without a magnet there is no infohash to compare, and tork will
-not fetch every page just to find out.
-
-Search opens a browse workspace with an editable search field above one ranked
-results table. Tork keeps its centered layout and green palette. On wide
-terminals, a sidebar filters by All, Games, Movies, TV, Anime, Software, Music,
-Books, or Other and opens Downloads, Sources, or Home. On narrow terminals,
-Tab opens the same menu without squeezing the result titles. Categories use
-individual result metadata; unrecognized categories remain under Other.
-
-Press `/` to edit the search in place, `f` to filter the current list, `o` to
-cycle relevance/seeders/size, and `z` to show only results with reported seeders.
-Category changes do not repeat network searches. `r` clears text, size,
-resolution and seeder filters while keeping the selected category. Enter keeps
-the existing file preview flow, and Escape returns to the same results.
-
-The selected-result details stay below a fixed-height list. Optional resolution
-picks and release groups remain available with `v` and `V`.
-
-Press `ctrl+f` for resolution and size preferences: choose multiple resolutions
-with Space, set a maximum size, and choose Balanced, Smaller files, or Higher quality.
-Enter applies; Escape cancels. No checked resolutions means all. Choices persist across searches
-in the current session. Size limits exclude unknown sizes. Title, year and episode
-matches rank before reported swarm counts; these counts do not guarantee speed.
-A selected release stays visible while new results stream in. Result rows use
-shorter readable titles, with source, size and reported seed counts alongside
-them on wider terminals. The original release filename stays in the details.
-The source summary separates indexes with results, empty responses, failures,
-and searches still running. Press `s` to inspect each source's outcome for this
-search, then `s` or Escape to return to the selected release. Search results keep
-arriving while the status panel is open.
-
-Advanced text filters still compose with
-these choices. Press `f` and try:
-
-```text
-res:1080p,2160p seeders:>20 size:<8gb
-linux codec:x265 -source:cam
-provider:nyaa category:anime is:trusted
-is:hdr -is:dv
-```
-
-Available fields are `res`, `seeders`, `size`, `source`, `codec`, `provider`,
-and `category`. Attributes include `is:trusted`, `is:hdr`, `is:dv`, and
-`is:pack`; prefix any structured filter with `-` to negate it.
-
-Verification rehashes completed torrent pieces and direct-download checksums.
-Checksum mismatches are moved aside as `.corrupt`, `.corrupt.1`, and so on
-before retrying.
-
-## Autopilot (WIP)
-
-Describe what you want and let the cat make a plan:
-
-```sh
-tork autopilot "all breaking bad seasons 1080p under 40GB"
-tork autopilot --dry-run --min-seeders 20 "dune 2024 2160p"
-```
-
-Autopilot shows its picks, total known size, reasons, and a summary of rejected
-results before asking to queue anything. Use `-n N` to cap the picks,
-`--max-size 8GB` to cap each download, or `--category movies,anime` to narrow
-provider categories. When the same limit appears in several places, the flag
-wins over the request text, which wins over config defaults. `--headless` skips
-the TUI but still asks before queuing; scripts and cron jobs need `--yes`.
-Decisions stay local in `~/.tork/autopilot.jsonl` so a strange choice can be
-inspected later.
-
-Persistent defaults can live under `autopilot` in `~/.tork/config.yaml`:
+Use `-n N` to limit picks and `--category` to narrow content categories. Without
+`--dry-run`, tork asks before queueing. `--headless` skips the UI; scripts also
+need `--yes` to skip confirmation. Flags override request text, which overrides
+config defaults. Plans are recorded locally in `~/.tork/autopilot.jsonl`.
 
 ```yaml
 autopilot:
@@ -477,20 +306,63 @@ autopilot:
   allowed_categories: [movies, anime]
 ```
 
-## Legal
+</details>
 
-tork is a BitTorrent client and search tool. It does not host files, operate
-trackers, or control the third-party providers it can search.
+## Troubleshooting
 
-Use it only for content you are allowed to download and share, such as official
-Linux ISOs, public-domain media, open-source software, and your own files. You
-are responsible for following local law and the terms of any provider you
-enable.
+Start with `tork doctor`. It reads your setup and checks config, disk, state,
+metadata, and source reachability. It does not repair or rewrite files by default.
+Add `--record` to save a health report, `--engine` to test the torrent listener,
+or `--proxy-check` to check the proxy's exit route.
 
-Provider availability and results can change without notice. tork does not
-endorse or guarantee third-party content.
+| Problem | Try this |
+| --- | --- |
+| No results | Press **s** in results, or **t** in Sources, to see which index failed. Check that at least one source is enabled. |
+| A source says blocked | Try another enabled source. **t** retries the blocked source; this does not bypass site protection. |
+| Transfers continue after quitting | On macOS/Linux, use `tork stop` to stop the background session. |
+| A rebuilt binary finds an older worker | Close the UI, run `tork stop`, then open the new binary. |
+| Preview is waiting for metadata | Wait for a peer, use a `.torrent` file, or press Enter to queue the whole torrent. |
 
-A proxy routes tork's traffic, but it is not a promise of anonymity or legal
-protection.
+For Go installs on macOS that accidentally pick Nix's compiler, use Apple Clang:
 
-MIT, see [LICENSE](LICENSE).
+```sh
+CC=/usr/bin/clang CXX=/usr/bin/clang++ go install github.com/melqtx/tork/cmd/tork@latest
+```
+
+When reporting a bug, include `tork --version`, your OS and terminal, the steps to
+reproduce it, and any relevant source status. Remove credentials from logs.
+
+## Build from source
+
+Requires Go 1.26.10+ and a C compiler.
+
+```sh
+git clone https://github.com/melqtx/tork.git
+cd tork
+go build -o ./bin/tork ./cmd/tork
+./bin/tork
+```
+
+For a local test that uses its own config and stops when you exit:
+
+```sh
+./bin/tork --foreground --config-dir ./tmp/local-test
+```
+
+To check a change:
+
+```sh
+go vet ./...
+go test -race -timeout 5m ./...
+```
+
+Live metadata-only source checks are opt-in and do not start downloads:
+
+```sh
+TORK_LIVE_SOURCES=1 go test ./internal/sources -run '^TestLiveBuiltinSources$' -v -count=1
+```
+
+## License
+
+[MIT](LICENSE). Tork does not host files or control third-party indexes.
+Only download and share files you have permission to use.
