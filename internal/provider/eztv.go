@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
@@ -76,15 +75,16 @@ func (e *EZTV) Search(ctx context.Context, query string, out chan<- Result) erro
 		}
 		cells := row.Find("td")
 		size := strings.TrimSpace(cells.Eq(3).Text())
-		seeds, _ := strconv.Atoi(strings.TrimSpace(cells.Eq(5).Text()))
+
 		r := Result{
 			Title:     title,
 			Size:      size,
 			SizeBytes: parseHumanSize(size),
-			Seeders:   seeds,
-			Magnet:    magnet,
-			Provider:  e.Name(),
-		}
+
+			Magnet:   magnet,
+			Provider: e.Name(),
+			Category: "TV",
+		}.WithSwarm(cells.Eq(5).Text(), "")
 		if err := emit(ctx, out, r); err != nil {
 			emitErr = err
 			return false

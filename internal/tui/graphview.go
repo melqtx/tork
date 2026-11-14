@@ -48,7 +48,7 @@ func (r *resultsModel) rebuildGroups() {
 			continue
 		}
 		row := r.rows[idx]
-		key := rank.GroupKey(row.res.Title, row.tags)
+		key := browseCategory(row) + "|" + rank.GroupKey(row.res.Title, row.tags)
 		gi, ok := byKey[key]
 		if !ok {
 			gi = len(r.groups)
@@ -65,23 +65,7 @@ func (r *resultsModel) rebuildGroups() {
 		}
 		r.groups[gi].rowIdx = append(r.groups[gi].rowIdx, idx)
 	}
-	// Within each group, float clean sources above noisy ones (cam / off-topic /
-	// language variants), stable within each partition to keep score order. This
-	// makes rowIdx[0] the representative used by the header summary, the "best"
-	// badge, and enter-to-download - so a noisy source never fronts a group that
-	// also has a clean one, and the overall best never hides in a collapsed group.
-	for gi := range r.groups {
-		idxs := r.groups[gi].rowIdx
-		sort.SliceStable(idxs, func(i, j int) bool {
-			return !r.rows[idxs[i]].noisy && r.rows[idxs[j]].noisy
-		})
-	}
-	// Sink groups made entirely of noise (cams, dead swarms, off-topic) below
-	// every group with at least one clean source, stable so both partitions
-	// keep the global best-first order.
-	sort.SliceStable(r.groups, func(i, j int) bool {
-		return !groupAllNoisy(r, &r.groups[i]) && groupAllNoisy(r, &r.groups[j])
-	})
+	// Preserve the selected ranking policy inside and between groups.
 	r.restoreGraphSelection()
 }
 
@@ -378,7 +362,7 @@ func (r *resultsModel) graphHeader(g *group, width int, selected bool) string {
 	cols := lay.cols(
 		fmt.Sprintf("×%d", len(g.rowIdx)),
 		sourceCol(best.res, plain),
-		seedPill(best.res.Seeders, plain),
+		resultSeedPill(best.res, plain),
 		seederMeter(best.res.Seeders, r.meterMax, lay.meterW, plain),
 		size,
 	)
@@ -420,7 +404,7 @@ func (r *resultsModel) graphLeaf(g *group, leaf, width int, selected bool) strin
 	cols := lay.cols(
 		"",
 		sourceCol(row.res, plain),
-		seedPill(row.res.Seeders, plain),
+		resultSeedPill(row.res, plain),
 		seederMeter(row.res.Seeders, r.meterMax, lay.meterW, plain),
 		truncate(row.res.Size, lay.sizeW),
 	)
@@ -478,7 +462,7 @@ func (r *resultsModel) graphFlatLeaf(idx, width int, selected bool) string {
 	cols := lay.cols(
 		"",
 		sourceCol(row.res, plain),
-		seedPill(row.res.Seeders, plain),
+		resultSeedPill(row.res, plain),
 		seederMeter(row.res.Seeders, r.meterMax, lay.meterW, plain),
 		truncate(row.res.Size, lay.sizeW),
 	)
@@ -535,6 +519,16 @@ func seedPill(seeders int, plain bool) string {
 		st = styleFaint
 	}
 	return st.Render(s)
+}
+
+func resultSeedPill(result provider.Result, plain bool) string {
+	if result.KnownSeeders() {
+		return seedPill(result.Seeders, plain)
+	}
+	if plain {
+		return "S?"
+	}
+	return styleDim.Render("S?")
 }
 
 // providerCol is a bracketed provider tag, uncolored when plain.
@@ -629,26 +623,26 @@ func (a *App) graphDetail(width int) string {
 		return strings.Join(lines, "\n")
 	}
 	g := &r.groups[it.group]
+	median, spread := groupSizeSpread(r.rows, g.rowIdx)
 	if it.leaf == -1 {
 		best, _ := r.bestGroupRow(g)
-		median, spread := groupSizeSpread(r.rows, g.rowIdx)
 		lines = append(lines,
 			styleFg.Render(truncate(g.label, width)),
-			fmt.Sprintf("%s %s %s  %s", styleBest.Render("best"), providerBracket(best.res.Provider), seedPill(best.res.Seeders, false), styleDim.Render(truncate(best.res.Size, 12))),
-			fmt.Sprintf("%s  %s  %s", styleDim.Render(fmt.Sprintf("%d providers", groupProviderCount(r, g))), groupProviders(r, g, false), styleDim.Render(fmt.Sprintf("total S%d", groupTotalSeeders(r, g)))),
+			fmt.Sprintf("%s %s %s  %s", styleBest.Render("best"), providerBracket(best.res.Provider), resultSeedPill(best.res, false), styleDim.Render(truncate(best.res.Size, 12))),
+			fmt.Sprintf("%s  %s  %s", styleDim.Render(fmt.Sprintf("%d providers", groupProviderCount(r, g))), groupProviders(r, g, false), styleDim.Render(fmt.Sprintf("reported S%d", groupTotalSeeders(r, g)))),
 			formatSizeSpread(median, spread)+styleFaint.Render(" · ")+groupWarnings(r, g),
+			truncate(r.rankingReason(best), width),
 		)
 		return strings.Join(lines, "\n")
 	}
 	row := r.rows[g.rowIdx[it.leaf]]
-	median, spread := groupSizeSpread(r.rows, g.rowIdx)
 	magnet := magnetCell(row.res)
 	trusted := styleFaint.Render("untrusted")
 	if row.res.Trusted {
 		trusted = styleOK.Render("trusted")
 	}
 	noise := "noise: none"
-	if reasons := rank.NoiseReasons(r.query, row.res.Title, row.tags, row.res.Seeders); len(reasons) > 0 {
+	if reasons := rank.NoiseReasons(r.query, row.res.Title, row.tags, row.res.Seeders, row.res.KnownSeeders()); len(reasons) > 0 {
 		noise = "noise: " + strings.Join(reasons, ", ")
 	}
 	pos := fmt.Sprintf("#%d of %d", it.leaf+1, len(g.rowIdx))
@@ -658,8 +652,9 @@ func (a *App) graphDetail(width int) string {
 	lines = append(lines,
 		styleFg.Render(truncate(row.res.Title, width)),
 		fmt.Sprintf("%s  %s  %s  %s", sourceCol(row.res, false), trusted, magnet, styleDim.Render(pos)),
-		fmt.Sprintf("%s %d   %s %d   %s", styleSeeders.Render("S"), row.res.Seeders, styleLeechers.Render("L"), row.res.Leechers, styleDim.Render(row.res.Size)),
+		fmt.Sprintf("S %s   L %s   %s", reportedCount(row.res.Seeders, row.res.KnownSeeders()), reportedCount(row.res.Leechers, row.res.KnownLeechers()), styleDim.Render(row.res.Size)),
 		formatSizeSpread(median, spread)+styleFaint.Render(" · ")+styleDim.Render(noise),
+		truncate(r.rankingReason(row), width),
 	)
 	return strings.Join(lines, "\n")
 }

@@ -10,9 +10,9 @@ import (
 // release the query never asked for. This is display-only; it never affects
 // Score or ordering. query is the search terms, so a search for a language
 // (e.g. "oppenheimer hindi") does not dim every release in that language.
-func NoiseReasons(query, title string, t Tags, seeders int) []string {
+func NoiseReasons(query, title string, t Tags, seeders int, known ...bool) []string {
 	var reasons []string
-	if seeders <= 0 {
+	if seeders <= 0 && (len(known) == 0 || known[0]) {
 		reasons = append(reasons, "zero seed")
 	}
 	if t.Source == SrcCam {
@@ -31,8 +31,8 @@ func NoiseReasons(query, title string, t Tags, seeders int) []string {
 }
 
 // Noisy is the compact predicate kept for callers that only need dimming.
-func Noisy(query, title string, t Tags, seeders int) bool {
-	return len(NoiseReasons(query, title, t, seeders)) > 0
+func Noisy(query, title string, t Tags, seeders int, known ...bool) bool {
+	return len(NoiseReasons(query, title, t, seeders, known...)) > 0
 }
 
 // langVariant reports a non-default-language release, but only when the search

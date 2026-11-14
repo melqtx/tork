@@ -95,6 +95,11 @@ func TestBrowseFramesFitEveryFocusAndSize(t *testing.T) {
 				a.results.filtering = focus == "filter"
 				view := a.View()
 				assertRenderFits(t, view, width)
+				for _, line := range strings.Split(view, "\n") {
+					if strings.Contains(line, "Name") && strings.Contains(line, "Size") && strings.Contains(line, "…") {
+						t.Fatalf("%dx%d clipped a column heading: %s", width, height, line)
+					}
+				}
 				if len(strings.Split(view, "\n")) != height {
 					t.Fatalf("wrong height %dx%d %s", width, height, focus)
 				}

@@ -96,8 +96,8 @@ func TestMergeTakesBestKnownSwarmAndSize(t *testing.T) {
 	if got.Seeders != 340 {
 		t.Errorf("Seeders = %d, want 340 (the higher scrape)", got.Seeders)
 	}
-	if got.Leechers != 30 {
-		t.Errorf("Leechers = %d, want 30 (the higher scrape)", got.Leechers)
+	if got.Leechers != 8 {
+		t.Errorf("Leechers = %d, want 8 (paired with the 340-seeder report)", got.Leechers)
 	}
 	if !got.Trusted {
 		t.Error("Trusted = false, want true (either index vouching is enough)")

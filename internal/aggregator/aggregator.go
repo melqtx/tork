@@ -116,6 +116,7 @@ func (a *Aggregator) searchOne(ctx context.Context, p provider.Provider, query s
 			defer close(forwarded)
 			for r := range proxy {
 				r = provider.SanitizeResult(r)
+				r = r.WithObservation(time.Now())
 				if r.Title == "" {
 					hidden++
 					continue

@@ -23,17 +23,20 @@ var ErrBlocked = errors.New("blocked by site protection")
 var maxResponseBytes int64 = 32 << 20 // 32 MiB
 
 type Result struct {
-	Title     string
-	Size      string // human string as scraped
-	SizeBytes int64
-	Seeders   int
-	Leechers  int
-	Magnet    string // empty when only a detail page is known
-	DetailURL string // set by providers that resolve magnets lazily
-	Provider  string
-	Trusted   bool     // provider flagged this as a trusted/verified release
-	Category  string   // provider's category label when known (e.g. "Movies", "XXX")
-	AlsoOn    []string // other providers that listed this same infohash (see Merge)
+	Title           string
+	Size            string // human string as scraped
+	SizeBytes       int64
+	Seeders         int
+	Leechers        int
+	SeedersUnknown  bool // missing/invalid source count; distinct from a reported zero
+	LeechersUnknown bool
+	Observations    []SwarmObservation
+	Magnet          string // empty when only a detail page is known
+	DetailURL       string // set by providers that resolve magnets lazily
+	Provider        string
+	Trusted         bool     // provider flagged this as a trusted/verified release
+	Category        string   // provider's category label when known (e.g. "Movies", "XXX")
+	AlsoOn          []string // other providers that listed this same infohash (see Merge)
 }
 
 // SanitizeResult bounds and strips terminal control sequences from text that
@@ -45,6 +48,14 @@ func SanitizeResult(r Result) Result {
 	r.Provider = SanitizeDisplayText(r.Provider, 80)
 	r.Category = SanitizeDisplayText(r.Category, 120)
 	r.AlsoOn = sanitizeDisplayList(r.AlsoOn, 64, 80)
+	observations := r.Observations
+	if len(observations) > 64 {
+		observations = observations[:64]
+	}
+	r.Observations = append([]SwarmObservation(nil), observations...)
+	for i := range r.Observations {
+		r.Observations[i].Provider = SanitizeDisplayText(r.Observations[i].Provider, 80)
+	}
 	return r
 }
 
@@ -167,6 +178,7 @@ func fetch(ctx context.Context, client *http.Client, url string) (*http.Response
 
 // emit sends r without deadlocking against a cancelled consumer.
 func emit(ctx context.Context, out chan<- Result, r Result) error {
+	r = r.WithObservation(time.Now())
 	select {
 	case out <- r:
 		return nil

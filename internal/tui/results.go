@@ -19,11 +19,13 @@ import (
 
 // scoredRow is a search result with its parsed tags and computed score cached.
 type scoredRow struct {
-	res   provider.Result
-	hash  string // cached res.InfoHash(); "" for detail-page rows (see insertRow)
-	tags  rank.Tags
-	score float64
-	noisy bool // display-only: dead/cam/off-topic/language-variant, dimmed in the list
+	res                    provider.Result
+	hash                   string // cached res.InfoHash(); "" for detail-page rows (see insertRow)
+	tags                   rank.Tags
+	score                  float64
+	noisy                  bool // display-only: dead/cam/off-topic/language-variant, dimmed in the list
+	match                  queryAssessment
+	matchQuery, matchTitle string
 }
 
 type sortMode int
@@ -123,10 +125,13 @@ func newResultsModel(w rank.Weights) resultsModel {
 }
 
 // betterThan reports whether row a should rank above row b under the active
-// sort mode (all modes are descending, with score as the tie-breaker).
+// sort mode (explicit numeric sorts are descending, with relevance as the tie-breaker).
 func (r *resultsModel) betterThan(a, b scoredRow) bool {
 	switch r.sort {
 	case sortSeeders:
+		if a.res.KnownSeeders() != b.res.KnownSeeders() {
+			return a.res.KnownSeeders()
+		}
 		if a.res.Seeders != b.res.Seeders {
 			return a.res.Seeders > b.res.Seeders
 		}
@@ -134,15 +139,8 @@ func (r *resultsModel) betterThan(a, b scoredRow) bool {
 		if a.res.SizeBytes != b.res.SizeBytes {
 			return a.res.SizeBytes > b.res.SizeBytes
 		}
-	default:
-		if r.browser {
-			return r.pickRowsBetter(a, b)
-		}
-		if a.score != b.score {
-			return a.score > b.score
-		}
 	}
-	return a.score > b.score
+	return r.relevanceBetter(a, b)
 }
 
 func (a *App) updateResults(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -557,13 +555,16 @@ func (r *resultsModel) insertRow(res provider.Result) {
 // in another index changes the seeder count and trust flag the score reads.
 func (r *resultsModel) newRow(res provider.Result) scoredRow {
 	tags := rank.Parse(res.Title)
-	return scoredRow{
+	row := scoredRow{
 		res:   res,
 		hash:  res.InfoHash(),
 		tags:  tags,
 		score: rank.Score(res, tags, r.weights),
-		noisy: rank.Noisy(r.query, res.Title, tags, res.Seeders),
+		noisy: rank.Noisy(r.query, res.Title, tags, res.Seeders, res.KnownSeeders()),
 	}
+	row.match = assessQuery(r.query, row)
+	row.matchQuery, row.matchTitle = r.query, res.Title
+	return row
 }
 
 // mergeRow folds a second index's listing of a torrent already on the list into
@@ -571,7 +572,7 @@ func (r *resultsModel) newRow(res provider.Result) scoredRow {
 // carry it - and, more usefully, so the magnet we hand the engine announces to
 // every tracker any of those indexes knew about.
 //
-// The better-scoring of the two listings keeps the title, which is what the
+// The more descriptive of the two listings keeps the title, which is what the
 // tag parser, the group label, and the ranker all read: whichever index
 // answered first should not get to name the release. Rows are scanned rather
 // than indexed by hash because a sorted insert shifts every position after it,
@@ -587,7 +588,7 @@ func (r *resultsModel) mergeRow(incoming scoredRow) bool {
 			continue
 		}
 		keep, other := r.rows[i], incoming
-		if other.score > keep.score {
+		if richerRelease(other, keep) {
 			keep, other = other, keep
 		}
 		r.rows[i] = r.newRow(provider.Merge(keep.res, other.res))
@@ -607,10 +608,8 @@ func (r *resultsModel) resort() {
 // refreshFilter recomputes visible rows and match highlights, first re-ordering
 // rows when a merge (or a sort-mode change) invalidated their position.
 func (r *resultsModel) refreshFilter() {
-	if r.resortPending || r.browser {
-		r.resortPending = false
-		sort.SliceStable(r.rows, func(i, j int) bool { return r.betterThan(r.rows[i], r.rows[j]) })
-	}
+	r.resortPending = false
+	sort.SliceStable(r.rows, func(i, j int) bool { return r.betterThan(r.rows[i], r.rows[j]) })
 	term := strings.TrimSpace(r.filterIn.Value())
 	filter := parseResultFilter(term)
 	if r.filtering && !r.filterCommitted {
@@ -647,14 +646,20 @@ func (r *resultsModel) refreshFilter() {
 		} else {
 			for _, match := range fuzzy.Find(filter.text, titles) {
 				idx := eligible[match.Index]
-				r.visible = append(r.visible, idx)
 				r.matched[idx] = match.MatchedIndexes
+			}
+			// Filtering narrows the list; it must not replace the chosen sort
+			// with the fuzzy matcher's independent relevance order.
+			for _, idx := range eligible {
+				if _, ok := r.matched[idx]; ok {
+					r.visible = append(r.visible, idx)
+				}
 			}
 		}
 	}
 	eligible := r.visible[:0]
 	for _, idx := range r.visible {
-		if r.pickPrefs.allows(r.rows[idx]) && (!r.hideDead || r.rows[idx].res.Seeders > 0) && (r.category == 0 || browseCategory(r.rows[idx]) == browseCategories[r.category]) {
+		if r.pickPrefs.allows(r.rows[idx]) && (!r.hideDead || !r.rows[idx].res.KnownSeeders() || r.rows[idx].res.Seeders > 0) && (r.category == 0 || browseCategory(r.rows[idx]) == browseCategories[r.category]) {
 			eligible = append(eligible, idx)
 		}
 	}
@@ -732,7 +737,7 @@ func (r *resultsModel) recomputeBest() {
 func (a *App) resultsDetailVisible() bool { return a.bodyHeight() >= 14 }
 
 // listRows is the number of visible flat-result rows. On a tall terminal the
-// selected result gets a five-line decision panel, so the list pays that space
+// selected result gets a six-line decision panel, so the list pays that space
 // up front and paging stays aligned with what is actually visible.
 func (a *App) listRows() int {
 	if a.results.browser {
@@ -740,18 +745,18 @@ func (a *App) listRows() int {
 	}
 	rows := max(1, a.bodyHeight()-2)
 	if a.resultsDetailVisible() {
-		rows = max(1, rows-6)
+		rows = max(1, rows-7)
 	}
 	return rows
 }
 
 // graphRows is the window height of the grouped list: listRows minus the
-// detail panel (5 lines) when the terminal is tall enough to show one. Key
+// detail panel (6 lines) when the terminal is tall enough to show one. Key
 // handling and rendering must agree on this so paging moves by a real page.
 func (a *App) graphRows() int {
 	rows := max(1, a.bodyHeight()-2)
 	if a.resultsDetailVisible() {
-		return max(1, rows-6)
+		return max(1, rows-7)
 	}
 	return rows
 }
@@ -822,8 +827,8 @@ func (a *App) viewResults() string {
 				healthDot(row.res.Seeders),
 				r.renderTitle(idx, lay.titleW),
 				lay.sizeW, truncate(row.res.Size, lay.sizeW),
-				styleSeeders.Render(fmt.Sprintf("%*d", lay.seedW, row.res.Seeders)),
-				styleLeechers.Render(fmt.Sprintf("%*d", lay.leechW, row.res.Leechers)),
+				styleSeeders.Render(fmt.Sprintf("%*s", lay.seedW, reportedCount(row.res.Seeders, row.res.KnownSeeders()))),
+				styleLeechers.Render(fmt.Sprintf("%*s", lay.leechW, reportedCount(row.res.Leechers, row.res.KnownLeechers()))),
 				styleFaint.Render(fmt.Sprintf("%*s", lay.resW, row.tags.Resolution.String())),
 				sourceTag(row.res, false),
 			)
@@ -896,7 +901,7 @@ func (a *App) resultDetail(width int) string {
 		quality = append(quality, row.tags.Codec)
 	}
 	noise := styleOK.Render("looks clean")
-	if reasons := rank.NoiseReasons(r.query, row.res.Title, row.tags, row.res.Seeders); len(reasons) > 0 {
+	if reasons := rank.NoiseReasons(r.query, row.res.Title, row.tags, row.res.Seeders, row.res.KnownSeeders()); len(reasons) > 0 {
 		noise = styleHealthMid.Render("check: " + strings.Join(reasons, ", "))
 	}
 	size := strings.TrimSpace(row.res.Size)
@@ -908,8 +913,9 @@ func (a *App) resultDetail(width int) string {
 	lines = append(lines,
 		styleFg.Render(truncate(row.res.Title, width)),
 		truncate(fmt.Sprintf("%s  %s  %s  score %.1f", sourceCol(row.res, false), trust, strings.Join(quality, " · "), row.score), width),
-		truncate(fmt.Sprintf("%s %d   %s %d   %s   %s", styleSeeders.Render("S"), row.res.Seeders, styleLeechers.Render("L"), row.res.Leechers, size, magnetCell(row.res)), width),
+		truncate(fmt.Sprintf("S %s   L %s   %s   %s", reportedCount(row.res.Seeders, row.res.KnownSeeders()), reportedCount(row.res.Leechers, row.res.KnownLeechers()), size, magnetCell(row.res)), width),
 		truncate(noise+styleFaint.Render(" · "+plural(len(row.res.Trackers()), "tracker")), width),
+		truncate(r.rankingReason(row), width),
 	)
 	return strings.Join(lines, "\n")
 }

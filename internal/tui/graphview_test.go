@@ -75,11 +75,9 @@ func TestGroupsDefaultCollapsed(t *testing.T) {
 	}
 }
 
-// TestNoisyDoesNotFrontGroup guards against the overall-best pick vanishing:
-// when a noisy source outranks the clean champion in the same (collapsed) group,
-// the clean row must float to rowIdx[0] so the header summarizes it, wears the
-// "best" badge, and enter downloads it - not the noisy source.
-func TestNoisyDoesNotFrontGroup(t *testing.T) {
+// Group representatives must follow the selected sort. A display-only noise
+// marker must not silently change which release Enter downloads.
+func TestGroupRepresentativePreservesSelectedSort(t *testing.T) {
 	r := &resultsModel{grouped: true, bestIdx: -1, rows: []scoredRow{
 		{res: provider.Result{Title: "Movie 1080p", Provider: "knaben", Size: "2 GiB", Seeders: 900, Magnet: "magnet:?x"}, tags: rank.Parse("Movie 1080p"), noisy: true},
 		{res: provider.Result{Title: "Movie 1080p", Provider: "yts", Size: "1 GiB", Seeders: 300, Magnet: "magnet:?x"}, tags: rank.Parse("Movie 1080p"), noisy: false},
@@ -87,15 +85,15 @@ func TestNoisyDoesNotFrontGroup(t *testing.T) {
 	r.recomputeBest()
 	r.rebuildGroups()
 
-	if got := r.groups[0].rowIdx[0]; got != 1 {
-		t.Fatalf("rowIdx[0] = %d, want the clean row (1)", got)
+	if got := r.groups[0].rowIdx[0]; got != 0 {
+		t.Fatalf("rowIdx[0] = %d, want the first ranked row (0)", got)
 	}
-	if h := r.graphHeader(&r.groups[0], 90, false); !strings.Contains(h, "best") || !strings.Contains(h, "S300") {
-		t.Fatalf("collapsed header should show clean champion with best: %q", h)
+	if h := r.graphHeader(&r.groups[0], 90, false); !strings.Contains(h, "S900") {
+		t.Fatalf("collapsed header should preserve ranked representative: %q", h)
 	}
 	res, ok := r.graphResultForItem(navItem{group: 0, leaf: -1})
-	if !ok || res.Seeders != 300 {
-		t.Fatalf("enter-on-header downloads S%d, want clean S300", res.Seeders)
+	if !ok || res.Seeders != 900 {
+		t.Fatalf("enter-on-header downloads S%d, want ranked S900", res.Seeders)
 	}
 }
 
@@ -451,7 +449,7 @@ func TestGraphHeaderDetail(t *testing.T) {
 	}
 	a.results.groups = []group{{label: "Example 1080p", rowIdx: []int{0, 1}}}
 	got := a.graphDetail(80)
-	for _, want := range []string{"best", "2 providers", "total S120", "size varies", "warnings"} {
+	for _, want := range []string{"best", "2 providers", "reported S120", "size varies", "warnings"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("header detail %q missing %q", got, want)
 		}

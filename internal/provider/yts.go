@@ -67,12 +67,12 @@ type ytsResponse struct {
 		Movies     []struct {
 			TitleLong string `json:"title_long"`
 			Torrents  []struct {
-				Hash      string `json:"hash"`
-				Quality   string `json:"quality"`
-				Size      string `json:"size"`
-				SizeBytes int64  `json:"size_bytes"`
-				Seeds     int    `json:"seeds"`
-				Peers     int    `json:"peers"`
+				Hash      string    `json:"hash"`
+				Quality   string    `json:"quality"`
+				Size      string    `json:"size"`
+				SizeBytes int64     `json:"size_bytes"`
+				Seeds     apiNumber `json:"seeds"`
+				Peers     apiNumber `json:"peers"`
 			} `json:"torrents"`
 		} `json:"movies"`
 	} `json:"data"`
@@ -133,12 +133,12 @@ func (y *YTS) emitResults(ctx context.Context, resp *http.Response, out chan<- R
 				Title:     title,
 				Size:      t.Size,
 				SizeBytes: t.SizeBytes,
-				Seeders:   t.Seeds,
-				Leechers:  t.Peers,
-				Magnet:    magnet,
-				Provider:  y.Name(),
-				Trusted:   true, // YTS serves only its own verified encodes
-			}
+
+				Magnet:   magnet,
+				Provider: y.Name(),
+				Category: "Movies",
+				Trusted:  true, // YTS serves only its own verified encodes
+			}.WithSwarm(string(t.Seeds), string(t.Peers))
 			if err := emit(ctx, out, r); err != nil {
 				return err
 			}

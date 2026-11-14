@@ -127,7 +127,7 @@ func splitResultLine(left, right string, width int) string {
 
 func (a *App) updateResultSources(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	r := &a.results
-	n, h := len(a.agg.Providers()), max(1, a.bodyHeight()-5)
+	n, h := len(a.agg.Providers()), a.resultSourceRows()
 	switch msg.String() {
 	case "esc", "s":
 		r.sourcePanel = false
@@ -176,7 +176,7 @@ func (a *App) viewResultSources() string {
 	if len(providers) == 0 {
 		body += "\n" + styleDim.Render("No sources enabled. Add one from Sources on home.")
 	} else {
-		body += renderWindow(&r.sourceWin, len(providers), min(len(providers), max(1, a.bodyHeight()-5)), w, func(i int, _ bool) string {
+		body += renderWindow(&r.sourceWin, len(providers), min(len(providers), a.resultSourceRows()), w, func(i int, _ bool) string {
 			name := provider.DisplayName(providers[i])
 			ev, ok := r.status[name]
 			nameW := max(1, (w-3)/2)
@@ -191,9 +191,59 @@ func (a *App) viewResultSources() string {
 		if ev.Hidden > 0 {
 			body += styleDim.Render(fmt.Sprintf(" · %d hidden by content settings", ev.Hidden))
 		}
+		if row, selected := r.selectedRow(); selected {
+			report := "No report from this source for the selected release."
+			when := "Counts are reported by indexes, not a live peer check."
+			for _, observation := range row.res.WithObservation(time.Time{}).Observations {
+				if observation.Provider != name {
+					continue
+				}
+				report = fmt.Sprintf("Selected release · S %s · L %s", reportedCount(observation.Seeders, !observation.SeedersUnknown), reportedCount(observation.Leechers, !observation.LeechersUnknown))
+				if !observation.FetchedAt.IsZero() {
+					when = "Fetched " + observation.FetchedAt.Local().Format("Jan 2 15:04") + " · index refresh time unknown"
+				}
+				break
+			}
+			body += "\n" + styleDim.Render(truncate(report, w)) + "\n" + styleDim.Render(truncate(when, w))
+		}
 		if ok && ev.State == aggregator.StateFailed && errors.Is(ev.Err, provider.ErrBlocked) {
 			body += "\n" + styleDim.Render("Other sources continue. t retry this source now.")
 		}
 	}
 	return a.chrome("results · "+r.query+" · sources", body, a.keyStrip(a.helpBudget(w)))
+}
+
+func (a *App) resultSourceRows() int {
+	reserve := 5
+	if _, ok := a.results.selectedRow(); ok {
+		reserve += 2
+	}
+	return max(1, a.bodyHeight()-reserve)
+}
+
+func (r *resultsModel) selectedRow() (scoredRow, bool) {
+	idx := -1
+	switch {
+	case r.curated && !r.browser && !r.filtering:
+		if r.pickWin.cursor >= 0 && r.pickWin.cursor < len(r.picks) {
+			idx = r.picks[r.pickWin.cursor].row
+		}
+	case r.grouped && !r.browser:
+		items := r.navItems()
+		if it, ok := currentItem(items, r.gwin.cursor); ok && it.group < len(r.groups) {
+			g := r.groups[it.group]
+			leaf := max(0, it.leaf)
+			if leaf < len(g.rowIdx) {
+				idx = g.rowIdx[leaf]
+			}
+		}
+	default:
+		if r.win.cursor >= 0 && r.win.cursor < len(r.visible) {
+			idx = r.visible[r.win.cursor]
+		}
+	}
+	if idx < 0 || idx >= len(r.rows) {
+		return scoredRow{}, false
+	}
+	return r.rows[idx], true
 }

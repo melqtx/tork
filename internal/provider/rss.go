@@ -204,13 +204,12 @@ func (r *RSS) resultFromItem(it rssItem) (Result, bool) {
 		Title:     title,
 		Size:      size,
 		SizeBytes: sizeBytes,
-		Seeders:   attrs.int("seeders", "seeds"),
-		Leechers:  attrs.int("leechers", "peers"),
-		Magnet:    magnet,
-		Provider:  r.name,
-		Trusted:   attrs.bool("trusted", "verified"),
-		Category:  rssCategory(it, attrs),
-	}, true
+
+		Magnet:   magnet,
+		Provider: r.name,
+		Trusted:  attrs.bool("trusted", "verified"),
+		Category: rssCategory(it, attrs),
+	}.WithSwarm(attrs.first("seeders", "seeds"), attrs.first("leechers", "peers")), true
 }
 
 // rssCategory resolves a listing's category from Torznab attrs or a plain RSS

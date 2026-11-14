@@ -79,6 +79,12 @@ func TestSplitTitle(t *testing.T) {
 		{"[SubsPlease] Sousou no Frieren - 28 (1080p) [ABCD1234].mkv", "sousou no frieren 28", ""},
 		// no year, no tech: the whole title is content
 		{"Andy Weir - Project Hail Mary", "andy weir project hail mary", ""},
+		{"Spiderman Web of Shadows-RELOADED", "spiderman web of shadows reloaded", ""},
+		{"Cam 2018", "cam", "2018"},
+		{"Dark Web", "dark web", ""},
+		{"The Web-Slinger", "the web slinger", ""},
+		{"The Complete Guide 2020", "the complete guide", "2020"},
+		{"Spider-Man 2002 1080p WEB-DL", "spider man", "2002"},
 	}
 	for _, c := range cases {
 		content, year := SplitTitle(c.title)
