@@ -32,6 +32,9 @@ func readableReleaseTitle(raw string) string {
 }
 func releaseQuality(row scoredRow) string {
 	parts := []string{}
+	if res := row.tags.Resolution.String(); res != "" {
+		parts = append(parts, res)
+	}
 	if s := row.tags.Source.String(); s != "" {
 		parts = append(parts, s)
 	}
@@ -49,7 +52,7 @@ func releaseQuality(row scoredRow) string {
 		}
 		return sourceTag(row.res, true)
 	}
-	return strings.Join(parts, " · ")
+	return strings.Join(parts, " ")
 }
 func renderReleaseRow(row scoredRow, width int) string {
 	l := newReleaseLayout(width)
@@ -57,8 +60,10 @@ func renderReleaseRow(row scoredRow, width int) string {
 	if row.res.SizeBytes > 0 {
 		size = humanBytes(row.res.SizeBytes)
 	}
-	availability := fmt.Sprintf("%d seeds", max(0, row.res.Seeders))
-	if row.res.Seeders <= 0 {
+	availability := fmt.Sprintf("%s seeds", reportedCount(row.res.Seeders, row.res.KnownSeeders()))
+	if !row.res.KnownSeeders() {
+		availability = "seeds ?"
+	} else if row.res.Seeders <= 0 {
 		availability = "no seeds"
 	}
 	quality := releaseQuality(row)
@@ -66,6 +71,13 @@ func renderReleaseRow(row scoredRow, width int) string {
 		quality = "—"
 	}
 	return l.render(readableReleaseTitle(row.res.Title), quality, size, availability, false)
+}
+
+func reportedCount(n int, known bool) string {
+	if !known {
+		return "?"
+	}
+	return fmt.Sprint(max(0, n))
 }
 
 // The header and every release use the same grid. Drop optional columns on

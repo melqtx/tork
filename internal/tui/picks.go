@@ -37,82 +37,9 @@ func (p pickPreferences) allows(row scoredRow) bool {
 	return (p.resolutions == 0 || p.resolutions&(1<<uint(row.tags.Resolution)) != 0) && (pickSizes[p.size] == 0 || row.res.SizeBytes > 0 && row.res.SizeBytes <= pickSizes[p.size])
 }
 
-// Relevance is compared before swarm size: a popular wrong title or episode
-// must not displace a match. Uncertain matches remain available in the group.
-func queryMatch(query string, row scoredRow) int {
-	q, year := rank.SplitTitle(query)
-	title, gotYear := rank.SplitTitle(row.res.Title)
-	score := 0
-	if q != "" {
-		if q == title {
-			score = 100
-		} else {
-			words := strings.Fields(q)
-			hits := 0
-			for _, w := range words {
-				if strings.Contains(" "+title+" ", " "+w+" ") {
-					hits++
-				}
-			}
-			if len(words) > 0 {
-				score = 60 * hits / len(words)
-			}
-		}
-	}
-	if year != "" {
-		if year == gotYear {
-			score += 40
-		} else {
-			score -= 80
-		}
-	}
-	t := rank.Parse(query)
-	if t.Season > 0 {
-		if row.tags.Season == t.Season || row.tags.Season <= t.Season && row.tags.SeasonEnd >= t.Season {
-			score += 40
-		} else {
-			score -= 80
-		}
-	}
-	if t.Episode > 0 {
-		if row.tags.Episode == t.Episode {
-			score += 40
-		} else {
-			score -= 80
-		}
-	}
-	return score
-}
+// All views use the same comparator, including explicit seed/size sorts.
 func (r *resultsModel) pickBetter(i, j int) bool {
-	return r.pickRowsBetter(r.rows[i], r.rows[j])
-}
-func (r *resultsModel) pickRowsBetter(a, b scoredRow) bool {
-	am, bm := queryMatch(r.query, a), queryMatch(r.query, b)
-	if am != bm {
-		return am > bm
-	}
-	// Do not assume an unrequested language is undesirable.
-	usable := func(x scoredRow) bool { return x.res.Seeders > 0 && x.tags.Source != rank.SrcCam }
-	if usable(a) != usable(b) {
-		return usable(a)
-	}
-	switch r.pickPrefs.preference {
-	case 1:
-		if (a.res.SizeBytes > 0) != (b.res.SizeBytes > 0) {
-			return a.res.SizeBytes > 0
-		}
-		if a.res.SizeBytes != b.res.SizeBytes {
-			return a.res.SizeBytes < b.res.SizeBytes
-		}
-	case 2:
-		if a.tags.Source != b.tags.Source {
-			return a.tags.Source > b.tags.Source
-		}
-	}
-	if a.score != b.score {
-		return a.score > b.score
-	}
-	return rowIdentity(a) < rowIdentity(b)
+	return r.betterThan(r.rows[i], r.rows[j])
 }
 
 // Resolution groups help video searches, but hide useful games, software and
@@ -339,31 +266,14 @@ func (a *App) viewPicks() string {
 	it := r.picks[r.pickWin.cursor]
 	if it.row >= 0 {
 		row := r.rows[it.row]
-		reason := "ranked by title match, source quality and reported swarm"
-		if row.res.Seeders <= 0 {
-			reason = "no seeders reported · availability uncertain"
-		} else if row.tags.Source == rank.SrcCam {
-			reason = "CAM source · lower image quality"
-		} else if r.pickPrefs.preference == 1 {
-			reason = "smaller known files first, after title match and availability"
-		} else if r.pickPrefs.preference == 2 {
-			reason = "higher source quality first, after title match and availability"
-		}
-		q, qYear := rank.SplitTitle(r.query)
-		title, titleYear := rank.SplitTitle(row.res.Title)
-		if q != "" && q != title {
-			reason = "partial title match · " + reason
-		}
-		if qYear != "" && qYear != titleYear {
-			reason = "year differs or unlisted · " + reason
-		}
+		reason := r.rankingReason(row)
 		label := "Selected · " + sourceTag(row.res, true)
 		body += "\n" + detailRule(label, w) + "\n" + styleFg.Render(row.res.Title) + "\n"
 		facts := releaseQuality(row)
 		if row.res.SizeBytes > 0 {
 			facts += " · " + humanBytes(row.res.SizeBytes)
 		}
-		facts += fmt.Sprintf(" · %d seeds", max(0, row.res.Seeders))
+		facts += fmt.Sprintf(" · %s reported seeds", reportedCount(row.res.Seeders, row.res.KnownSeeders()))
 		body += styleDim.Render(facts) + "\n" + styleDim.Render(reason)
 	} else {
 		body += "\n" + detailRule("More releases", w) + "\n" + styleDim.Render("enter "+strings.ToLower(it.label))

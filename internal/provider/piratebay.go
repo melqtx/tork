@@ -176,13 +176,12 @@ func (p *PirateBay) resultFromItem(it apibayItem) (Result, bool) {
 		Title:     title,
 		Size:      humanSize(sizeBytes),
 		SizeBytes: sizeBytes,
-		Seeders:   atoiDefault(string(it.Seeders)),
-		Leechers:  atoiDefault(string(it.Leechers)),
-		Magnet:    magnet,
-		Provider:  p.name,
-		Category:  pirateBayCategory(atoiDefault(string(it.Category))),
-		Trusted:   isTrustedTPBStatus(it.Status),
-	}, true
+
+		Magnet:   magnet,
+		Provider: p.name,
+		Category: pirateBayCategory(atoiDefault(string(it.Category))),
+		Trusted:  isTrustedTPBStatus(it.Status),
+	}.WithSwarm(string(it.Seeders), string(it.Leechers)), true
 }
 
 // isTrustedTPBStatus reports whether apibay's uploader status marks a release

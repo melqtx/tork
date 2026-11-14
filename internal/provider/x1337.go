@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -131,8 +130,7 @@ func (x *X1337) parseSearchPage(ctx context.Context, doc *goquery.Document, mirr
 		if title == "" || href == "" {
 			return true
 		}
-		seeds, _ := strconv.Atoi(strings.TrimSpace(row.Find("td.seeds").Text()))
-		leeches, _ := strconv.Atoi(strings.TrimSpace(row.Find("td.leeches").Text()))
+
 		// size cell nests a span with the seeder count; keep only the leading text
 		sizeCell := row.Find("td.size").Clone()
 		sizeCell.Find("span").Remove()
@@ -141,12 +139,11 @@ func (x *X1337) parseSearchPage(ctx context.Context, doc *goquery.Document, mirr
 			Title:     title,
 			Size:      size,
 			SizeBytes: parseHumanSize(size),
-			Seeders:   seeds,
-			Leechers:  leeches,
+
 			DetailURL: mirror + href,
 			Provider:  x.Name(),
 			Category:  iconCategory(row),
-		}
+		}.WithSwarm(row.Find("td.seeds").Text(), row.Find("td.leeches").Text())
 		if err := emit(ctx, out, r); err != nil {
 			emitErr = err
 			return false

@@ -32,10 +32,14 @@ func Score(r provider.Result, t Tags, w Weights) float64 {
 	leechers := float64(max(0, r.Leechers))
 
 	score := w.Seeders * math.Log10(1+seeders)
-	score += w.Health * seeders / (seeders + leechers + 1)
+	if r.KnownSeeders() && r.KnownLeechers() {
+		score += w.Health * seeders / (seeders + leechers + 1)
+	}
 	score += w.Quality * qualityBoost(t)
 	score += w.Trusted * trustBoost(r)
-	score -= deadPenalty(r.Seeders, w)
+	if r.KnownSeeders() {
+		score -= deadPenalty(r.Seeders, w)
+	}
 	return score
 }
 

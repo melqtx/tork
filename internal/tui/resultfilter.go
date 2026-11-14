@@ -165,6 +165,10 @@ func parseFilterToken(token string) (func(scoredRow) bool, bool, error) {
 		positive := predicate
 		predicate = func(row scoredRow) bool { return !positive(row) }
 	}
+	if key == "seeders" || key == "seed" {
+		knownPredicate := predicate
+		predicate = func(row scoredRow) bool { return row.res.KnownSeeders() && knownPredicate(row) }
+	}
 	return predicate, true, nil
 }
 

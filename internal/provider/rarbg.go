@@ -28,12 +28,12 @@ func NewRARBG(client *http.Client, bases ...string) *RARBG {
 func (*RARBG) Name() string { return "therarbg" }
 
 type rarbgItem struct {
-	Title    string `json:"n"`
-	Category string `json:"c"`
-	Hash     string `json:"h"`
-	Size     int64  `json:"s"`
-	Seeders  int    `json:"se"`
-	Leechers int    `json:"le"`
+	Title    string    `json:"n"`
+	Category string    `json:"c"`
+	Hash     string    `json:"h"`
+	Size     int64     `json:"s"`
+	Seeders  apiNumber `json:"se"`
+	Leechers apiNumber `json:"le"`
 }
 
 func (p *RARBG) Search(ctx context.Context, query string, out chan<- Result) error {
@@ -77,7 +77,7 @@ func (p *RARBG) Search(ctx context.Context, query string, out chan<- Result) err
 			if (Result{Magnet: magnet}).InfoHash() == "" || strings.EqualFold(item.Hash, strings.Repeat("0", 40)) {
 				continue
 			}
-			r := Result{Title: item.Title, Category: item.Category, Magnet: magnet, SizeBytes: max(0, item.Size), Seeders: max(0, item.Seeders), Leechers: max(0, item.Leechers), Provider: p.Name()}
+			r := Result{Title: item.Title, Category: item.Category, Magnet: magnet, SizeBytes: max(0, item.Size), Provider: p.Name()}.WithSwarm(string(item.Seeders), string(item.Leechers))
 			if r.SizeBytes > 0 {
 				r.Size = humanSize(r.SizeBytes)
 			}

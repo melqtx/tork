@@ -44,3 +44,13 @@ func TestTrustedBoost(t *testing.T) {
 		t.Errorf("trusted (%.1f) should beat untrusted (%.1f)", trusted, untrusted)
 	}
 }
+
+func TestUnknownAvailabilityDoesNotReceiveDeadPenalty(t *testing.T) {
+	r := provider.Result{Title: "Example 1080p", SeedersUnknown: true, LeechersUnknown: true}
+	unknown := Score(r, Parse(r.Title), DefaultWeights())
+	r.SeedersUnknown = false
+	zero := Score(r, Parse(r.Title), DefaultWeights())
+	if unknown-zero != DefaultWeights().DeadPenalty {
+		t.Fatalf("unknown=%.1f zero=%.1f", unknown, zero)
+	}
+}

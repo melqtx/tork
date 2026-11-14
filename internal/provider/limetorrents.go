@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
@@ -82,7 +81,7 @@ func (p *LimeTorrents) Search(ctx context.Context, query string, out chan<- Resu
 			if i := strings.LastIndex(added, " in "); i >= 0 {
 				category = strings.TrimSpace(strings.TrimSuffix(added[i+4:], "."))
 			}
-			r := Result{Title: title, DetailURL: detail.String(), Provider: p.Name(), Category: category, Size: size, SizeBytes: parseHumanSize(size), Seeders: commaCount(row.Find(".tdseed").Text()), Leechers: commaCount(row.Find(".tdleech").Text())}
+			r := Result{Title: title, DetailURL: detail.String(), Provider: p.Name(), Category: category, Size: size, SizeBytes: parseHumanSize(size)}.WithSwarm(row.Find(".tdseed").Text(), row.Find(".tdleech").Text())
 			if err := emit(ctx, out, r); err != nil {
 				emitErr = err
 				return false
@@ -138,9 +137,4 @@ func (p *LimeTorrents) ResolveMagnet(ctx context.Context, r Result) (string, err
 		return "", errors.New("no usable magnet on detail page")
 	}
 	return magnet, nil
-}
-
-func commaCount(text string) int {
-	n, _ := strconv.Atoi(strings.ReplaceAll(strings.TrimSpace(text), ",", ""))
-	return max(0, n)
 }

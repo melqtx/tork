@@ -56,9 +56,8 @@ func (r Result) Trackers() []string {
 //     record, so a torrent listed three times means three partial views of one
 //     swarm; announcing to the union finds peers that no single listing would
 //     have led us to.
-//   - seeders/leechers: the higher of the two. The indexes scraped different
-//     trackers at different times, and a swarm is at least as large as the
-//     biggest count anyone reports for it.
+//   - observations: retain each source's report and use one paired seed/leech
+//     observation for scoring, without treating missing counts as zero.
 //   - trusted: one index vouching for a release is enough.
 //   - size: whichever is known. Identical infohashes are identical bytes, so a
 //     zero here only ever means "that index didn't say".
@@ -70,8 +69,17 @@ func (r Result) Trackers() []string {
 // widening the set of trackers we ask about peers.
 func Merge(keep, other Result) Result {
 	out := keep
-	out.Seeders = max(keep.Seeders, other.Seeders)
-	out.Leechers = max(keep.Leechers, other.Leechers)
+	out.Observations = mergeObservations(keep, other)
+	// Use an actual reported pair for scoring. Combining independent maxima
+	// would invent a seed/leech ratio no source observed.
+	best := out.Observations[0]
+	for _, observation := range out.Observations[1:] {
+		if observationBetter(observation, best) {
+			best = observation
+		}
+	}
+	out.Seeders, out.Leechers = best.Seeders, best.Leechers
+	out.SeedersUnknown, out.LeechersUnknown = best.SeedersUnknown, best.LeechersUnknown
 	out.Trusted = keep.Trusted || other.Trusted
 	if out.SizeBytes <= 0 && other.SizeBytes > 0 {
 		// Take the scraped string with the byte count, or the row would sort by

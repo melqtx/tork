@@ -101,12 +101,11 @@ func (k *Knaben) Search(ctx context.Context, query string, out chan<- Result) er
 			Title:     title,
 			Size:      size,
 			SizeBytes: parseHumanSize(size),
-			Seeders:   atoiDefault(tds.Eq(4).Text()),
-			Leechers:  atoiDefault(tds.Eq(5).Text()),
-			Magnet:    magnet,
-			Provider:  k.Name(),
-			Category:  category,
-		}
+
+			Magnet:   magnet,
+			Provider: k.Name(),
+			Category: category,
+		}.WithSwarm(tds.Eq(4).Text(), tds.Eq(5).Text())
 		if err := emit(ctx, out, r); err != nil {
 			emitErr = err
 			return false

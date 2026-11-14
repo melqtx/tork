@@ -39,18 +39,13 @@ func (a *App) browseWidth() int {
 	return w
 }
 func browseReleaseLayout(width int) releaseLayout {
-	l := newReleaseLayout(width)
-	if l.quality > 14 {
-		l.title += l.quality - 14
-		l.quality = 14
-	}
-	return l
+	return newReleaseLayout(width)
 }
 func (a *App) browseRows() int {
 	if a.bodyHeight() < 12 {
 		return max(1, a.bodyHeight()-5)
 	}
-	return max(1, a.bodyHeight()-9)
+	return max(1, a.bodyHeight()-10)
 }
 func (a *App) editBrowseSearch() tea.Cmd {
 	a.results.editSearch = true
@@ -130,15 +125,18 @@ func (a *App) viewBrowse() string {
 		sortLabel = "relevance"
 	}
 	summary += " · " + sortLabel
+	if r.sort == sortScore {
+		summary += " · " + strings.ToLower(pickModes[r.pickPrefs.preference])
+	}
 	if r.filterIn.Value() != "" || r.pickPrefs.resolutions != 0 || r.pickPrefs.size != 0 {
 		summary += " · filtered"
 	}
 	if r.hideDead {
-		summary += " · seeded only"
+		summary += " · zero seeds hidden"
 	}
 	body := truncate(search, w) + "\n" + rule(w) + "\n" + styleBrand.Render(summary) + "\n"
 	body += a.resultSourceSummary(w) + "\n"
-	body += " " + browseReleaseLayout(w-1).render("Name", "Source", "Size", "Seeders", true) + "\n"
+	body += " " + browseReleaseLayout(w-1).render("Name", "Quality", "Size", "Seeders", true) + "\n"
 	if len(r.visible) == 0 {
 		message := "No matches. Change category or filters. / edit search"
 		if r.searching {
@@ -152,20 +150,21 @@ func (a *App) viewBrowse() string {
 			if row.res.SizeBytes > 0 {
 				size = humanBytes(row.res.SizeBytes)
 			}
-			seeds := fmt.Sprint(max(0, row.res.Seeders))
-			return browseReleaseLayout(w-1).render(readableReleaseTitle(row.res.Title), sourceTag(row.res, true), size, seeds, false)
+			seeds := reportedCount(row.res.Seeders, row.res.KnownSeeders())
+			return browseReleaseLayout(w-1).render(readableReleaseTitle(row.res.Title), releaseQuality(row), size, seeds, false)
 		})
 	}
 	if a.bodyHeight() >= 12 {
 		label := "Choose a result · enter preview"
-		title, facts := "", ""
+		title, facts, reason := "", "", ""
 		if r.win.cursor < len(r.visible) {
 			row := r.rows[r.visible[r.win.cursor]]
 			label = fmt.Sprintf("Selected %d / %d", r.win.cursor+1, len(r.visible))
 			title = row.res.Title
-			facts = browseCategory(row) + " · " + sourceTag(row.res, true) + " · enter preview · Y copy magnet"
+			reason = r.rankingReason(row)
+			facts = browseCategory(row) + " · " + releaseQuality(row) + " · " + sourceTag(row.res, true) + " · enter preview · Y copy magnet"
 		}
-		body += "\n" + detailRule(label, w) + "\n" + styleFg.Render(truncate(title, w)) + "\n" + styleDim.Render(truncate(facts, w))
+		body += "\n" + detailRule(label, w) + "\n" + styleFg.Render(truncate(title, w)) + "\n" + styleDim.Render(truncate(facts, w)) + "\n" + styleDim.Render(truncate(reason, w))
 	}
 	nav := a.browseNav()
 	if a.contentWidth() >= 76 {

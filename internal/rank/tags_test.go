@@ -62,3 +62,11 @@ func TestIsPack(t *testing.T) {
 		}
 	}
 }
+
+func TestContentWordsAreNotSourceTags(t *testing.T) {
+	for _, title := range []string{"Spiderman Web of Shadows-RELOADED", "Cam 2018", "Dark Web", "The Web-Slinger"} {
+		if got := Parse(title).Source; got != SrcUnknown {
+			t.Errorf("%q parsed as %v", title, got)
+		}
+	}
+}

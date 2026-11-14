@@ -6,6 +6,7 @@ package rank
 import (
 	"regexp"
 	"strconv"
+	"strings"
 )
 
 type Resolution int
@@ -100,10 +101,10 @@ var (
 	reRemux  = regexp.MustCompile(`(?i)\bremux\b`)
 	reBluRay = regexp.MustCompile(`(?i)\b(blu-?ray|bdrip|brrip|bdmv)\b`)
 	reWebRip = regexp.MustCompile(`(?i)\bweb-?rip\b`)
-	reWebDL  = regexp.MustCompile(`(?i)\bweb[ ._-]?dl\b|\bweb\b`) // bare WEB defaults to WEB-DL
+	reWebDL  = regexp.MustCompile(`(?i)\bweb[ ._-]?dl\b`)
 	reHDTV   = regexp.MustCompile(`(?i)\bhdtv\b`)
 	reDVD    = regexp.MustCompile(`(?i)\b(dvdrip|dvd)\b`)
-	reCam    = regexp.MustCompile(`(?i)\b(cam|hdcam|camrip|telesync|telecine|hdts|ts|tc)\b`)
+	reCam    = regexp.MustCompile(`(?i)\b(hdcam|camrip|telesync|telecine|hdts)\b`)
 
 	reX265 = regexp.MustCompile(`(?i)\b(x265|hevc|h[ .]?265)\b`)
 	reX264 = regexp.MustCompile(`(?i)\b(x264|h[ .]?264|avc)\b`)
@@ -140,13 +141,13 @@ func Parse(title string) Tags {
 		t.Source = SrcBluRay
 	case reWebRip.MatchString(title):
 		t.Source = SrcWebRip
-	case reWebDL.MatchString(title):
+	case reWebDL.MatchString(title) || contextualSource(title, "web"):
 		t.Source = SrcWebDL
 	case reHDTV.MatchString(title):
 		t.Source = SrcHDTV
 	case reDVD.MatchString(title):
 		t.Source = SrcDVD
-	case reCam.MatchString(title):
+	case reCam.MatchString(title) || contextualSource(title, "cam", "ts", "tc"):
 		t.Source = SrcCam
 	}
 
@@ -178,6 +179,18 @@ func Parse(title string) Tags {
 	}
 
 	return t
+}
+
+func contextualSource(title string, sources ...string) bool {
+	s := reSepChars.ReplaceAllString(title, " ")
+	for _, loc := range reBareSource.FindAllStringIndex(s, -1) {
+		for _, source := range sources {
+			if strings.EqualFold(s[loc[0]:loc[1]], source) && sourceMetadata(s, loc) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // IsPack reports whether the release covers a whole season (or more) rather

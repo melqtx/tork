@@ -163,7 +163,7 @@ func (e *EZTV) apiPage(ctx context.Context, id string, page, limit int) ([]Resul
 			continue
 		}
 		size := int64Default(string(t.Size))
-		rows = append(rows, Result{Title: title, Magnet: magnet, Size: humanSize(size), SizeBytes: size, Seeders: atoiDefault(string(t.Seeds)), Leechers: atoiDefault(string(t.Peers)), Provider: e.Name(), Category: "TV"})
+		rows = append(rows, Result{Title: title, Magnet: magnet, Size: humanSize(size), SizeBytes: size, Seeders: atoiDefault(string(t.Seeds)), Leechers: atoiDefault(string(t.Peers)), Provider: e.Name(), Category: "TV"}.WithSwarm(string(t.Seeds), string(t.Peers)))
 	}
 	if len(body.Torrents) > 0 && len(rows) == 0 {
 		return nil, 0, ErrResponseFormat

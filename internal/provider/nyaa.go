@@ -64,18 +64,17 @@ func (n *Nyaa) Search(ctx context.Context, query string, out chan<- Result) erro
 		if it.InfoHash == "" {
 			continue
 		}
-		seeders, _ := strconv.Atoi(it.Seeders)
-		leechers, _ := strconv.Atoi(it.Leechers)
+
 		r := Result{
 			Title:     it.Title,
 			Size:      it.Size,
 			SizeBytes: parseHumanSize(it.Size),
-			Seeders:   seeders,
-			Leechers:  leechers,
-			Magnet:    BuildMagnet(it.InfoHash, it.Title, DefaultTrackers),
-			Provider:  n.Name(),
-			Trusted:   strings.EqualFold(strings.TrimSpace(it.Trusted), "yes"),
-		}
+
+			Magnet:   BuildMagnet(it.InfoHash, it.Title, DefaultTrackers),
+			Provider: n.Name(),
+			Category: "Anime",
+			Trusted:  strings.EqualFold(strings.TrimSpace(it.Trusted), "yes"),
+		}.WithSwarm(it.Seeders, it.Leechers)
 		if err := emit(ctx, out, r); err != nil {
 			return err
 		}
