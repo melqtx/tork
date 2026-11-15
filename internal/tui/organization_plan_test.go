@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/melqtx/tork/internal/config"
@@ -26,7 +27,11 @@ func TestOrganizationPreviewDoesNotMoveOrRecategorize(t *testing.T) {
 	plan.moves[0].choose(cfg, "movies", "manual")
 	for _, width := range []int{32, 80, 120} {
 		a.width, a.height = width, 24
-		assertRenderFits(t, a.viewOrganizationPlan(plan), width)
+		view := a.viewOrganizationPlan(plan)
+		assertRenderFits(t, view, width)
+		if !strings.Contains(view, "tork/movies") {
+			t.Fatalf("preview hides destination folder: %s", view)
+		}
 	}
 	if st.Entries[0].Category != "books" {
 		t.Fatal("preview changed the saved category")

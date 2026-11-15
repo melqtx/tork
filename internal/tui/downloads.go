@@ -147,6 +147,7 @@ type downloadsModel struct {
 	categoryFilter     *string
 	categoryMenu       *categoryMenu
 	categoryMove       *downloadCategoryMove
+	organizationPlan   *organizationPlan
 	moving             bool
 	savingOrganization bool
 	snaps              []engine.Snapshot
@@ -242,6 +243,9 @@ func (a *App) updateDownloads(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if d.categoryMove != nil {
 		return a.updateDownloadCategoryMove(key)
 	}
+	if d.organizationPlan != nil {
+		return a.updateOrganizationPlan(key)
+	}
 
 	items := a.downloadItems()
 	rows := a.downloadListRows()
@@ -260,6 +264,9 @@ func (a *App) updateDownloads(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 	case "O":
 		return a, a.toggleOrganization()
+	case "A":
+		d.organizationPlan = a.buildOrganizationPlan()
+		return a, nil
 	case "q":
 		return a, tea.Quit
 	case "esc":
@@ -1047,14 +1054,14 @@ func movePayload(oldPath, newPath string) error {
 	var moves []move
 	for _, suffix := range []string{"", ".part", ".part.meta"} {
 		old, target := oldPath+suffix, newPath+suffix
+		if _, err := os.Lstat(target); err == nil {
+			return fmt.Errorf("target already exists: %s", target)
+		} else if !os.IsNotExist(err) {
+			return err
+		}
 		if info, err := os.Lstat(old); err == nil {
 			if info.Mode()&os.ModeSymlink != 0 {
 				return fmt.Errorf("move refused: source is a symlink")
-			}
-			if _, err := os.Lstat(target); err == nil {
-				return fmt.Errorf("target already exists: %s", target)
-			} else if !os.IsNotExist(err) {
-				return err
 			}
 			moves = append(moves, move{old, target})
 		} else if !os.IsNotExist(err) {
@@ -1118,6 +1125,9 @@ func safeDownloadPath(dir, path string) bool {
 
 func (a *App) viewDownloads() string {
 	d := &a.downloads
+	if d.organizationPlan != nil {
+		return a.viewOrganizationPlan(d.organizationPlan)
+	}
 	if d.categoryMove != nil {
 		return a.viewDownloadCategoryMove(d.categoryMove)
 	}

@@ -47,6 +47,10 @@ func TestCategoryMoveCommitsOnlyAfterBackgroundResult(t *testing.T) {
 	if err := json.Unmarshal(raw, &journal); err != nil || journal.Entries[0].PendingMove == nil {
 		t.Fatalf("move has no durable recovery record: %v", err)
 	}
+	recovered, err := state.Load(cfg.StatePath())
+	if err != nil || recovered.Entries[0].Category != "movies" || recovered.Entries[0].PendingMove != nil {
+		t.Fatalf("restart between rename and UI commit failed: %+v, %v", recovered, err)
+	}
 	a.Update(msg)
 	want := filepath.Join(destination.DownloadDir, "payload.txt")
 	if data, err := os.ReadFile(want); err != nil || string(data) != "preserve me" {

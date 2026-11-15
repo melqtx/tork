@@ -395,7 +395,7 @@ func (a *App) navigationLocked() bool {
 	return (a.screen == screenSources && (a.sources.editor != nil || a.sources.catalog != nil || a.sources.removing != "")) ||
 		(a.screen == screenResults && a.results.pickPanel) || a.screen == screenPreview || (a.screen == screenDownloads &&
 		(a.downloads.prompt.action != pathActionNone || a.downloads.confirmRemove != nil ||
-			a.downloads.categoryMenu != nil || a.downloads.categoryMove != nil))
+			a.downloads.categoryMenu != nil || a.downloads.categoryMove != nil || a.downloads.organizationPlan != nil))
 }
 
 func (a *App) focusSearch() tea.Cmd {
