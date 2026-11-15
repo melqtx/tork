@@ -9,9 +9,10 @@ import (
 )
 
 type categoryMenu struct {
-	options []config.Category
-	win     listWindow
-	editor  *categoryEditor
+	options     []config.Category
+	win         listWindow
+	editor      *categoryEditor
+	allowCreate bool
 }
 
 type previewCategoryChangedMsg struct {
@@ -24,7 +25,7 @@ func (a *App) openPreviewCategories() tea.Cmd {
 	if !a.preview.owned {
 		return a.showToast("already added · change it from downloads", toastOK, toastQuick)
 	}
-	m := &categoryMenu{options: a.cfg.Organization.Categories()}
+	m := &categoryMenu{options: a.cfg.Organization.Categories(), allowCreate: true}
 	for i, category := range m.options {
 		if category.ID == a.preview.category {
 			m.win.cursor = i
@@ -85,6 +86,10 @@ func (a *App) viewCategoryMenu(m *categoryMenu) string {
 	b.WriteString(styleTitle.Render("Choose category") + "\n\n")
 	b.WriteString(renderWindow(&m.win, len(m.options), max(1, a.bodyHeight()-2), width,
 		func(i int, selected bool) string { return m.options[i].Name }))
-	return a.chrome("categories", b.String(),
-		hints(hint("↑↓", "choose"), hint("enter", "apply"), hint("a", "add category"), hint("esc", "back")))
+	help := []string{hint("↑↓", "choose"), hint("enter", "apply")}
+	if m.allowCreate {
+		help = append(help, hint("a", "add category"))
+	}
+	help = append(help, hint("esc", "back"))
+	return a.chrome("categories", b.String(), hints(help...))
 }
