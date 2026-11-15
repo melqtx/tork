@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/melqtx/tork/internal/engine"
 	"github.com/melqtx/tork/internal/isos"
 )
 
@@ -161,6 +162,11 @@ func (a *App) viewISOs() string {
 // the engine. It reuses torrentAddedMsg, so a resolved image flows into the
 // same download/state path as any other add.
 func (a *App) downloadISOCmd(d isos.Distro) tea.Cmd {
+	destination, err := a.cfg.ResolveDownloadDestination("linux")
+	if err != nil {
+		return a.showError(err.Error())
+	}
+	cfg := *a.cfg
 	a.pendingAdds++
 	return func() (msg tea.Msg) {
 		defer guard(&msg, func(r any) tea.Msg {
@@ -168,24 +174,33 @@ func (a *App) downloadISOCmd(d isos.Distro) tea.Cmd {
 		})
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
+		if err := cfg.PrepareDownloadDestination(destination); err != nil {
+			return torrentAddedMsg{name: d.Name, err: err}
+		}
+		opts := engine.AddOptions{DownloadDir: destination.DownloadDir}
 
 		t, err := isos.ResolveWithClient(ctx, d, a.cfg.ProxyHTTPClient())
 		if err != nil {
 			return torrentAddedMsg{name: d.Name, err: err}
 		}
 		if t.DirectURL != "" { // no torrent published: plain-https download
-			h, aerr := a.eng.AddDirect(t.DirectURL, t.Title, t.SHA256)
-			return torrentAddedMsg{hash: h, magnet: t.DirectURL, name: t.Title, sha256: t.SHA256, err: aerr}
+			h, aerr := a.eng.AddDirectWithOptions(t.DirectURL, t.Title, t.SHA256, opts)
+			return torrentAddedMsg{
+				hash: h, magnet: t.DirectURL, name: t.Title, sha256: t.SHA256,
+				category: destination.Category, err: aerr,
+			}
 		}
 		if t.Magnet != "" {
-			h, aerr := a.eng.Add(t.Magnet, nil)
-			return torrentAddedMsg{hash: h, magnet: t.Magnet, name: t.Title, err: aerr}
+			h, aerr := a.eng.AddWithOptions(t.Magnet, opts)
+			return torrentAddedMsg{
+				hash: h, magnet: t.Magnet, name: t.Title, category: destination.Category, err: aerr,
+			}
 		}
-		h, name, magnet, aerr := a.eng.AddTorrentURL(ctx, t.URL)
+		h, name, magnet, aerr := a.eng.AddTorrentURLWithOptions(ctx, t.URL, opts)
 		if name == "" {
 			name = t.Title
 		}
-		return torrentAddedMsg{hash: h, magnet: magnet, name: name, err: aerr}
+		return torrentAddedMsg{hash: h, magnet: magnet, name: name, category: destination.Category, err: aerr}
 	}
 }
 

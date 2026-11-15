@@ -9,6 +9,7 @@ import (
 	"github.com/muesli/termenv"
 
 	"github.com/melqtx/tork/internal/aggregator"
+	"github.com/melqtx/tork/internal/config"
 	"github.com/melqtx/tork/internal/provider"
 	"github.com/melqtx/tork/internal/rank"
 )
@@ -261,7 +262,7 @@ func TestGraphMeterDropsOnNarrow(t *testing.T) {
 // TestGraphDirectKey wires the D shortcut to a direct (no-preview) download of
 // the row under the cursor, matching the flat view.
 func TestGraphDirectKey(t *testing.T) {
-	a := &App{}
+	a := &App{cfg: config.Default(t.TempDir())}
 	a.results.rows = []scoredRow{
 		{res: provider.Result{Title: "Solo 1080p", Provider: "yts", Magnet: "magnet:?x"}},
 	}

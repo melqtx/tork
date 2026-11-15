@@ -30,6 +30,7 @@ type previewModel struct {
 	startedAt     time.Time
 	excluded      map[int]bool // keyed by FileInfo.Index
 	saveDir       string
+	category      string
 	autoSkipped   int // extras deselected on arrival, reported in the header
 	win           listWindow
 	statsReady    bool
@@ -344,15 +345,25 @@ func magnetHashPrefix(magnet string) string {
 // startPreviewDownload commits the file selection and jumps to downloads.
 func (a *App) startPreviewDownload() tea.Cmd {
 	p := &a.preview
+	if !p.owned {
+		a.screen = screenDownloads
+		return a.showToast("already in downloads", toastOK, toastQuick)
+	}
 	excluded := p.excludedSlice()
 	a.eng.StartDownload(p.hash, excluded)
 	entry := state.Entry{
 		Magnet:      p.magnet,
 		Name:        p.name,
+		Category:    p.category,
 		AddedAt:     time.Now().UTC(),
 		Excluded:    excluded,
 		DownloadDir: a.cfg.DownloadDir,
 		Seed:        state.Bool(a.cfg.SeedAfterComplete),
+	}
+	if existing := a.findDownloadEntry(p.magnet); existing != nil {
+		entry = *existing
+		entry.Excluded = excluded
+		entry.Paused = false
 	}
 	if snap, ok := a.eng.Snapshot(p.hash); ok {
 		applySnapshotToEntry(&entry, snap)

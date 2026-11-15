@@ -355,6 +355,14 @@ func (a *App) onPreviewReady(msg previewReadyMsg) tea.Cmd {
 		return a.showError("preview failed: " + msg.err.Error())
 	}
 	a.preview = newPreviewModel(msg.hash, msg.magnet, msg.name, msg.from, msg.owned)
+	a.preview.category = msg.category
+	if !msg.owned && a.st != nil {
+		if snap, ok := a.eng.Snapshot(msg.hash); ok {
+			if entry := a.findDownloadEntry(snap.Magnet); entry != nil {
+				a.preview.category = entry.Category
+			}
+		}
+	}
 	a.screen = screenPreview
 	a.preview.refresh(a.eng) // metadata may already be cached
 	return a.ensureTick()
@@ -417,6 +425,7 @@ func (a *App) onTorrentAdded(msg torrentAddedMsg) tea.Cmd {
 	entry := state.Entry{
 		Magnet:            msg.magnet,
 		Name:              msg.name,
+		Category:          msg.category,
 		SHA256:            msg.sha256,
 		ChecksumAlgorithm: string(msg.checksum.Algorithm),
 		Checksum:          msg.checksum.Hex,
@@ -430,6 +439,10 @@ func (a *App) onTorrentAdded(msg torrentAddedMsg) tea.Cmd {
 		entry.Seed = state.Bool(false)
 	}
 	if snap, ok := a.eng.Snapshot(msg.hash); ok {
+		if existing := a.findDownloadEntry(snap.Magnet); existing != nil {
+			entry = *existing
+		}
+		entry.Paused = snap.State == engine.StatePaused
 		applySnapshotToEntry(&entry, snap)
 	}
 	a.st.Upsert(entry)
