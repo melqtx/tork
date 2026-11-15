@@ -29,7 +29,7 @@
           })
         ];
       };
-      version = "0.5.0";
+      version = "0.5.1";
       vendorHash = "sha256-gQLqY3trLGP/2teQlR+px+/iIKyzEs90pi52ufRXufc=";
     in
     {
