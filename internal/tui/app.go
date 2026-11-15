@@ -362,11 +362,11 @@ func (a *App) onPreviewReady(msg previewReadyMsg) tea.Cmd {
 		return a.showError("preview failed: " + msg.err.Error())
 	}
 	a.preview = newPreviewModel(msg.hash, msg.magnet, msg.name, msg.from, msg.owned)
-	a.preview.category = msg.category
+	a.preview.category, a.preview.categorySource = msg.category, msg.categorySource
 	if !msg.owned && a.st != nil {
 		if snap, ok := a.eng.Snapshot(msg.hash); ok {
 			if entry := a.findDownloadEntry(snap.Magnet); entry != nil {
-				a.preview.category = entry.Category
+				a.preview.category, a.preview.categorySource = entry.Category, entry.CategorySource
 			}
 		}
 	}
@@ -435,6 +435,7 @@ func (a *App) onTorrentAdded(msg torrentAddedMsg) tea.Cmd {
 		Magnet:            msg.magnet,
 		Name:              msg.name,
 		Category:          msg.category,
+		CategorySource:    msg.categorySource,
 		SHA256:            msg.sha256,
 		ChecksumAlgorithm: string(msg.checksum.Algorithm),
 		Checksum:          msg.checksum.Hex,

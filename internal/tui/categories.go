@@ -73,6 +73,7 @@ func (a *App) onPreviewCategoryChanged(msg previewCategoryChangedMsg) tea.Cmd {
 		return a.showError(msg.err.Error())
 	}
 	a.preview.category, a.preview.saveDir = msg.destination.Category, msg.destination.DownloadDir
+	a.preview.categorySource = "manual"
 	a.preview.categories = nil
 	return nil
 }

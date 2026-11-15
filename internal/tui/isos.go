@@ -187,20 +187,20 @@ func (a *App) downloadISOCmd(d isos.Distro) tea.Cmd {
 			h, aerr := a.eng.AddDirectWithOptions(t.DirectURL, t.Title, t.SHA256, opts)
 			return torrentAddedMsg{
 				hash: h, magnet: t.DirectURL, name: t.Title, sha256: t.SHA256,
-				category: destination.Category, err: aerr,
+				category: destination.Category, categorySource: "official", err: aerr,
 			}
 		}
 		if t.Magnet != "" {
 			h, aerr := a.eng.AddWithOptions(t.Magnet, opts)
 			return torrentAddedMsg{
-				hash: h, magnet: t.Magnet, name: t.Title, category: destination.Category, err: aerr,
+				hash: h, magnet: t.Magnet, name: t.Title, category: destination.Category, categorySource: "official", err: aerr,
 			}
 		}
 		h, name, magnet, aerr := a.eng.AddTorrentURLWithOptions(ctx, t.URL, opts)
 		if name == "" {
 			name = t.Title
 		}
-		return torrentAddedMsg{hash: h, magnet: magnet, name: name, category: destination.Category, err: aerr}
+		return torrentAddedMsg{hash: h, magnet: magnet, name: name, category: destination.Category, categorySource: "official", err: aerr}
 	}
 }
 
