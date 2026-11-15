@@ -71,3 +71,45 @@ func TestOrganizeExistingRequiresApprovalAndPreservesBytes(t *testing.T) {
 	}
 
 }
+
+func TestOrganizationStopsAtCollisionAndCanRetry(t *testing.T) {
+	cfg := config.Default(t.TempDir())
+	cfg.DownloadDir = t.TempDir()
+	old := t.TempDir()
+	st := &state.State{}
+	for _, name := range []string{"first.txt", "second.txt"} {
+		path := filepath.Join(old, name)
+		if err := os.WriteFile(path, []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		st.Upsert(state.Entry{Magnet: name, Name: name, Category: "books", Paused: true,
+			DownloadDir: old, DataPath: path, Seed: state.Bool(false)})
+	}
+	destination := filepath.Join(cfg.DownloadDir, "books")
+	if err := os.MkdirAll(destination, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	occupied := filepath.Join(destination, "second.txt")
+	if err := os.WriteFile(occupied, []byte("unrelated"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := New(cfg, &engine.Engine{}, nil, st, nil)
+	a.screen = screenDownloads
+	a.downloads.organizationPlan = a.buildOrganizationPlan()
+	_, cmd := a.updateOrganizationPlan(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd = a.Update(cmd())
+	a.Update(cmd())
+	p := a.downloads.organizationPlan
+	if p == nil || p.running || st.Entries[1].DownloadDir != old || p.moves[0].changed(p.moves[0].item) {
+		t.Fatal("collision did not stop with accurate locations")
+	}
+	if data, err := os.ReadFile(occupied); err != nil || string(data) != "unrelated" {
+		t.Fatalf("overwrote an unrelated file: %v", err)
+	}
+	p.moves[1].choose(cfg, "movies", "manual")
+	_, cmd = a.updateOrganizationPlan(tea.KeyMsg{Type: tea.KeyEnter})
+	a.Update(cmd())
+	if a.downloads.organizationPlan != nil || st.Entries[1].Category != "movies" {
+		t.Fatal("corrected plan did not finish on retry")
+	}
+}

@@ -37,4 +37,21 @@ func TestMoveMetadataOnlyDownload(t *testing.T) {
 	if !ok || snap.State != engine.StateFetchingMeta || snap.DownloadDir != target || st.Entries[0].DownloadDir != target {
 		t.Fatalf("metadata download did not follow its new destination: %+v", snap)
 	}
+	destination, err := cfg.ResolveCategoryDestination("anime")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.downloads.snaps = eng.Snapshots()
+	a.refreshDownloadItems()
+	cmd := a.startCategoryMove(a.downloadItems()[0], destination, "manual")
+	a.Update(cmd())
+	snap, ok = eng.Snapshot(h)
+	if !ok || snap.State != engine.StateFetchingMeta || snap.DownloadDir != destination.DownloadDir {
+		t.Fatalf("background move lost metadata discovery: %+v", snap)
+	}
+	loaded, err := state.Load(cfg.StatePath())
+	if err != nil || loaded.Entries[0].Category != "anime" || loaded.Entries[0].CategorySource != "manual" {
+		t.Fatalf("metadata move was not saved: %+v, %v", loaded, err)
+	}
+
 }

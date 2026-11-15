@@ -72,3 +72,18 @@ func TestCategoryFoldersStayUnderConfiguredRoot(t *testing.T) {
 		}
 	}
 }
+
+func TestCustomCategoryDefaultsToLowercaseFolder(t *testing.T) {
+	cfg := Default(t.TempDir())
+	if _, err := cfg.WriteCategory("Courses", ""); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadReadOnlyFrom(cfg.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination, err := loaded.ResolveCategoryDestination("Courses")
+	if err != nil || filepath.Base(destination.DownloadDir) != "courses" {
+		t.Fatalf("default custom folder = %+v, %v", destination, err)
+	}
+}
