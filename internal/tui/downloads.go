@@ -149,6 +149,7 @@ type downloadsModel struct {
 	snaps              []engine.Snapshot
 	items              []downloadItem
 	metrics            downloadMetrics
+	allMetrics         downloadMetrics
 	itemsReady         bool
 	selectedKey        string
 	selectionPinned    bool // false follows the most actionable item until the user moves
@@ -524,7 +525,9 @@ func (a *App) refreshDownloadItems() {
 	if selected == "" && d.win.cursor >= 0 && d.win.cursor < len(d.items) {
 		selected = downloadItemKey(d.items[d.win.cursor])
 	}
-	items := a.filterDownloadItems(a.buildDownloadItems())
+	allItems := a.buildDownloadItems()
+	d.allMetrics = summarizeDownloads(allItems)
+	items := a.filterDownloadItems(allItems)
 	sort.SliceStable(items, func(i, j int) bool {
 		return downloadStatePriority(items[i].State) < downloadStatePriority(items[j].State)
 	})
@@ -1455,7 +1458,7 @@ func (a *App) downloadsContext(m downloadMetrics) string {
 // queuing a download no longer jumps to the downloads screen: without it, a
 // download started from the results list would vanish from view entirely.
 func (a *App) activityChip() string {
-	m := a.downloads.metrics
+	m := a.downloads.allMetrics
 	switch {
 	case m.Active > 0:
 		return styleOK.Render(fmt.Sprintf("↓ %d", m.Active)) + styleDim.Render("  "+humanSpeed(m.SpeedBps))
