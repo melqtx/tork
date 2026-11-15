@@ -398,3 +398,16 @@ func TestApplyVerifyResultClearsCompletionState(t *testing.T) {
 		t.Fatalf("direct mismatch entry = %+v", entry)
 	}
 }
+
+func TestMovePayloadWithoutSourceRefusesExistingDestination(t *testing.T) {
+	old, target := filepath.Join(t.TempDir(), "payload"), filepath.Join(t.TempDir(), "payload")
+	if err := os.WriteFile(target, []byte("unrelated file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := movePayload(old, target); err == nil || err == errNoMovePayload {
+		t.Fatalf("missing source bypassed collision protection: %v", err)
+	}
+	if data, err := os.ReadFile(target); err != nil || string(data) != "unrelated file" {
+		t.Fatalf("destination was changed: %v", err)
+	}
+}

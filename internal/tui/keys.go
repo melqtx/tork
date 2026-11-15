@@ -163,6 +163,7 @@ func (a *App) screenKeys() []keyHint {
 			inCard("x", "remove"),
 			inCard("s", "seed on or off"),
 			onStrip("O", "organize downloads into folders"),
+			inCard("A", "organize existing downloads"),
 			inCard("v", "verify completed data"),
 			inCard("m", "move to another folder"),
 			inCard("c", "change category and move files"),

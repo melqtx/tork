@@ -74,8 +74,8 @@ func (a *App) viewOrganizationPlan(plan *organizationPlan) string {
 		label := m.item.Name + " · " + a.downloadCategoryLabel(m.destination.Category)
 		body.WriteString(prefix + truncate(label, max(1, width-2)) + "\n")
 		pathWidth := max(1, (width-6)/2)
-		from := ansi.TruncateLeft(filepath.ToSlash(m.item.DownloadDir), pathWidth, "…")
-		to := ansi.TruncateLeft(filepath.ToSlash(m.destination.DownloadDir), pathWidth, "…")
+		from := organizationFolder(m.item.DownloadDir, pathWidth)
+		to := organizationFolder(m.destination.DownloadDir, pathWidth)
 		line := from + " → " + to
 		if m.err != nil {
 			line = m.err.Error()
@@ -92,4 +92,12 @@ func (a *App) viewOrganizationPlan(plan *organizationPlan) string {
 		help = fmt.Sprintf("organizing · %d finished", plan.completed)
 	}
 	return a.chrome("organize downloads", body.String(), help)
+}
+
+func organizationFolder(path string, width int) string {
+	path = filepath.ToSlash(path)
+	if length := ansi.StringWidth(path); length > width {
+		return ansi.TruncateLeft(path, length-width+1, "…")
+	}
+	return path
 }

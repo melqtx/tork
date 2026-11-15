@@ -16,7 +16,7 @@ type categoryMovedMsg struct {
 }
 
 func (a *App) startCategoryMove(it downloadItem, destination config.DownloadDestination, source string) tea.Cmd {
-	if a.pendingAdds > 0 {
+	if a.pendingAdds > 0 || a.downloads.savingOrganization {
 		return a.showError("wait for the pending download to finish queuing")
 	}
 	cfg := *a.cfg
@@ -74,9 +74,24 @@ func (a *App) onCategoryMoved(msg categoryMovedMsg) tea.Cmd {
 		*e = msg.entry
 	}
 	a.downloads.snaps = a.eng.Snapshots()
+	if msg.entry.Done && !msg.entry.NeedsRelink && msg.entry.DataPath != "" {
+		a.downloads.pathExists[msg.entry.DataPath] = true
+	}
 	a.refreshDownloadItems()
 	if err := a.st.Save(a.cfg.StatePath()); err != nil {
+		if p := a.downloads.organizationPlan; p != nil {
+			p.running = false
+		}
 		return a.showError("save failed: " + err.Error())
+	}
+	if p := a.downloads.organizationPlan; p != nil && p.running {
+		if msg.err != nil {
+			p.running = false
+			return a.showError(msg.err.Error())
+		}
+		p.completed++
+		p.next++
+		return a.nextOrganizationMove()
 	}
 	if msg.err != nil {
 		return tea.Batch(a.showError(msg.err.Error()), a.ensureTick())

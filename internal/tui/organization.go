@@ -61,7 +61,7 @@ func (a *App) onOrganizationSaved(msg organizationSavedMsg) tea.Cmd {
 	a.cfg.Organization.Enabled = msg.enabled
 	text := "folder organization off · new downloads use the main folder"
 	if msg.enabled {
-		text = "folder organization on · new downloads use category folders"
+		text = "folder organization on · A to organize existing downloads"
 	}
 	return a.showToast(text, toastOK, toastQuick)
 }
