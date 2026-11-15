@@ -28,10 +28,17 @@ var categoryFolders = map[string]string{
 }
 
 func (o OrganizationConfig) Validate() error {
+	seen := map[string]bool{}
 	for category, folder := range o.Folders {
-		if _, ok := categoryFolders[category]; !ok {
-			return fmt.Errorf("organization.folders: unknown category %q", category)
+		if err := validateCategoryName(category); err != nil {
+			return err
 		}
+		key := strings.ToLower(category)
+		_, builtin := categoryFolders[key]
+		if seen[key] || (builtin && key != category) {
+			return fmt.Errorf("duplicate category %q", category)
+		}
+		seen[key] = true
 		if err := validateCategoryFolder(folder); err != nil {
 			return fmt.Errorf("organization.folders.%s: %w", category, err)
 		}
@@ -65,18 +72,7 @@ func (c *Config) ResolveDownloadDestination(providerCategory string) (DownloadDe
 	if !c.Organization.Enabled {
 		return destination, nil
 	}
-	category := downloadCategory(providerCategory)
-	folder, known := categoryFolders[category]
-	if !known {
-		return destination, nil
-	}
-	if override, ok := c.Organization.Folders[category]; ok {
-		folder = override
-	}
-	if err := validateCategoryFolder(folder); err != nil {
-		return DownloadDestination{}, fmt.Errorf("organization.folders.%s: %w", category, err)
-	}
-	return DownloadDestination{Category: category, DownloadDir: filepath.Join(base, folder)}, nil
+	return c.ResolveCategoryDestination(downloadCategory(providerCategory))
 }
 
 func (c *Config) PrepareDownloadDestination(destination DownloadDestination) error {

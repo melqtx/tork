@@ -104,8 +104,8 @@ func TestOrganizationRejectsUnsafeFolders(t *testing.T) {
 			}
 		})
 	}
-	if err := (OrganizationConfig{Folders: map[string]string{"typo": "Movies"}}).Validate(); err == nil {
-		t.Fatal("accepted an unknown category key")
+	if err := (OrganizationConfig{Folders: map[string]string{"../typo": "Movies"}}).Validate(); err == nil {
+		t.Fatal("accepted an invalid category name")
 	}
 }
 
