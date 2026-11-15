@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -429,16 +430,16 @@ func (a *App) viewPreview() string {
 			styleDim.Render("finding metadata peers…"),
 			styleFaint.Render(discovery),
 			detail,
-			styleDim.Render("Save to "+a.previewDestination()),
+			styleDim.Render("Save to "+a.previewDestinationLabel()),
 		)
 		body := lipgloss.Place(width, a.bodyHeight(), lipgloss.Center, lipgloss.Center, msg)
-		return a.chrome("preview", body, hints(hint("enter", "queue all now"), hint("esc", "cancel")))
+		return a.chrome("preview", body, hints(hint("enter", "queue all now"), hint("c", "category"), hint("esc", "cancel")))
 	}
 
 	var b strings.Builder
 	b.WriteString(styleFg.Bold(true).Render(truncate(p.name, width)) + "\n")
 	b.WriteString(styleOK.Render("Selected "+humanBytes(p.selectedBytes())) + styleDim.Render(fmt.Sprintf(" · %d of %d files", p.selectedFiles(), len(p.files))) + "\n")
-	b.WriteString(styleDim.Render("Save to  ") + styleFg.Render(a.previewDestination()) + "\n")
+	b.WriteString(styleDim.Render("Save to  ") + styleFg.Render(a.previewDestinationLabel()) + "\n")
 	action := styleBrand.Render("enter download") + styleDim.Render(" · space choose files")
 	if p.selectedBytes() == 0 {
 		action = styleDim.Render("space select a file to download")
@@ -640,6 +641,16 @@ func (a *App) previewDestination() string {
 		return a.cfg.DownloadDir
 	}
 	return "default download folder"
+}
+
+func (a *App) previewDestinationLabel() string {
+	path := a.previewDestination()
+	if a.cfg != nil {
+		if rel, err := filepath.Rel(a.cfg.DownloadDir, path); err == nil && (rel == "." || filepath.IsLocal(rel)) {
+			return filepath.ToSlash(filepath.Join(filepath.Base(a.cfg.DownloadDir), rel)) + "/"
+		}
+	}
+	return path
 }
 
 // Extras are grouped only for display. Original paths, indices and selection

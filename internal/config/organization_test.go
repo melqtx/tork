@@ -22,8 +22,8 @@ func TestOrganizationDefaultsAndOverrides(t *testing.T) {
 	if !cfg.Organization.Enabled || cfg.Organization.Folders["movies"] != "Films" {
 		t.Fatalf("organization = %+v", cfg.Organization)
 	}
-	if Default(dir).Organization.Enabled {
-		t.Fatal("organization must be opt-in")
+	if !Default(dir).Organization.Enabled {
+		t.Fatal("new installations should organize automatically")
 	}
 	if err := os.WriteFile(path, []byte("organization: {enabled: false}\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -224,5 +224,18 @@ func TestWriteOrganizationEnabledRefusesMalformedConfig(t *testing.T) {
 				t.Fatalf("failed edit changed the config: %v", err)
 			}
 		})
+	}
+}
+
+func TestExistingConfigKeepsOrganizationOffUnlessEnabled(t *testing.T) {
+	for _, setting := range []string{"", "organization: {enabled: false}\n"} {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(setting), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadReadOnlyFrom(dir)
+		if err != nil || cfg.Organization.Enabled {
+			t.Fatalf("existing settings changed: %+v, %v", cfg, err)
+		}
 	}
 }

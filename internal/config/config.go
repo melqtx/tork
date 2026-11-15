@@ -211,6 +211,7 @@ func Default(dir string) *Config {
 	runtime, _ := proxy.New("")
 	return &Config{
 		DownloadDir:           defaultDownloadDir(),
+		Organization:          OrganizationConfig{Enabled: true},
 		SeedAfterComplete:     true,
 		MaxConnections:        50,
 		ListenPort:            0,
@@ -489,6 +490,7 @@ func LoadFrom(dir string) (*Config, error) {
 	case err != nil:
 		return nil, err
 	default:
+		cfg.Organization.Enabled = false
 		if err := yaml.Unmarshal(data, cfg); err != nil {
 			// Corrupt config must never stop the app from starting: preserve
 			// the bad file, regenerate defaults, and carry on.
@@ -533,6 +535,7 @@ func LoadReadOnlyFrom(dir string) (*Config, error) {
 		}
 		return nil, err
 	}
+	cfg.Organization.Enabled = false
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("read %s: invalid YAML", path)
 	}
