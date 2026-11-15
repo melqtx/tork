@@ -157,6 +157,7 @@ func (a *App) screenKeys() []keyHint {
 			onStrip("↑↓", "move"),
 			onStrip("enter", "open"),
 			onStrip("p", "pause"),
+			onStrip("f", "category filter"),
 			onStrip("esc", "back"),
 			inCard("tab / shift+tab", "back"),
 			inCard("x", "remove"),

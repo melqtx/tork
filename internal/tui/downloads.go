@@ -65,6 +65,7 @@ func openCommand(path string) (string, []string) {
 }
 
 type downloadItem struct {
+	Category       string
 	Hash           metainfo.Hash
 	Magnet         string
 	Name           string
@@ -140,6 +141,8 @@ type pathPrompt struct {
 }
 
 type downloadsModel struct {
+	categoryFilter     *string
+	categoryMenu       *categoryMenu
 	savingOrganization bool
 	snaps              []engine.Snapshot
 	items              []downloadItem
@@ -227,6 +230,9 @@ func (a *App) updateDownloads(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if d.confirmRemove != nil {
 		return a.updateRemoveConfirm(key)
 	}
+	if d.categoryMenu != nil {
+		return a.updateDownloadCategoryFilter(key)
+	}
 
 	items := a.downloadItems()
 	rows := a.downloadListRows()
@@ -236,6 +242,9 @@ func (a *App) updateDownloads(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	switch key.String() {
+	case "f":
+		a.openDownloadCategoryFilter()
+		return a, nil
 	case "O":
 		return a, a.toggleOrganization()
 	case "q":
@@ -494,7 +503,7 @@ func (a *App) downloadItems() []downloadItem {
 	if a.downloads.itemsReady {
 		return a.downloads.items
 	}
-	return a.buildDownloadItems()
+	return a.filterDownloadItems(a.buildDownloadItems())
 }
 
 // refreshDownloadItems builds the state+engine projection once per update,
@@ -506,7 +515,7 @@ func (a *App) refreshDownloadItems() {
 	if selected == "" && d.win.cursor >= 0 && d.win.cursor < len(d.items) {
 		selected = downloadItemKey(d.items[d.win.cursor])
 	}
-	items := a.buildDownloadItems()
+	items := a.filterDownloadItems(a.buildDownloadItems())
 	sort.SliceStable(items, func(i, j int) bool {
 		return downloadStatePriority(items[i].State) < downloadStatePriority(items[j].State)
 	})
@@ -548,7 +557,9 @@ func (a *App) buildDownloadItems() []downloadItem {
 	for i := range a.st.Entries {
 		e := &a.st.Entries[i]
 		if s, ok := snapsByMagnet[e.Magnet]; ok {
-			out = append(out, itemFromSnapshot(s, i, true))
+			item := itemFromSnapshot(s, i, true)
+			item.Category = e.Category
+			out = append(out, item)
 			used[e.Magnet] = true
 			continue
 		}
@@ -683,6 +694,7 @@ func (a *App) itemFromEntry(e *state.Entry, idx int) downloadItem {
 	}
 	return downloadItem{
 		Magnet: e.Magnet, Name: name, DownloadDir: e.DownloadDir, DataPath: e.DataPath,
+		Category:       e.Category,
 		BytesCompleted: e.BytesCompleted, Length: e.Length,
 		State: st, Note: note, Seed: e.SeedEnabled(defaultSeed),
 		EntryIndex: idx,
@@ -1059,6 +1071,9 @@ func safeDownloadPath(dir, path string) bool {
 
 func (a *App) viewDownloads() string {
 	d := &a.downloads
+	if d.categoryMenu != nil {
+		return a.viewCategoryMenu(d.categoryMenu)
+	}
 	width := a.contentWidth()
 	items := a.downloadItems()
 	metrics := d.metrics
@@ -1067,6 +1082,11 @@ func (a *App) viewDownloads() string {
 	}
 
 	if len(items) == 0 {
+		if d.categoryFilter != nil {
+			message := "No downloads in " + a.downloadCategoryLabel(*d.categoryFilter)
+			return a.chrome("downloads", styleDim.Render(message),
+				hints(hint("f", "change category"), hint("esc", "back")))
+		}
 		empty := lipgloss.JoinVertical(lipgloss.Center,
 			styleDim.Render(strings.Join(sleepingCat, "\n")),
 			"",
@@ -1076,7 +1096,7 @@ func (a *App) viewDownloads() string {
 		)
 		body := lipgloss.Place(width, a.bodyHeight(), lipgloss.Center, lipgloss.Center, empty)
 		return a.chrome("downloads", body,
-			hints(hint("O", a.organizationLabel()), hint("esc", "back"), hint("?", "keys")))
+			hints(hint("O", a.organizationLabel()), hint("f", "filter"), hint("esc", "back"), hint("?", "keys")))
 	}
 
 	listRows := a.downloadListRows()
@@ -1116,7 +1136,11 @@ func (a *App) viewDownloads() string {
 	if d.prompt.action != pathActionNone {
 		help = d.prompt.input.View()
 	}
-	return a.chrome(a.downloadsContext(metrics), b.String(), help)
+	title := a.downloadsContext(metrics)
+	if d.categoryFilter != nil {
+		title += " · " + a.downloadCategoryLabel(*d.categoryFilter)
+	}
+	return a.chrome(title, b.String(), help)
 }
 
 func (a *App) renderDownloadItem(it downloadItem, selected bool, width int) string {
@@ -1309,6 +1333,9 @@ func (a *App) downloadDetail(it downloadItem, width int) string {
 		mode = "direct"
 	}
 	info := []string{mode}
+	if it.Category != "" {
+		info = append(info, a.downloadCategoryLabel(it.Category))
+	}
 	if it.Length > 0 {
 		info = append(info, humanBytes(it.Length))
 	}
