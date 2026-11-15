@@ -22,6 +22,7 @@ import (
 	"github.com/anacrolix/torrent/metainfo"
 	"github.com/melqtx/tork/internal/clipboard"
 	"github.com/melqtx/tork/internal/engine"
+	"github.com/melqtx/tork/internal/filemove"
 	"github.com/melqtx/tork/internal/session"
 	"github.com/melqtx/tork/internal/state"
 )
@@ -948,7 +949,11 @@ func (a *App) moveDownload(it downloadItem, targetDir string) error {
 		}
 	}
 	if err := movePayload(it.DataPath, newPath); err != nil && !(empty && errors.Is(err, errNoMovePayload)) {
-		if it.Live && shouldResumeAfterPathChange(it) {
+		if errors.Is(err, errMoveRollback) {
+			if e := a.st.Find(it.Magnet); e != nil {
+				e.Paused, e.NeedsRelink = true, true
+			}
+		} else if it.Live && shouldResumeAfterPathChange(it) {
 			err = errors.Join(err, a.resumeDownload(it))
 		}
 		a.downloads.snaps = a.eng.Snapshots()
@@ -1032,9 +1037,10 @@ func shouldResumeAfterPathChange(it downloadItem) bool {
 }
 
 var errNoMovePayload = errors.New("no payload exists yet")
+var errMoveRollback = errors.New("move rollback incomplete; relink files")
 
 func movePayload(oldPath, newPath string) error {
-	if oldPath == "" || newPath == "" || oldPath == newPath {
+	if oldPath == "" || newPath == "" || oldPath == newPath || filemove.SameLocation(oldPath, newPath) {
 		return nil
 	}
 	type move struct{ old, new string }
@@ -1059,9 +1065,11 @@ func movePayload(oldPath, newPath string) error {
 		return errNoMovePayload
 	}
 	for i, candidate := range moves {
-		if err := os.Rename(candidate.old, candidate.new); err != nil {
+		if err := filemove.Rename(candidate.old, candidate.new); err != nil {
 			for j := i - 1; j >= 0; j-- {
-				err = errors.Join(err, os.Rename(moves[j].new, moves[j].old))
+				if rollbackErr := filemove.Rename(moves[j].new, moves[j].old); rollbackErr != nil {
+					err = errors.Join(err, errMoveRollback, rollbackErr)
+				}
 			}
 			return err
 		}
