@@ -1347,7 +1347,7 @@ func (e *Engine) snapshot(h metainfo.Hash, it *item, now time.Time) Snapshot {
 		s.Note = s.Metadata.Summary()
 	case it.preview:
 		s.State = StatePreviewing
-	case s.Length > 0 && s.BytesCompleted >= s.Length:
+	case s.Length > 0 && s.BytesCompleted >= s.Length && torrentStorageReady(t):
 		if it.seeding {
 			s.State = StateSeeding
 		} else {
@@ -1370,6 +1370,15 @@ func (e *Engine) snapshot(h metainfo.Hash, it *item, now time.Time) Snapshot {
 		}
 	}
 	return s
+}
+
+func torrentStorageReady(t *torrent.Torrent) bool {
+	for _, run := range t.PieceStateRuns() {
+		if run.Marking || run.Hashing || run.QueuedForHash {
+			return false
+		}
+	}
+	return true
 }
 
 // ListenPort is the port the torrent client actually bound, which differs from
