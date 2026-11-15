@@ -51,7 +51,7 @@ func (c *Config) WriteProviderEnabled(id string, enabled bool) error {
 	if _, ok := c.Providers[id]; !ok {
 		return errors.New("unknown source")
 	}
-	doc, check, mode, err := c.editableSourcesDocument()
+	doc, check, mode, err := c.editableDocument()
 	if err != nil {
 		return err
 	}
@@ -88,7 +88,7 @@ func editableMapping(parent *yaml.Node, key string) (*yaml.Node, error) {
 	if i := mappingKey(parent, key); i >= 0 {
 		node := parent.Content[i+1]
 		if node.Anchor != "" {
-			return nil, errors.New("expand YAML anchors before changing sources")
+			return nil, errors.New("expand YAML anchors before changing settings")
 		}
 		if node.Kind != yaml.MappingNode {
 			return nil, fmt.Errorf("config %s must be a YAML mapping", key)
@@ -97,7 +97,7 @@ func editableMapping(parent *yaml.Node, key string) (*yaml.Node, error) {
 	}
 	// Editing an inherited mapping would replace its other keys on reload.
 	if mappingKey(parent, "<<") >= 0 {
-		return nil, errors.New("expand YAML merge keys before changing sources")
+		return nil, errors.New("expand YAML merge keys before changing settings")
 	}
 	node := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 	parent.Content = append(parent.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, node)
@@ -115,7 +115,7 @@ func IsBuiltinSource(id string) bool {
 	return false
 }
 
-func (c *Config) editableSourcesDocument() (*yaml.Node, *Config, os.FileMode, error) {
+func (c *Config) editableDocument() (*yaml.Node, *Config, os.FileMode, error) {
 	data, mode, exists, err := readEditableConfig(c.ConfigPath())
 	if err != nil {
 		return nil, nil, 0, err
@@ -130,7 +130,7 @@ func (c *Config) editableSourcesDocument() (*yaml.Node, *Config, os.FileMode, er
 	var doc yaml.Node
 	decoder := yaml.NewDecoder(strings.NewReader(string(data)))
 	if err := decoder.Decode(&doc); err != nil {
-		return nil, nil, 0, errors.New("config is invalid YAML; fix it before changing sources")
+		return nil, nil, 0, errors.New("config is invalid YAML; fix it before changing settings")
 	}
 	var extra yaml.Node
 	if err := decoder.Decode(&extra); err != io.EOF {
@@ -138,7 +138,7 @@ func (c *Config) editableSourcesDocument() (*yaml.Node, *Config, os.FileMode, er
 	}
 	check := Default(c.dir)
 	if err := doc.Decode(check); err != nil {
-		return nil, nil, 0, errors.New("config is invalid; fix it before changing sources")
+		return nil, nil, 0, errors.New("config is invalid; fix it before changing settings")
 	}
 	if doc.Kind != yaml.DocumentNode || len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
 		return nil, nil, 0, errors.New("config root must be a YAML mapping")
@@ -163,7 +163,7 @@ func (c *Config) WriteCustomSource(id string, p ProviderConfig, replace bool) er
 	if p.Type != "rss" && p.Type != "torznab" {
 		return errors.New("custom sources must use RSS or Torznab")
 	}
-	doc, current, _, err := c.editableSourcesDocument()
+	doc, current, _, err := c.editableDocument()
 	if err != nil {
 		return err
 	}
@@ -210,7 +210,7 @@ func (c *Config) RemoveCustomSource(id string) error {
 	if IsBuiltinSource(id) {
 		return errors.New("built-in sources can be disabled, not removed")
 	}
-	doc, _, mode, err := c.editableSourcesDocument()
+	doc, _, mode, err := c.editableDocument()
 	if err != nil {
 		return err
 	}
