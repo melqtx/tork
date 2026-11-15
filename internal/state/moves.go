@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/melqtx/tork/internal/filemove"
 )
 
 type MoveTarget struct {
@@ -34,7 +36,7 @@ func recoverMove(e *Entry) {
 	next, nextErr := movePayloadPresent(m.DataPath)
 	switch {
 	case !valid || oldErr != nil || nextErr != nil:
-	case e.DataPath == m.DataPath && e.DownloadDir == m.DownloadDir:
+	case (e.DataPath == m.DataPath && e.DownloadDir == m.DownloadDir) || filemove.SameLocation(e.DataPath, m.DataPath):
 		m.Apply(e)
 		return
 	case old && !next:
