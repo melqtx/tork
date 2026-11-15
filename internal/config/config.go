@@ -111,6 +111,7 @@ type Config struct {
 	MetadataCache         MetadataCacheConfig       `yaml:"metadata_cache"`
 	TorrentTuning         TorrentTuningConfig       `yaml:"torrent_tuning,omitempty"`
 	Direct                DirectConfig              `yaml:"direct"`
+	Organization          OrganizationConfig        `yaml:"organization"`
 	Providers             map[string]ProviderConfig `yaml:"providers"`
 
 	dir          string // ~/.tork, resolved at load time
@@ -503,6 +504,9 @@ func LoadFrom(dir string) (*Config, error) {
 	cfg.dir = dir
 	mergeProviderDefaults(cfg, defaults)
 	cfg.DownloadDir = expandHome(cfg.DownloadDir)
+	if err := cfg.Organization.Validate(); err != nil {
+		return nil, err
+	}
 	if err := cfg.initProxyRuntime(); err != nil {
 		return nil, err
 	}
@@ -535,6 +539,9 @@ func LoadReadOnlyFrom(dir string) (*Config, error) {
 	cfg.dir = dir
 	mergeProviderDefaults(cfg, defaults)
 	cfg.DownloadDir = expandHome(cfg.DownloadDir)
+	if err := cfg.Organization.Validate(); err != nil {
+		return nil, err
+	}
 	if err := cfg.initProxyRuntime(); err != nil {
 		// A diagnostic load must be able to report a bad proxy URL; failing
 		// here would make doctor and `tork proxy status` abort with a bare
