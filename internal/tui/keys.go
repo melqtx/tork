@@ -165,6 +165,7 @@ func (a *App) screenKeys() []keyHint {
 			onStrip("O", "organize downloads into folders"),
 			inCard("v", "verify completed data"),
 			inCard("m", "move to another folder"),
+			inCard("c", "change category and move files"),
 			inCard("r", "relink to existing files"),
 			inCard("y", "copy full path"),
 			inCard("Y", "copy magnet"),
