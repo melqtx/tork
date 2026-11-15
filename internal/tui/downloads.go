@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -905,6 +906,9 @@ func (a *App) moveDownload(it downloadItem, targetDir string) error {
 	if it.DataPath == "" {
 		return fmt.Errorf("move needs a known saved path")
 	}
+	if !safeDownloadPath(it.DownloadDir, it.DataPath) {
+		return fmt.Errorf("move needs a saved path inside the download folder")
+	}
 	targetDir, err := filepath.Abs(targetDir)
 	if err != nil {
 		return err
@@ -919,6 +923,11 @@ func (a *App) moveDownload(it downloadItem, targetDir string) error {
 		}
 	}
 	if err := movePayload(it.DataPath, newPath); err != nil {
+		if it.Live && shouldResumeAfterPathChange(it) {
+			err = errors.Join(err, a.resumeDownload(it))
+		}
+		a.downloads.snaps = a.eng.Snapshots()
+		a.refreshDownloadItems()
 		return err
 	}
 	if e := a.st.Find(it.Magnet); e != nil {
@@ -1005,8 +1014,11 @@ func movePayload(oldPath, newPath string) error {
 	var moves []move
 	for _, suffix := range []string{"", ".part", ".part.meta"} {
 		old, target := oldPath+suffix, newPath+suffix
-		if _, err := os.Stat(old); err == nil {
-			if _, err := os.Stat(target); err == nil {
+		if info, err := os.Lstat(old); err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("move refused: source is a symlink")
+			}
+			if _, err := os.Lstat(target); err == nil {
 				return fmt.Errorf("target already exists: %s", target)
 			} else if !os.IsNotExist(err) {
 				return err
@@ -1022,7 +1034,7 @@ func movePayload(oldPath, newPath string) error {
 	for i, candidate := range moves {
 		if err := os.Rename(candidate.old, candidate.new); err != nil {
 			for j := i - 1; j >= 0; j-- {
-				_ = os.Rename(moves[j].new, moves[j].old)
+				err = errors.Join(err, os.Rename(moves[j].new, moves[j].old))
 			}
 			return err
 		}

@@ -205,6 +205,32 @@ func TestMovePayloadMovesPartFileRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMovePayloadRefusesDanglingDestination(t *testing.T) {
+	dir := t.TempDir()
+	oldPath, newPath := filepath.Join(dir, "old"), filepath.Join(dir, "new")
+	if err := os.WriteFile(oldPath, []byte("keep me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "missing"), newPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := movePayload(oldPath, newPath); err == nil {
+		t.Fatal("overwrote a dangling destination symlink")
+	}
+	if data, err := os.ReadFile(oldPath); err != nil || string(data) != "keep me" {
+		t.Fatalf("failed move changed the source: %v", err)
+	}
+}
+
+func TestMoveDownloadRefusesTheDownloadRoot(t *testing.T) {
+	dir := t.TempDir()
+	a := &App{cfg: &config.Config{DownloadDir: dir}, st: &state.State{}}
+	err := a.moveDownload(downloadItem{DownloadDir: dir, DataPath: dir}, t.TempDir())
+	if err == nil {
+		t.Fatal("accepted the entire download folder as a payload")
+	}
+}
+
 func TestDeleteDownloadDataRemovesDirectSidecars(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "image.iso")
