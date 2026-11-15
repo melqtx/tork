@@ -11,6 +11,7 @@ import (
 type categoryMenu struct {
 	options []config.Category
 	win     listWindow
+	editor  *categoryEditor
 }
 
 type previewCategoryChangedMsg struct {
@@ -36,6 +37,8 @@ func (a *App) openPreviewCategories() tea.Cmd {
 func (a *App) updatePreviewCategories(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m := a.preview.categories
 	switch key.String() {
+	case "a":
+		return a, a.openCategoryEditor()
 	case "esc":
 		a.preview.categories = nil
 	case "up", "k":
@@ -74,10 +77,14 @@ func (a *App) onPreviewCategoryChanged(msg previewCategoryChangedMsg) tea.Cmd {
 }
 
 func (a *App) viewCategoryMenu(m *categoryMenu) string {
+	if m.editor != nil {
+		return a.viewCategoryEditor(m.editor)
+	}
 	width := a.contentWidth()
 	var b strings.Builder
 	b.WriteString(styleTitle.Render("Choose category") + "\n\n")
 	b.WriteString(renderWindow(&m.win, len(m.options), max(1, a.bodyHeight()-2), width,
 		func(i int, selected bool) string { return m.options[i].Name }))
-	return a.chrome("categories", b.String(), hints(hint("↑↓", "choose"), hint("enter", "apply"), hint("esc", "back")))
+	return a.chrome("categories", b.String(),
+		hints(hint("↑↓", "choose"), hint("enter", "apply"), hint("a", "add category"), hint("esc", "back")))
 }

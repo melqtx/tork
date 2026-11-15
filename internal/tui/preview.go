@@ -139,6 +139,9 @@ func (p *previewModel) excludedSlice() []int {
 }
 
 func (a *App) updatePreview(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if a.preview.categories != nil && a.preview.categories.editor != nil {
+		return a.updateCategoryEditor(msg)
+	}
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return a, nil
