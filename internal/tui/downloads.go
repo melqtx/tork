@@ -146,6 +146,7 @@ type downloadsModel struct {
 	categoryFilter     *string
 	categoryMenu       *categoryMenu
 	categoryMove       *downloadCategoryMove
+	moving             bool
 	savingOrganization bool
 	snaps              []engine.Snapshot
 	items              []downloadItem

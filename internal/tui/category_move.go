@@ -63,31 +63,15 @@ func (a *App) updateDownloadCategoryMove(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.downloads.categoryMove = nil
 		return a, a.showError("download is no longer in the list")
 	}
-	destination := *m.destination
-	if err := a.cfg.PrepareDownloadDestination(destination); err != nil {
-		return a, a.showError(err.Error())
-	}
-	var err error
-	if filepath.Clean(it.DownloadDir) != filepath.Clean(destination.DownloadDir) {
-		err = a.moveDownload(it, destination.DownloadDir)
-	}
-	entry := a.st.Find(it.Magnet)
-	if entry != nil && entry.DownloadDir == destination.DownloadDir {
-		entry.Category = destination.Category
-		entry.CategorySource = "manual"
-	}
-	a.refreshDownloadItems()
-	save := a.saveState()
-	if err != nil {
-		return a, tea.Batch(save, a.showError(err.Error()), a.ensureTick())
-	}
-	a.downloads.categoryMove = nil
-	return a, tea.Batch(save, a.showToast("category updated · files in place", toastOK, toastQuick), a.ensureTick())
+	return a, a.startCategoryMove(it, *m.destination, "manual")
 }
 
 func (a *App) viewDownloadCategoryMove(m *downloadCategoryMove) string {
 	if m.destination == nil {
 		return a.viewCategoryMenu(m.menu)
+	}
+	if a.downloads.moving {
+		return a.chrome("organize download", styleDim.Render("Moving files…"), "please wait")
 	}
 	width := a.contentWidth()
 	path := filepath.Join(m.destination.DownloadDir, filepath.Base(m.item.DataPath))

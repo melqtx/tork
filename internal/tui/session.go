@@ -47,6 +47,9 @@ func (a *App) DetachSession() tea.Cmd {
 // terminal attached. Metadata-only previews are never inserted into the resume
 // list: only downloads the user already approved are persisted.
 func (a *App) CheckpointSession() error {
+	if a.downloads.moving {
+		return fmt.Errorf("a download is moving; retry tork stop in a moment")
+	}
 	if a.pendingAdds > 0 {
 		return fmt.Errorf("a download is still being queued; retry tork stop in a moment")
 	}

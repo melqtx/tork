@@ -46,7 +46,8 @@ func TestCategoryMovePreservesPausedAndCompletedDownloads(t *testing.T) {
 				t.Fatal("category selection moved files before confirmation")
 			}
 			assertRenderFits(t, a.viewDownloadCategoryMove(a.downloads.categoryMove), a.width)
-			a.updateDownloadCategoryMove(tea.KeyMsg{Type: tea.KeyEnter})
+			_, cmd := a.updateDownloadCategoryMove(tea.KeyMsg{Type: tea.KeyEnter})
+			a.Update(cmd())
 			want := filepath.Join(cfg.DownloadDir, "Learning", "payload.dat")
 			data, err := os.ReadFile(want)
 			if err != nil || string(data) != "keep these bytes" {
