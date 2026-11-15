@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"unicode"
+
+	"gopkg.in/yaml.v3"
 )
 
 type OrganizationConfig struct {
@@ -137,4 +140,40 @@ func downloadCategory(raw string) string {
 		}
 	}
 	return ""
+}
+
+func (c *Config) WriteOrganizationEnabled(enabled bool) error {
+	doc, current, mode, err := c.editableDocument()
+	if err != nil {
+		return err
+	}
+	if enabled {
+		if err := current.Organization.Validate(); err != nil {
+			return err
+		}
+	}
+	organization, err := editableMapping(doc.Content[0], "organization")
+	if err != nil {
+		return err
+	}
+	value := strconv.FormatBool(enabled)
+	if i := mappingKey(organization, "enabled"); i >= 0 {
+		node := organization.Content[i+1]
+		if node.Kind != yaml.ScalarNode || node.Anchor != "" {
+			return errors.New("organization enabled flag must be a scalar without a YAML anchor")
+		}
+		node.Tag, node.Value, node.Style = "!!bool", value, 0
+	} else {
+		if mappingKey(organization, "<<") >= 0 {
+			return errors.New("expand YAML merge keys before changing organization")
+		}
+		organization.Content = append(organization.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "enabled"},
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: value},
+		)
+	}
+	if err := os.MkdirAll(c.dir, 0o755); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	return writeYAMLAtomic(c.ConfigPath(), doc, mode)
 }

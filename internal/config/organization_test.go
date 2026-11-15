@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -105,5 +106,123 @@ func TestOrganizationRejectsUnsafeFolders(t *testing.T) {
 	}
 	if err := (OrganizationConfig{Folders: map[string]string{"typo": "Movies"}}).Validate(); err == nil {
 		t.Fatal("accepted an unknown category key")
+	}
+}
+
+func TestPrepareDownloadDestinationCreatesOnlySelectedFolder(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	cfg := &Config{DownloadDir: base, Organization: OrganizationConfig{
+		Enabled: true, Folders: map[string]string{"movies": "Media/Films"},
+	}}
+	destination, err := cfg.ResolveDownloadDestination("Movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.PrepareDownloadDestination(destination); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(destination.DownloadDir); err != nil || !info.IsDir() {
+		t.Fatalf("selected folder not created: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(base, "TV")); !os.IsNotExist(err) {
+		t.Fatalf("unselected folder created: %v", err)
+	}
+}
+
+func TestPrepareDownloadDestinationRefusesSymlinkEscape(t *testing.T) {
+	t.Parallel()
+	base, outside := t.TempDir(), t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(base, "Media")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	cfg := &Config{DownloadDir: base, Organization: OrganizationConfig{
+		Enabled: true, Folders: map[string]string{"movies": "Media/Films"},
+	}}
+	destination, err := cfg.ResolveDownloadDestination("Movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.PrepareDownloadDestination(destination); err == nil {
+		t.Fatal("prepared a folder outside download_dir through a symlink")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "Films")); !os.IsNotExist(err) {
+		t.Fatalf("created folder outside root: %v", err)
+	}
+}
+
+func TestWriteOrganizationEnabledPreservesConfig(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	original := `# personal settings
+max_connections: 7
+organization:
+  enabled: false # keep this
+  folders:
+    movies: Films
+`
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadReadOnlyFrom(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, enabled := range []bool{true, false} {
+		if err := cfg.WriteOrganizationEnabled(enabled); err != nil {
+			t.Fatal(err)
+		}
+		reloaded, err := LoadReadOnlyFrom(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reloaded.Organization.Enabled != enabled || reloaded.Organization.Folders["movies"] != "Films" {
+			t.Fatalf("reloaded organization = %+v", reloaded.Organization)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{"# personal settings", "# keep this", "max_connections: 7"} {
+			if !strings.Contains(string(data), want) {
+				t.Errorf("config lost %q", want)
+			}
+		}
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().Perm() != 0o600 {
+			t.Fatalf("config permissions changed: %v", err)
+		}
+	}
+	if cfg.Organization.Enabled {
+		t.Fatal("writer mutated in-memory config before the UI handled its result")
+	}
+}
+
+func TestWriteOrganizationEnabledRefusesMalformedConfig(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ name, input string }{
+		{name: "invalid yaml", input: "organization: ["},
+		{name: "multiple documents", input: "max_connections: 7\n---\norganization: {enabled: false}\n"},
+		{name: "non-mapping root", input: "[one, two]"},
+		{name: "anchored flag", input: "organization: {enabled: &flag false}\n"},
+		{name: "anchored organization", input: "organization: &org {enabled: false}\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.yaml")
+			if err := os.WriteFile(path, []byte(tc.input), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := Default(dir).WriteOrganizationEnabled(true); err == nil {
+				t.Fatal("accepted unsafe config edit")
+			}
+			data, err := os.ReadFile(path)
+			if err != nil || string(data) != tc.input {
+				t.Fatalf("failed edit changed the config: %v", err)
+			}
+		})
 	}
 }
