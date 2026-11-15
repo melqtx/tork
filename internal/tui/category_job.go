@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/melqtx/tork/internal/config"
+	"github.com/melqtx/tork/internal/engine"
 	"github.com/melqtx/tork/internal/state"
 )
 
@@ -16,6 +17,9 @@ type categoryMovedMsg struct {
 }
 
 func (a *App) startCategoryMove(it downloadItem, destination config.DownloadDestination, source string) tea.Cmd {
+	if it.State == engine.StateMissing {
+		return a.showError("relink this download before moving it")
+	}
 	if a.pendingAdds > 0 || a.downloads.savingOrganization {
 		return a.showError("wait for the pending download to finish queuing")
 	}
@@ -85,6 +89,9 @@ func (a *App) onCategoryMoved(msg categoryMovedMsg) tea.Cmd {
 		return a.showError("save failed: " + err.Error())
 	}
 	if p := a.downloads.organizationPlan; p != nil && p.running {
+		if p.next < len(p.moves) {
+			p.moves[p.next].item = a.itemFromEntry(&msg.entry, -1)
+		}
 		if msg.err != nil {
 			p.running = false
 			return a.showError(msg.err.Error())

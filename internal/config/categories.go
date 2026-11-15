@@ -68,7 +68,7 @@ func (c *Config) WriteCategory(name, folder string) (Category, error) {
 		return Category{}, err
 	}
 	if folder == "" {
-		folder = name
+		folder = strings.ToLower(name)
 	}
 	if err := validateCategoryFolder(folder); err != nil {
 		return Category{}, err

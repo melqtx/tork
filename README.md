@@ -208,19 +208,28 @@ tork --config-dir ./my-tork-config
 
 ### Download folders
 
-Press **O** in Downloads to enable automatic category folders. This is off by
-default. New downloads use Movies, TV, Anime, Music, Games, Software, Books, or
-Linux folders under your download directory; unknown source categories use the
-main folder.
+New installs organize downloads automatically under your OS Downloads folder:
+`tork/movies`, `tork/tv`, `tork/anime`, `tork/music`, `tork/games`,
+`tork/software`, `tork/books`, and `tork/linux`. Unknown or conflicting source
+categories use the main `tork` folder. An explicit `download_dir` stays the root.
+
+Existing settings are preserved. Press **O** in Downloads to toggle automatic
+folders for new downloads.
 
 In preview, press **c** to choose a category, then **a** to add your own. The
-folder defaults to the category name. Manual choices also work with automatic
+folder defaults to the lowercase category name. Manual choices also work with automatic
 organization off.
 
 In Downloads, **f** filters by category. Select a download and press **c** to
 change its category and move its files. Review the destination and press Enter
 to confirm. Existing downloads keep their locations until you explicitly move
 them, even after config changes.
+
+Press **A** in Downloads to organize existing downloads. Review the proposed
+folders, use **c** to correct categories, then press Enter to apply the moves.
+Escape cancels the preview. Moves run in the background, preserve paused and
+seeding settings, and refuse existing destinations. Interrupted moves recover
+on restart; ambiguous file locations require relinking.
 
 Folder mappings can also be set in `~/.tork/config.yaml`:
 

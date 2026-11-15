@@ -29,7 +29,7 @@ func (a *App) openCategoryEditor() tea.Cmd {
 	}
 	e.inputs[0].CharLimit = 64
 	e.inputs[0].Placeholder = "e.g. Courses"
-	e.inputs[1].Placeholder = "same as category name"
+	e.inputs[1].Placeholder = "lowercase category name"
 	a.preview.categories.editor = e
 	return e.inputs[0].Focus()
 }
@@ -52,7 +52,7 @@ func (a *App) updateCategoryEditor(msg tea.Msg) (tea.Model, tea.Cmd) {
 			e.saving = true
 			name, folder := strings.TrimSpace(e.inputs[0].Value()), strings.TrimSpace(e.inputs[1].Value())
 			if folder == "" {
-				folder = name
+				folder = strings.ToLower(name)
 			}
 			cfg := *a.cfg
 			return a, func() tea.Msg {
