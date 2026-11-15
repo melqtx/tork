@@ -17,11 +17,11 @@ type Category struct{ ID, Name string }
 
 func (o OrganizationConfig) Categories() []Category {
 	options := []Category{{Name: "Uncategorized"}}
-	for id, name := range categoryFolders {
+	for id, name := range categoryNames {
 		options = append(options, Category{ID: id, Name: name})
 	}
 	for id := range o.Folders {
-		if _, builtin := categoryFolders[id]; !builtin {
+		if _, builtin := categoryNames[id]; !builtin {
 			options = append(options, Category{ID: id, Name: id})
 		}
 	}
@@ -37,7 +37,8 @@ func (c *Config) ResolveCategoryDestination(id string) (DownloadDestination, err
 	if id == "" {
 		return DownloadDestination{DownloadDir: base}, nil
 	}
-	folder, known := categoryFolders[id]
+	_, known := categoryNames[id]
+	folder := id
 	if override, ok := c.Organization.Folders[id]; ok {
 		folder, known = override, true
 	}

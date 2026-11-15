@@ -36,7 +36,7 @@ func TestCategoryMovePreservesSeedingAndRecoversFromCollision(t *testing.T) {
 	}
 	a.updateDownloadCategoryMove(tea.KeyMsg{Type: tea.KeyEnter})
 	a.updateDownloadCategoryMove(tea.KeyMsg{Type: tea.KeyEnter})
-	path := filepath.Join(a.cfg.DownloadDir, "TV", "payload.dat")
+	path := filepath.Join(a.cfg.DownloadDir, "tv", "payload.dat")
 	if data, err := os.ReadFile(path); err != nil || !bytes.Equal(data, payload) {
 		t.Fatalf("move failed: %v; UI error=%q; item=%+v; entry=%+v", err, a.errText, it, a.st.Entries[0])
 	}
@@ -47,7 +47,7 @@ func TestCategoryMovePreservesSeedingAndRecoversFromCollision(t *testing.T) {
 	if _, err := os.Stat(it.DataPath); !os.IsNotExist(err) {
 		t.Fatalf("old payload was left behind: %v", err)
 	}
-	destination := filepath.Join(a.cfg.DownloadDir, "Games")
+	destination := filepath.Join(a.cfg.DownloadDir, "games")
 	if err := os.MkdirAll(destination, 0o755); err != nil {
 		t.Fatal(err)
 	}

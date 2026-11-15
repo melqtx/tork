@@ -22,7 +22,7 @@ type DownloadDestination struct {
 	DownloadDir string
 }
 
-var categoryFolders = map[string]string{
+var categoryNames = map[string]string{
 	"movies": "Movies", "tv": "TV", "anime": "Anime", "music": "Music",
 	"games": "Games", "software": "Software", "books": "Books", "linux": "Linux",
 }
@@ -34,7 +34,7 @@ func (o OrganizationConfig) Validate() error {
 			return err
 		}
 		key := strings.ToLower(category)
-		_, builtin := categoryFolders[key]
+		_, builtin := categoryNames[key]
 		if seen[key] || (builtin && key != category) {
 			return fmt.Errorf("duplicate category %q", category)
 		}

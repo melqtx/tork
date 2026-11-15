@@ -45,7 +45,7 @@ func TestOrganizationPreviewAndQuickDownloadWriteToChosenFolder(t *testing.T) {
 				t.Fatal("missing add command")
 			}
 			msg := cmd()
-			wantDir := filepath.Join(a.cfg.DownloadDir, "Movies")
+			wantDir := filepath.Join(a.cfg.DownloadDir, "movies")
 			if tc.preview {
 				ready, ok := msg.(previewReadyMsg)
 				if !ok || ready.err != nil {
@@ -200,7 +200,7 @@ func TestPreviewCategoryPickerChangesActualStorage(t *testing.T) {
 		t.Fatalf("picker=%v excluded=%v category=%q error=%q",
 			a.preview.categories, a.preview.excluded[0], a.preview.category, a.errText)
 	}
-	want := filepath.Join(a.cfg.DownloadDir, "TV", "payload.dat")
+	want := filepath.Join(a.cfg.DownloadDir, "tv", "payload.dat")
 	delete(a.preview.excluded, 0)
 	a.startPreviewDownload()
 	deadline := time.Now().Add(10 * time.Second)
