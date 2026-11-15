@@ -206,6 +206,35 @@ UI and run `tork stop` first. To use a separate config and session:
 tork --config-dir ./my-tork-config
 ```
 
+### Download folders
+
+Press **O** in Downloads to enable automatic category folders. This is off by
+default. New downloads use Movies, TV, Anime, Music, Games, Software, Books, or
+Linux folders under your download directory; unknown source categories use the
+main folder.
+
+In preview, press **c** to choose a category, then **a** to add your own. The
+folder defaults to the category name. Manual choices also work with automatic
+organization off.
+
+In Downloads, **f** filters by category. Select a download and press **c** to
+change its category and move its files. Review the destination and press Enter
+to confirm. Existing downloads keep their locations until you explicitly move
+them, even after config changes.
+
+Folder mappings can also be set in `~/.tork/config.yaml`:
+
+```yaml
+organization:
+  enabled: true
+  folders:
+    movies: Films
+    Courses: Learning
+```
+
+Folder paths must stay inside `download_dir`. Config edits apply after restarting
+tork; changes made through the UI apply immediately.
+
 ### SOCKS5 proxy
 
 For a local Tor proxy:

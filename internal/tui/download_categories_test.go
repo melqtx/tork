@@ -35,6 +35,9 @@ func TestDownloadCategoryFilterIncludesLiveAndSavedEntries(t *testing.T) {
 		if len(items) != want || a.downloads.metrics.Total != want {
 			t.Fatalf("filter %q returned %d items, want %d", category, len(items), want)
 		}
+		if a.downloads.allMetrics.Active != 1 || a.activityChip() == "" {
+			t.Fatal("category filter hid the active transfer indicator")
+		}
 		if category != "\x00" && items[0].Category != category {
 			t.Fatalf("filter %q showed category %q", category, items[0].Category)
 		}

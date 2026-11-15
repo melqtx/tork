@@ -131,8 +131,13 @@ func TestOrganizationPreviewAndQuickDownloadWriteToChosenFolder(t *testing.T) {
 
 func organizedTorrentApp(t *testing.T) (*App, provider.Result, []byte) {
 	t.Helper()
+	return organizedTorrentAppWithSeeding(t, false)
+}
+
+func organizedTorrentAppWithSeeding(t *testing.T, seed bool) (*App, provider.Result, []byte) {
+	t.Helper()
 	dir, downloads := t.TempDir(), t.TempDir()
-	configYAML := fmt.Sprintf("download_dir: %q\nseed_after_complete: false\norganization: {enabled: true}\n", downloads)
+	configYAML := fmt.Sprintf("download_dir: %q\nseed_after_complete: %t\norganization: {enabled: true}\n", downloads, seed)
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0o600); err != nil {
 		t.Fatal(err)
 	}
