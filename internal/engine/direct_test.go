@@ -480,8 +480,27 @@ func TestParallelPauseWaitsAndResumeCompletes(t *testing.T) {
 	if err := eng.Pause(h); err != nil {
 		t.Fatal(err)
 	}
-	if active.Load() != 0 {
-		t.Fatalf("Pause returned with %d active requests", active.Load())
+	eng.mu.Lock()
+	runDone := eng.direct[h].runDone
+	eng.mu.Unlock()
+	select {
+	case <-runDone:
+	default:
+		t.Fatal("Pause returned before local transfer workers stopped")
+	}
+	// Closing the client response body does not synchronously acknowledge
+	// cancellation at the remote HTTP handler. Wait for that separate cleanup
+	// before resuming, rather than asserting a cross-process timing guarantee.
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for active.Load() != 0 {
+		select {
+		case <-deadline.C:
+			t.Fatalf("server retained %d requests after pause", active.Load())
+		case <-tick.C:
+		}
 	}
 	if err := eng.Resume(h); err != nil {
 		t.Fatal(err)
