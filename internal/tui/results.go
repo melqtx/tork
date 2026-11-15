@@ -13,6 +13,8 @@ import (
 	"github.com/sahilm/fuzzy"
 
 	"github.com/melqtx/tork/internal/aggregator"
+	"github.com/melqtx/tork/internal/config"
+	"github.com/melqtx/tork/internal/engine"
 	"github.com/melqtx/tork/internal/provider"
 	"github.com/melqtx/tork/internal/rank"
 )
@@ -206,7 +208,8 @@ func (a *App) updateResults(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.yank {
 			return a, a.yankDownloadValue("magnet", msg.magnet)
 		}
-		return a, a.launchCmd(msg.magnet, msg.res.Title, msg.preview)
+		msg.res.Magnet = msg.magnet
+		return a, a.launchCmd(msg.res, msg.preview)
 
 	case tea.KeyMsg:
 		if r.sourcePanel {
@@ -400,7 +403,7 @@ func (a *App) actOnResult(res provider.Result, preview bool) tea.Cmd {
 		return nil
 	}
 	if res.Magnet != "" {
-		return a.launchCmd(res.Magnet, res.Title, preview)
+		return a.launchCmd(res, preview)
 	}
 	return a.startResolve(res, preview, false)
 }
@@ -457,18 +460,44 @@ func (a *App) cancelResolve() {
 }
 
 // launchCmd either enters the preview screen or downloads immediately.
-func (a *App) launchCmd(magnet, name string, preview bool) tea.Cmd {
+func (a *App) launchCmd(res provider.Result, preview bool) tea.Cmd {
+	destination, err := a.cfg.ResolveDownloadDestination(res.Category)
+	if err != nil {
+		return a.showError(err.Error())
+	}
+	prepareFolder := true
+	if entry := a.findDownloadEntry(res.Magnet); entry != nil {
+		if entry.NeedsRelink {
+			return a.showError("relink this download to its saved files before adding it again")
+		}
+		if entry.DownloadDir != "" {
+			destination = config.DownloadDestination{Category: entry.Category, DownloadDir: entry.DownloadDir}
+			res.Magnet = entry.Magnet
+			prepareFolder = false
+		}
+	}
+	// Pin the destination before the background command starts.
+	cfg := *a.cfg
+	magnet, name := res.Magnet, res.Title
 	from := a.screen
 	if preview {
 		return func() (msg tea.Msg) {
 			defer guard(&msg, func(r any) tea.Msg {
 				return previewReadyMsg{magnet: magnet, name: name, from: from, err: fmt.Errorf("add panicked: %v", r)}
 			})
-			h, owned, err := a.eng.AddForPreview(magnet)
-			return previewReadyMsg{hash: h, magnet: magnet, name: name, from: from, owned: owned, err: err}
+			if prepareFolder {
+				if err := cfg.PrepareDownloadDestination(destination); err != nil {
+					return previewReadyMsg{err: err}
+				}
+			}
+			h, owned, err := a.eng.AddForPreviewWithOptions(magnet, engine.AddOptions{DownloadDir: destination.DownloadDir})
+			return previewReadyMsg{
+				hash: h, magnet: magnet, name: name, category: destination.Category,
+				from: from, owned: owned, err: err,
+			}
 		}
 	}
-	return a.addTorrentCmd(magnet, name)
+	return a.addTorrentCmd(res, destination, prepareFolder)
 }
 
 func (a *App) launchTorrentURLPreviewCmd(rawURL, name string) tea.Cmd {
@@ -512,14 +541,21 @@ func (a *App) findResolver(name string) provider.MagnetResolver {
 	return nil
 }
 
-func (a *App) addTorrentCmd(magnet, name string) tea.Cmd {
+func (a *App) addTorrentCmd(res provider.Result, destination config.DownloadDestination, prepareFolder bool) tea.Cmd {
 	a.pendingAdds++
+	cfg := *a.cfg
+	magnet, name := res.Magnet, res.Title
 	return func() (msg tea.Msg) {
 		defer guard(&msg, func(r any) tea.Msg {
 			return torrentAddedMsg{magnet: magnet, name: name, err: fmt.Errorf("add panicked: %v", r)}
 		})
-		h, err := a.eng.Add(magnet, nil)
-		return torrentAddedMsg{hash: h, magnet: magnet, name: name, err: err}
+		if prepareFolder {
+			if err := cfg.PrepareDownloadDestination(destination); err != nil {
+				return torrentAddedMsg{err: err}
+			}
+		}
+		h, err := a.eng.AddWithOptions(magnet, engine.AddOptions{DownloadDir: destination.DownloadDir})
+		return torrentAddedMsg{hash: h, magnet: magnet, name: name, category: destination.Category, err: err}
 	}
 }
 

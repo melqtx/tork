@@ -154,7 +154,15 @@ func (d Deps) Execute(ctx context.Context, raw string, opts Options) (Plan, erro
 			continue
 		}
 		seed := d.Cfg.SeedAfterComplete
-		h, err := d.Eng.AddWithOptions(magnet, engine.AddOptions{DownloadDir: d.Cfg.DownloadDir, Seed: &seed})
+		destination, err := d.Cfg.ResolveDownloadDestination(p.Result.Category)
+		if err == nil {
+			err = d.Cfg.PrepareDownloadDestination(destination)
+		}
+		if err != nil {
+			fmt.Fprintf(d.Out, "  ✗ %s: %s\n", trunc(p.Result.Title, 50), ShortReason(err))
+			continue
+		}
+		h, err := d.Eng.AddWithOptions(magnet, engine.AddOptions{DownloadDir: destination.DownloadDir, Seed: &seed})
 		if err != nil {
 			fmt.Fprintf(d.Out, "  ✗ %s: %s\n", trunc(p.Result.Title, 50), ShortReason(err))
 			continue
@@ -162,8 +170,9 @@ func (d Deps) Execute(ctx context.Context, raw string, opts Options) (Plan, erro
 		entry := state.Entry{
 			Magnet:      magnet,
 			Name:        p.Result.Title,
+			Category:    destination.Category,
 			AddedAt:     time.Now().UTC(),
-			DownloadDir: d.Cfg.DownloadDir,
+			DownloadDir: destination.DownloadDir,
 			Seed:        state.Bool(seed),
 		}
 		if snap, ok := d.Eng.Snapshot(h); ok {

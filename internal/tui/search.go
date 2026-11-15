@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/melqtx/tork/internal/intake"
+	"github.com/melqtx/tork/internal/provider"
 )
 
 // homeDest is a destination on the front-page menu.
@@ -91,7 +92,7 @@ func (a *App) OpenTarget(target intake.Target) error {
 	a.search.input.SetValue(target.Value)
 	switch target.Kind {
 	case intake.Magnet, intake.InfoHash:
-		a.startup = a.launchCmd(target.Value, target.Name, true)
+		a.startup = a.launchCmd(provider.Result{Magnet: target.Value, Title: target.Name}, true)
 	case intake.TorrentURL:
 		a.startup = a.launchTorrentURLPreviewCmd(target.Value, target.Name)
 	case intake.TorrentFile:
@@ -129,7 +130,7 @@ func (a *App) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case intake.TorrentFile:
 					return a, a.launchTorrentFilePreviewCmd(target.Value, target.Name)
 				default:
-					return a, a.launchCmd(target.Value, target.Name, true)
+					return a, a.launchCmd(provider.Result{Magnet: target.Value, Title: target.Name}, true)
 				}
 			}
 			return a, a.startSearch(query)
