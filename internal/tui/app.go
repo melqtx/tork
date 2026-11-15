@@ -117,6 +117,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyMsg:
+		if a.downloads.moving {
+			return a, nil
+		}
 		if msg.String() == "ctrl+c" {
 			a.closeSourceEditor()
 			return a, tea.Quit
@@ -213,6 +216,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.downloads.ticking = false
 		return a, tea.Batch(saveCmd, proxyCmd, pathCmd)
+
+	case categoryMovedMsg:
+		return a, a.onCategoryMoved(msg)
 
 	case torrentAddedMsg:
 		return a, a.onTorrentAdded(msg)
@@ -482,6 +488,9 @@ func (a *App) helpKeyAvailable() bool {
 // immediately; progress-only churn (bytes ticking up) is written at most once
 // every 5s so a busy download doesn't hammer the disk from inside Update.
 func (a *App) syncCompletedToState() tea.Cmd {
+	if a.downloads.moving {
+		return nil
+	}
 	saveNow, progressed := false, false
 	for _, s := range a.downloads.snaps {
 		if e := a.st.Find(s.Magnet); e != nil {
@@ -543,6 +552,9 @@ func applySnapshotToEntry(e *state.Entry, s engine.Snapshot) (meta, progress boo
 }
 
 func (a *App) saveState() tea.Cmd {
+	if a.downloads.moving {
+		return nil
+	}
 	if err := a.st.Save(a.cfg.StatePath()); err != nil {
 		return a.showError("save failed: " + err.Error())
 	}
