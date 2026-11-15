@@ -51,3 +51,23 @@ func TestManualCategoryWorksWithAutomaticOrganizationOff(t *testing.T) {
 		t.Fatal("missing category silently fell back to the root")
 	}
 }
+
+func TestCategoryFoldersStayUnderConfiguredRoot(t *testing.T) {
+	for _, root := range []string{filepath.Join(t.TempDir(), "Downloads", "tork"), t.TempDir()} {
+		cfg := Default(t.TempDir())
+		cfg.DownloadDir = root
+		for _, category := range cfg.Organization.Categories() {
+			destination, err := cfg.ResolveCategoryDestination(category.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := filepath.Join(root, category.ID)
+			if destination.DownloadDir != want {
+				t.Fatalf("destination = %q, want %q", destination.DownloadDir, want)
+			}
+		}
+		if cfg.Organization.Categories()[1].Name != "Anime" {
+			t.Fatal("folder casing changed the display label")
+		}
+	}
+}
