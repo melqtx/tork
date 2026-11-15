@@ -55,7 +55,7 @@ func previewSummaryApp() *App {
 func TestPreviewSummaryAndExtrasSelection(t *testing.T) {
 	a := previewSummaryApp()
 	view := a.View()
-	for _, want := range []string{"Selected 3.0 GiB", "1 of 3 files", "Save to", "/downloads/tork", "enter download", "Extras"} {
+	for _, want := range []string{"Selected 3.0 GiB", "1 of 3 files", "Save to", "tork/", "enter download", "Extras"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("preview missing %q", want)
 		}

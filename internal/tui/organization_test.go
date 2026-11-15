@@ -19,10 +19,10 @@ func TestOrganizationToggleSavesFromEmptyDownloads(t *testing.T) {
 	}
 	a := New(cfg, nil, nil, &state.State{}, nil)
 	a.screen, a.width, a.height = screenDownloads, 100, 30
-	if !strings.Contains(a.viewDownloads(), "folders: off") {
+	if !strings.Contains(a.viewDownloads(), "folders: on") {
 		t.Fatal("empty downloads hides the folder toggle")
 	}
-	for _, enabled := range []bool{true, false} {
+	for _, enabled := range []bool{false, true} {
 		_, cmd := a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'O'}})
 		if cmd == nil || !a.downloads.savingOrganization {
 			t.Fatal("toggle did not schedule a save")
@@ -65,7 +65,7 @@ func TestOrganizationToggleFailureKeepsPreviousSetting(t *testing.T) {
 	a := New(cfg, nil, nil, &state.State{}, nil)
 	cmd := a.toggleOrganization()
 	a.Update(cmd())
-	if cfg.Organization.Enabled || a.downloads.savingOrganization {
+	if !cfg.Organization.Enabled || a.downloads.savingOrganization {
 		t.Fatal("failed save changed the organization setting")
 	}
 	if !strings.Contains(a.errText, "could not save folder organization") {

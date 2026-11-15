@@ -39,6 +39,7 @@ func TestCustomCategoryPersistsAndResolves(t *testing.T) {
 func TestManualCategoryWorksWithAutomaticOrganizationOff(t *testing.T) {
 	t.Parallel()
 	cfg := Default(t.TempDir())
+	cfg.Organization.Enabled = false
 	auto, err := cfg.ResolveDownloadDestination("Movies")
 	if err != nil {
 		t.Fatal(err)
