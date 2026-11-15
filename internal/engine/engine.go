@@ -416,6 +416,13 @@ func (e *Engine) addMagnetWithOptions(magnet string, opts AddOptions) (metainfo.
 	if err != nil {
 		return metainfo.Hash{}, false, err
 	}
+	e.mu.Lock()
+	if existing, ok := e.items[metainfo.Hash(spec.InfoHash)]; ok {
+		opts.DownloadDir = existing.downloadDir
+		seed := existing.seeding
+		opts.Seed = &seed
+	}
+	e.mu.Unlock()
 	if opts.Preview && !spec.InfoHash.IsZero() {
 		h := metainfo.Hash(spec.InfoHash)
 		e.mu.Lock()
@@ -515,6 +522,13 @@ func (e *Engine) AddTorrentURLWithOptions(ctx context.Context, url string, opts 
 	_ = e.metainfo.Store(*mi)
 
 	spec := torrent.TorrentSpecFromMetaInfo(mi)
+	e.mu.Lock()
+	if existing, ok := e.items[mi.HashInfoBytes()]; ok {
+		opts.DownloadDir = existing.downloadDir
+		seed := existing.seeding
+		opts.Seed = &seed
+	}
+	e.mu.Unlock()
 	e.prepareSpec(spec, opts.DownloadDir)
 	t, _, err := e.client.AddTorrentSpec(spec)
 	if err != nil {
@@ -715,7 +729,12 @@ func proxySafeHTTPURLs(urls []string) (out []string) {
 // downloaded until StartDownload is called. If already tracked, it is a no-op
 // returning owned=false so callers do not remove it on preview cancel.
 func (e *Engine) AddForPreview(magnet string) (metainfo.Hash, bool, error) {
-	return e.addMagnetWithOptions(magnet, AddOptions{Preview: true})
+	return e.AddForPreviewWithOptions(magnet, AddOptions{})
+}
+
+func (e *Engine) AddForPreviewWithOptions(magnet string, opts AddOptions) (metainfo.Hash, bool, error) {
+	opts.Preview = true
+	return e.addMagnetWithOptions(magnet, opts)
 }
 
 func (e *Engine) startWhenReady(t *torrent.Torrent, h metainfo.Hash) {

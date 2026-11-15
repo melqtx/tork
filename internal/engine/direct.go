@@ -108,6 +108,11 @@ func (e *Engine) AddDirectDownloadWithOptions(spec DirectDownload, opts AddOptio
 	if !safeDirectFilename(spec.Name) {
 		return metainfo.Hash{}, fmt.Errorf("unsafe file name %q", spec.Name)
 	}
+	e.mu.Lock()
+	if existing, ok := e.direct[directHash(spec.URL)]; ok {
+		opts.DownloadDir = existing.downloadDir
+	}
+	e.mu.Unlock()
 	dataPath, ok := safeDataPath(opts.DownloadDir, spec.Name)
 	if !ok {
 		return metainfo.Hash{}, fmt.Errorf("unsafe file name %q", spec.Name)
