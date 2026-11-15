@@ -14,6 +14,7 @@ import (
 
 	"github.com/anacrolix/torrent/bencode"
 	"github.com/anacrolix/torrent/metainfo"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/melqtx/tork/internal/config"
 	"github.com/melqtx/tork/internal/engine"
 	"github.com/melqtx/tork/internal/metacache"
@@ -172,4 +173,43 @@ func organizedTorrentApp(t *testing.T) (*App, provider.Result, []byte) {
 	a := New(cfg, eng, nil, &state.State{}, nil)
 	a.screen, a.width, a.height = screenResults, 100, 30
 	return a, res, payload
+}
+
+func TestPreviewCategoryPickerChangesActualStorage(t *testing.T) {
+	a, res, payload := organizedTorrentApp(t)
+	a.Update(a.actOnResult(res, true)())
+	a.preview.refresh(a.eng)
+	a.preview.excluded[0] = true
+	a.openPreviewCategories()
+	for i, option := range a.preview.categories.options {
+		if option.ID == "tv" {
+			a.preview.categories.win.cursor = i
+		}
+	}
+	_, cmd := a.updatePreviewCategories(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil || !a.preview.changingCategory {
+		t.Fatal("category change did not start")
+	}
+	a.Update(cmd())
+	if a.preview.categories != nil || !a.preview.excluded[0] || a.preview.category != "tv" {
+		t.Fatalf("picker=%v excluded=%v category=%q error=%q",
+			a.preview.categories, a.preview.excluded[0], a.preview.category, a.errText)
+	}
+	want := filepath.Join(a.cfg.DownloadDir, "TV", "payload.dat")
+	delete(a.preview.excluded, 0)
+	a.startPreviewDownload()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		data, err := os.ReadFile(want)
+		if err == nil && bytes.Equal(data, payload) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("payload did not reach the chosen folder: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := a.eng.SetPreviewDownloadDir(a.preview.hash, a.cfg.DownloadDir); err == nil {
+		t.Fatal("running download accepted a preview-only folder change")
+	}
 }

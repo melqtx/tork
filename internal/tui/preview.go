@@ -17,29 +17,31 @@ import (
 // previewModel is the magnet sandbox: inspect a torrent's files and choose
 // which to download before any data transfers.
 type previewModel struct {
-	hash          metainfo.Hash
-	magnet        string
-	name          string
-	from          screen
-	owned         bool
-	files         []engine.FileInfo
-	filesByIndex  map[int]engine.FileInfo
-	tree          *fileNode
-	rows          []*fileNode
-	ready         bool
-	startedAt     time.Time
-	excluded      map[int]bool // keyed by FileInfo.Index
-	saveDir       string
-	category      string
-	autoSkipped   int // extras deselected on arrival, reported in the header
-	win           listWindow
-	statsReady    bool
-	totalSize     int64
-	selectedSize  int64
-	largestSize   int64
-	selectedCount int
-	warningCount  int
-	dirCount      int
+	hash             metainfo.Hash
+	magnet           string
+	name             string
+	from             screen
+	owned            bool
+	files            []engine.FileInfo
+	filesByIndex     map[int]engine.FileInfo
+	tree             *fileNode
+	rows             []*fileNode
+	ready            bool
+	startedAt        time.Time
+	excluded         map[int]bool // keyed by FileInfo.Index
+	saveDir          string
+	category         string
+	categories       *categoryMenu
+	changingCategory bool
+	autoSkipped      int // extras deselected on arrival, reported in the header
+	win              listWindow
+	statsReady       bool
+	totalSize        int64
+	selectedSize     int64
+	largestSize      int64
+	selectedCount    int
+	warningCount     int
+	dirCount         int
 }
 
 func newPreviewModel(h metainfo.Hash, magnet, name string, from screen, owned bool) previewModel {
@@ -142,7 +144,15 @@ func (a *App) updatePreview(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 	p := &a.preview
+	if p.changingCategory {
+		return a, nil
+	}
+	if p.categories != nil {
+		return a.updatePreviewCategories(key)
+	}
 	switch key.String() {
+	case "c":
+		return a, a.openPreviewCategories()
 	case "esc":
 		if p.owned {
 			a.eng.Remove(p.hash, false) // discard only metadata-only torrents we added
@@ -386,6 +396,9 @@ func (a *App) startPreviewDownload() tea.Cmd {
 
 func (a *App) viewPreview() string {
 	p := &a.preview
+	if p.categories != nil {
+		return a.viewCategoryMenu(p.categories)
+	}
 	width := a.contentWidth()
 
 	if !p.ready {

@@ -219,6 +219,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case previewReadyMsg:
 		return a, a.onPreviewReady(msg)
+	case previewCategoryChangedMsg:
+		return a, a.onPreviewCategoryChanged(msg)
 
 	case organizationSavedMsg:
 		return a, a.onOrganizationSaved(msg)

@@ -39,6 +39,9 @@ func (e *Engine) SetPreviewDownloadDir(h metainfo.Hash, dir string) error {
 	var mi *metainfo.MetaInfo
 	if it.t.Info() != nil {
 		metadata := it.t.Metainfo()
+		if !it.t.Info().HasV2() {
+			metadata.PieceLayers = nil
+		}
 		mi = &metadata
 	}
 	it.t.Drop()

@@ -122,6 +122,7 @@ func (a *App) screenKeys() []keyHint {
 		}
 		return []keyHint{
 			onStrip("enter", a.previewDownloadLabel()),
+			onStrip("c", "category"),
 			onStrip("space", toggle),
 			inCard("←→", "fold"),
 			onStrip("esc", "cancel"),
