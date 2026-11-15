@@ -220,6 +220,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case previewReadyMsg:
 		return a, a.onPreviewReady(msg)
 
+	case organizationSavedMsg:
+		return a, a.onOrganizationSaved(msg)
+
 	case resultMsg, resultsClosedMsg, statusMsg, statusClosedMsg, magnetResolvedMsg:
 		// Search streams keep progressing even while the user checks downloads or
 		// the ISO shelf. updateResults only changes the visible screen when a

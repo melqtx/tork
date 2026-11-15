@@ -140,18 +140,19 @@ type pathPrompt struct {
 }
 
 type downloadsModel struct {
-	snaps           []engine.Snapshot
-	items           []downloadItem
-	metrics         downloadMetrics
-	itemsReady      bool
-	selectedKey     string
-	selectionPinned bool // false follows the most actionable item until the user moves
-	win             listWindow
-	ticking         bool
-	pathExists      map[string]bool
-	pathCheckID     uint64
-	checkingPaths   bool
-	pathsChecked    time.Time
+	savingOrganization bool
+	snaps              []engine.Snapshot
+	items              []downloadItem
+	metrics            downloadMetrics
+	itemsReady         bool
+	selectedKey        string
+	selectionPinned    bool // false follows the most actionable item until the user moves
+	win                listWindow
+	ticking            bool
+	pathExists         map[string]bool
+	pathCheckID        uint64
+	checkingPaths      bool
+	pathsChecked       time.Time
 
 	confirmRemove *removeConfirm
 	prompt        pathPrompt
@@ -235,6 +236,8 @@ func (a *App) updateDownloads(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	switch key.String() {
+	case "O":
+		return a, a.toggleOrganization()
 	case "q":
 		return a, tea.Quit
 	case "esc":
@@ -1072,7 +1075,8 @@ func (a *App) viewDownloads() string {
 			styleDim.Render("search for something, then press enter to preview it"),
 		)
 		body := lipgloss.Place(width, a.bodyHeight(), lipgloss.Center, lipgloss.Center, empty)
-		return a.chrome("downloads", body, hints(hint("esc", "back"), hint("?", "keys")))
+		return a.chrome("downloads", body,
+			hints(hint("O", a.organizationLabel()), hint("esc", "back"), hint("?", "keys")))
 	}
 
 	listRows := a.downloadListRows()
@@ -1255,7 +1259,7 @@ func (a *App) downloadsOverview(m downloadMetrics, width int) string {
 		counts = append(counts, styleErr.Render(fmt.Sprintf("%d missing", m.Missing)))
 	}
 	left := styleTitle.Render("queue") + styleFaint.Render("  ") + strings.Join(counts, styleFaint.Render("  ·  "))
-	rightParts := []string{}
+	rightParts := []string{styleDim.Render("O " + a.organizationLabel())}
 	if m.SpeedBps > 0 {
 		rightParts = append(rightParts, styleOK.Render("↓ "+humanSpeed(m.SpeedBps)))
 	}
