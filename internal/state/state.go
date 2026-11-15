@@ -15,6 +15,7 @@ type Entry struct {
 	// for ISO-shelf images downloaded directly (distros without torrents).
 	Magnet            string     `json:"magnet"`
 	Name              string     `json:"name"`
+	Category          string     `json:"category,omitempty"`
 	SHA256            string     `json:"sha256,omitempty"` // expected digest for direct downloads
 	ChecksumAlgorithm string     `json:"checksum_algorithm,omitempty"`
 	Checksum          string     `json:"checksum,omitempty"`

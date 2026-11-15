@@ -25,6 +25,7 @@ func TestRoundTrip(t *testing.T) {
 	s.Upsert(Entry{
 		Magnet:         "magnet:?xt=urn:btih:abc",
 		Name:           "test",
+		Category:       "movies",
 		AddedAt:        now,
 		Done:           true,
 		DownloadDir:    "/downloads",
@@ -46,6 +47,9 @@ func TestRoundTrip(t *testing.T) {
 		t.Errorf("round trip mismatch: %+v", got.Entries)
 	}
 	e := got.Entries[0]
+	if e.Category != "movies" {
+		t.Fatalf("category = %q", e.Category)
+	}
 	if e.DownloadDir != "/downloads" || e.DataPath != "/downloads/test" || !e.NeedsRelink || e.Seed == nil || *e.Seed {
 		t.Errorf("new fields did not round trip: %+v", e)
 	}
