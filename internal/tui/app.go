@@ -221,6 +221,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.onPreviewReady(msg)
 	case previewCategoryChangedMsg:
 		return a, a.onPreviewCategoryChanged(msg)
+	case categorySavedMsg:
+		return a, a.onCategorySaved(msg)
 
 	case organizationSavedMsg:
 		return a, a.onOrganizationSaved(msg)
@@ -377,6 +379,7 @@ func (a *App) onPreviewReady(msg previewReadyMsg) tea.Cmd {
 // single-letter shortcuts must stay inert.
 func (a *App) typing() bool {
 	return (a.screen == screenSources && (a.sources.editor != nil || a.sources.catalog != nil)) ||
+		(a.screen == screenPreview && a.preview.categories != nil && a.preview.categories.editor != nil) ||
 		(a.screen == screenSearch && !a.search.menuFocused) ||
 		(a.screen == screenResults && (a.results.filtering || a.results.editSearch)) ||
 		a.downloads.prompt.action != pathActionNone
