@@ -13,26 +13,27 @@ import (
 type Entry struct {
 	// Magnet is the resume key: a magnet URI for torrents, or the https URL
 	// for ISO-shelf images downloaded directly (distros without torrents).
-	Magnet            string     `json:"magnet"`
-	Name              string     `json:"name"`
-	CategorySource    string     `json:"category_source,omitempty"`
-	Category          string     `json:"category,omitempty"`
-	SHA256            string     `json:"sha256,omitempty"` // expected digest for direct downloads
-	ChecksumAlgorithm string     `json:"checksum_algorithm,omitempty"`
-	Checksum          string     `json:"checksum,omitempty"`
-	ExpectedSize      int64      `json:"expected_size,omitempty"`
-	LockToOrigin      bool       `json:"lock_to_origin,omitempty"`
-	AddedAt           time.Time  `json:"added_at"`
-	Paused            bool       `json:"paused"`
-	Done              bool       `json:"done"`
-	DownloadDir       string     `json:"download_dir,omitempty"`
-	DataPath          string     `json:"data_path,omitempty"`
-	NeedsRelink       bool       `json:"needs_relink,omitempty"`
-	Seed              *bool      `json:"seed,omitempty"`
-	BytesCompleted    int64      `json:"bytes_completed,omitempty"`
-	Length            int64      `json:"length,omitempty"`
-	CompletedAt       *time.Time `json:"completed_at,omitempty"`
-	Excluded          []int      `json:"excluded,omitempty"`
+	Magnet            string      `json:"magnet"`
+	Name              string      `json:"name"`
+	CategorySource    string      `json:"category_source,omitempty"`
+	Category          string      `json:"category,omitempty"`
+	SHA256            string      `json:"sha256,omitempty"` // expected digest for direct downloads
+	ChecksumAlgorithm string      `json:"checksum_algorithm,omitempty"`
+	Checksum          string      `json:"checksum,omitempty"`
+	ExpectedSize      int64       `json:"expected_size,omitempty"`
+	LockToOrigin      bool        `json:"lock_to_origin,omitempty"`
+	AddedAt           time.Time   `json:"added_at"`
+	Paused            bool        `json:"paused"`
+	Done              bool        `json:"done"`
+	DownloadDir       string      `json:"download_dir,omitempty"`
+	DataPath          string      `json:"data_path,omitempty"`
+	PendingMove       *MoveTarget `json:"pending_move,omitempty"`
+	NeedsRelink       bool        `json:"needs_relink,omitempty"`
+	Seed              *bool       `json:"seed,omitempty"`
+	BytesCompleted    int64       `json:"bytes_completed,omitempty"`
+	Length            int64       `json:"length,omitempty"`
+	CompletedAt       *time.Time  `json:"completed_at,omitempty"`
+	Excluded          []int       `json:"excluded,omitempty"`
 }
 
 type State struct {
@@ -55,6 +56,9 @@ func Load(path string) (*State, error) {
 		_ = os.Rename(path, path+".bak")
 		fmt.Fprintf(os.Stderr, "tork: %s was corrupt (%v); backed up to %s.bak\n", path, err, path)
 		return &State{}, nil
+	}
+	for i := range s.Entries {
+		recoverMove(&s.Entries[i])
 	}
 	return &s, nil
 }
