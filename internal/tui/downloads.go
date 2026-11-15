@@ -144,6 +144,7 @@ type pathPrompt struct {
 type downloadsModel struct {
 	categoryFilter     *string
 	categoryMenu       *categoryMenu
+	categoryMove       *downloadCategoryMove
 	savingOrganization bool
 	snaps              []engine.Snapshot
 	items              []downloadItem
@@ -234,6 +235,9 @@ func (a *App) updateDownloads(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if d.categoryMenu != nil {
 		return a.updateDownloadCategoryFilter(key)
 	}
+	if d.categoryMove != nil {
+		return a.updateDownloadCategoryMove(key)
+	}
 
 	items := a.downloadItems()
 	rows := a.downloadListRows()
@@ -243,6 +247,10 @@ func (a *App) updateDownloads(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	switch key.String() {
+	case "c":
+		if it, ok := a.selectedDownload(items); ok {
+			return a, a.openDownloadCategoryMove(it)
+		}
 	case "f":
 		a.openDownloadCategoryFilter()
 		return a, nil
@@ -327,7 +335,7 @@ func (a *App) updateDownloads(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func verificationBlocksKey(key string) bool {
 	switch key {
-	case "p", "s", "v", "m", "r", "x", "d":
+	case "p", "s", "v", "m", "r", "x", "d", "c":
 		return true
 	default:
 		return false
@@ -1083,6 +1091,9 @@ func safeDownloadPath(dir, path string) bool {
 
 func (a *App) viewDownloads() string {
 	d := &a.downloads
+	if d.categoryMove != nil {
+		return a.viewDownloadCategoryMove(d.categoryMove)
+	}
 	if d.categoryMenu != nil {
 		return a.viewCategoryMenu(d.categoryMenu)
 	}
