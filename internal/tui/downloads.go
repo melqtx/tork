@@ -915,12 +915,6 @@ func (a *App) moveDownload(it downloadItem, targetDir string) error {
 	if strings.TrimSpace(targetDir) == "" {
 		return fmt.Errorf("move needs a destination folder")
 	}
-	if it.DataPath == "" {
-		return fmt.Errorf("move needs a known saved path")
-	}
-	if !safeDownloadPath(it.DownloadDir, it.DataPath) {
-		return fmt.Errorf("move needs a saved path inside the download folder")
-	}
 	targetDir, err := filepath.Abs(targetDir)
 	if err != nil {
 		return err
@@ -928,13 +922,31 @@ func (a *App) moveDownload(it downloadItem, targetDir string) error {
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		return err
 	}
-	newPath := filepath.Join(targetDir, filepath.Base(it.DataPath))
+	if it.Live {
+		if err := a.eng.Pause(it.Hash); err != nil {
+			return err
+		}
+		if snap, ok := a.eng.Snapshot(it.Hash); ok {
+			it.DataPath, it.BytesCompleted, it.Length = snap.DataPath, snap.BytesCompleted, snap.Length
+		}
+	}
+	empty := it.BytesCompleted == 0 && it.State != engine.StateDone && it.State != engine.StateSeeding
+	if !safeDownloadPath(it.DownloadDir, it.DataPath) && !(empty && it.DataPath == "") {
+		if it.Live && shouldResumeAfterPathChange(it) {
+			_ = a.eng.Resume(it.Hash)
+		}
+		return fmt.Errorf("move needs a saved path inside the download folder")
+	}
+	newPath := ""
+	if it.DataPath != "" {
+		newPath = filepath.Join(targetDir, filepath.Base(it.DataPath))
+	}
 	if it.Live {
 		if err := a.eng.Remove(it.Hash, false); err != nil {
 			return err
 		}
 	}
-	if err := movePayload(it.DataPath, newPath); err != nil {
+	if err := movePayload(it.DataPath, newPath); err != nil && !(empty && errors.Is(err, errNoMovePayload)) {
 		if it.Live && shouldResumeAfterPathChange(it) {
 			err = errors.Join(err, a.resumeDownload(it))
 		}
@@ -1018,6 +1030,8 @@ func shouldResumeAfterPathChange(it downloadItem) bool {
 	return it.Magnet != ""
 }
 
+var errNoMovePayload = errors.New("no payload exists yet")
+
 func movePayload(oldPath, newPath string) error {
 	if oldPath == "" || newPath == "" || oldPath == newPath {
 		return nil
@@ -1041,7 +1055,7 @@ func movePayload(oldPath, newPath string) error {
 		}
 	}
 	if len(moves) == 0 {
-		return fmt.Errorf("nothing to move at %s", oldPath)
+		return errNoMovePayload
 	}
 	for i, candidate := range moves {
 		if err := os.Rename(candidate.old, candidate.new); err != nil {
