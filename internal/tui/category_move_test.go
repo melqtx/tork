@@ -53,7 +53,7 @@ func TestCategoryMovePreservesPausedAndCompletedDownloads(t *testing.T) {
 				t.Fatalf("move lost the payload: %v", err)
 			}
 			e := st.Entries[0]
-			if e.Category != "Courses" || e.DataPath != want || e.Paused != tc.paused || e.Done != tc.done {
+			if e.Category != "Courses" || e.CategorySource != "manual" || e.DataPath != want || e.Paused != tc.paused || e.Done != tc.done {
 				t.Fatalf("move lost saved settings: %+v", e)
 			}
 			if len(e.Excluded) != 1 || *e.Seed {

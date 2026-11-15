@@ -68,7 +68,7 @@ func TestOrganizationPreviewAndQuickDownloadWriteToChosenFolder(t *testing.T) {
 				t.Fatalf("entries = %+v", a.st.Entries)
 			}
 			entry := a.st.Entries[0]
-			if entry.Category != "movies" || entry.DownloadDir != wantDir {
+			if entry.Category != "movies" || entry.CategorySource != res.Provider || entry.DownloadDir != wantDir {
 				t.Fatalf("saved destination = %+v", entry)
 			}
 			wantPath := filepath.Join(wantDir, "payload.dat")
@@ -90,7 +90,7 @@ func TestOrganizationPreviewAndQuickDownloadWriteToChosenFolder(t *testing.T) {
 				t.Fatal(err)
 			}
 			loaded, err := state.Load(a.cfg.StatePath())
-			if err != nil || len(loaded.Entries) != 1 || loaded.Entries[0].Category != "movies" {
+			if err != nil || len(loaded.Entries) != 1 || loaded.Entries[0].Category != "movies" || loaded.Entries[0].CategorySource != res.Provider {
 				t.Fatalf("persisted state = %+v, err = %v", loaded, err)
 			}
 			snap := a.eng.Snapshots()[0]

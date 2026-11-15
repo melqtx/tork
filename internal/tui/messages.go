@@ -40,25 +40,27 @@ type magnetResolvedMsg struct {
 }
 
 type torrentAddedMsg struct {
-	hash         metainfo.Hash
-	magnet       string // resume key: magnet URI, or https URL for direct downloads
-	name         string
-	category     string
-	sha256       string // legacy SHA-256 field used by the ISO shelf
-	checksum     engine.Checksum
-	expectedSize int64
-	lockToOrigin bool
-	err          error
+	hash           metainfo.Hash
+	magnet         string // resume key: magnet URI, or https URL for direct downloads
+	name           string
+	categorySource string
+	category       string
+	sha256         string // legacy SHA-256 field used by the ISO shelf
+	checksum       engine.Checksum
+	expectedSize   int64
+	lockToOrigin   bool
+	err            error
 }
 
 type previewReadyMsg struct {
-	hash     metainfo.Hash
-	magnet   string
-	name     string
-	category string
-	from     screen
-	owned    bool
-	err      error
+	hash           metainfo.Hash
+	magnet         string
+	name           string
+	categorySource string
+	category       string
+	from           screen
+	owned          bool
+	err            error
 }
 
 type tickMsg time.Time

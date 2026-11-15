@@ -168,12 +168,13 @@ func (d Deps) Execute(ctx context.Context, raw string, opts Options) (Plan, erro
 			continue
 		}
 		entry := state.Entry{
-			Magnet:      magnet,
-			Name:        p.Result.Title,
-			Category:    destination.Category,
-			AddedAt:     time.Now().UTC(),
-			DownloadDir: destination.DownloadDir,
-			Seed:        state.Bool(seed),
+			Magnet:         magnet,
+			Name:           p.Result.Title,
+			Category:       destination.Category,
+			CategorySource: p.Result.Provider,
+			AddedAt:        time.Now().UTC(),
+			DownloadDir:    destination.DownloadDir,
+			Seed:           state.Bool(seed),
 		}
 		if snap, ok := d.Eng.Snapshot(h); ok {
 			if snap.Name != "" && snap.Name != "?" {

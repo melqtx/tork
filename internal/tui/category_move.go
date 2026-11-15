@@ -72,6 +72,7 @@ func (a *App) updateDownloadCategoryMove(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	entry := a.st.Find(it.Magnet)
 	if entry != nil && entry.DownloadDir == destination.DownloadDir {
 		entry.Category = destination.Category
+		entry.CategorySource = "manual"
 	}
 	a.refreshDownloadItems()
 	save := a.saveState()

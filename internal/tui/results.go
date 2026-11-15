@@ -465,6 +465,10 @@ func (a *App) launchCmd(res provider.Result, preview bool) tea.Cmd {
 	if err != nil {
 		return a.showError(err.Error())
 	}
+	categorySource := res.Provider
+	if res.CategoryConflict {
+		categorySource = "conflicting sources"
+	}
 	prepareFolder := true
 	if entry := a.findDownloadEntry(res.Magnet); entry != nil {
 		if entry.NeedsRelink {
@@ -473,6 +477,7 @@ func (a *App) launchCmd(res provider.Result, preview bool) tea.Cmd {
 		if entry.DownloadDir != "" {
 			destination = config.DownloadDestination{Category: entry.Category, DownloadDir: entry.DownloadDir}
 			res.Magnet = entry.Magnet
+			categorySource = entry.CategorySource
 			prepareFolder = false
 		}
 	}
@@ -492,12 +497,14 @@ func (a *App) launchCmd(res provider.Result, preview bool) tea.Cmd {
 			}
 			h, owned, err := a.eng.AddForPreviewWithOptions(magnet, engine.AddOptions{DownloadDir: destination.DownloadDir})
 			return previewReadyMsg{
-				hash: h, magnet: magnet, name: name, category: destination.Category,
+				hash: h, magnet: magnet, name: name, category: destination.Category, categorySource: categorySource,
 				from: from, owned: owned, err: err,
 			}
 		}
 	}
-	return a.addTorrentCmd(res, destination, prepareFolder)
+	return a.addTorrentCmd(
+		res, destination, prepareFolder, categorySource,
+	)
 }
 
 func (a *App) launchTorrentURLPreviewCmd(rawURL, name string) tea.Cmd {
@@ -541,7 +548,12 @@ func (a *App) findResolver(name string) provider.MagnetResolver {
 	return nil
 }
 
-func (a *App) addTorrentCmd(res provider.Result, destination config.DownloadDestination, prepareFolder bool) tea.Cmd {
+func (a *App) addTorrentCmd(
+	res provider.Result,
+	destination config.DownloadDestination,
+	prepareFolder bool,
+	categorySource string,
+) tea.Cmd {
 	a.pendingAdds++
 	cfg := *a.cfg
 	magnet, name := res.Magnet, res.Title
@@ -555,7 +567,7 @@ func (a *App) addTorrentCmd(res provider.Result, destination config.DownloadDest
 			}
 		}
 		h, err := a.eng.AddWithOptions(magnet, engine.AddOptions{DownloadDir: destination.DownloadDir})
-		return torrentAddedMsg{hash: h, magnet: magnet, name: name, category: destination.Category, err: err}
+		return torrentAddedMsg{hash: h, magnet: magnet, name: name, category: destination.Category, categorySource: categorySource, err: err}
 	}
 }
 

@@ -31,6 +31,7 @@ type previewModel struct {
 	excluded         map[int]bool // keyed by FileInfo.Index
 	saveDir          string
 	category         string
+	categorySource   string
 	categories       *categoryMenu
 	changingCategory bool
 	autoSkipped      int // extras deselected on arrival, reported in the header
@@ -365,13 +366,14 @@ func (a *App) startPreviewDownload() tea.Cmd {
 	excluded := p.excludedSlice()
 	a.eng.StartDownload(p.hash, excluded)
 	entry := state.Entry{
-		Magnet:      p.magnet,
-		Name:        p.name,
-		Category:    p.category,
-		AddedAt:     time.Now().UTC(),
-		Excluded:    excluded,
-		DownloadDir: a.cfg.DownloadDir,
-		Seed:        state.Bool(a.cfg.SeedAfterComplete),
+		Magnet:         p.magnet,
+		Name:           p.name,
+		Category:       p.category,
+		CategorySource: p.categorySource,
+		AddedAt:        time.Now().UTC(),
+		Excluded:       excluded,
+		DownloadDir:    a.cfg.DownloadDir,
+		Seed:           state.Bool(a.cfg.SeedAfterComplete),
 	}
 	if existing := a.findDownloadEntry(p.magnet); existing != nil {
 		entry = *existing

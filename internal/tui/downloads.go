@@ -67,6 +67,7 @@ func openCommand(path string) (string, []string) {
 
 type downloadItem struct {
 	Category       string
+	CategorySource string
 	Hash           metainfo.Hash
 	Magnet         string
 	Name           string
@@ -570,7 +571,7 @@ func (a *App) buildDownloadItems() []downloadItem {
 		e := &a.st.Entries[i]
 		if s, ok := snapsByMagnet[e.Magnet]; ok {
 			item := itemFromSnapshot(s, i, true)
-			item.Category = e.Category
+			item.Category, item.CategorySource = e.Category, e.CategorySource
 			out = append(out, item)
 			used[e.Magnet] = true
 			continue
@@ -706,7 +707,7 @@ func (a *App) itemFromEntry(e *state.Entry, idx int) downloadItem {
 	}
 	return downloadItem{
 		Magnet: e.Magnet, Name: name, DownloadDir: e.DownloadDir, DataPath: e.DataPath,
-		Category:       e.Category,
+		Category: e.Category, CategorySource: e.CategorySource,
 		BytesCompleted: e.BytesCompleted, Length: e.Length,
 		State: st, Note: note, Seed: e.SeedEnabled(defaultSeed),
 		EntryIndex: idx,
@@ -1360,7 +1361,11 @@ func (a *App) downloadDetail(it downloadItem, width int) string {
 	}
 	info := []string{mode}
 	if it.Category != "" {
-		info = append(info, a.downloadCategoryLabel(it.Category))
+		label := a.downloadCategoryLabel(it.Category)
+		if it.CategorySource != "" {
+			label += " (" + it.CategorySource + ")"
+		}
+		info = append(info, label)
 	}
 	if it.Length > 0 {
 		info = append(info, humanBytes(it.Length))
