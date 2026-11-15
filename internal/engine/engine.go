@@ -909,6 +909,7 @@ func (e *Engine) Pause(h metainfo.Hash) error {
 		return ErrVerificationInProgress
 	}
 	it.name = displayName(it)
+	it.dataPath = torrentDataPath(it)
 	it.length = torrentLength(it.t)
 	it.done = it.t.BytesCompleted()
 	it.t.Drop()

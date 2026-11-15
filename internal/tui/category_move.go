@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/melqtx/tork/internal/config"
+	"github.com/melqtx/tork/internal/engine"
 )
 
 type downloadCategoryMove struct {
@@ -15,7 +16,8 @@ type downloadCategoryMove struct {
 }
 
 func (a *App) openDownloadCategoryMove(it downloadItem) tea.Cmd {
-	if a.st.Find(it.Magnet) == nil || !safeDownloadPath(it.DownloadDir, it.DataPath) {
+	metadataOnly := it.State == engine.StateFetchingMeta && it.BytesCompleted == 0
+	if a.st.Find(it.Magnet) == nil || (!metadataOnly && !safeDownloadPath(it.DownloadDir, it.DataPath)) {
 		return a.showError("relink this download before changing its category")
 	}
 	m := &categoryMenu{options: a.cfg.Organization.Categories()}
