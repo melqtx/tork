@@ -57,7 +57,7 @@ func TestResolveDownloadDestination(t *testing.T) {
 		{name: "no substring match", input: "XXX Movies"},
 		{name: "adult parent", input: "XXX/Movies"},
 		{name: "untrusted path", input: "../../arbitrary-folder"},
-		{name: "disabled", input: "Movies", disabled: true},
+		{name: "disabled", input: "Movies", category: "movies", disabled: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

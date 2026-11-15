@@ -23,20 +23,21 @@ var ErrBlocked = errors.New("blocked by site protection")
 var maxResponseBytes int64 = 32 << 20 // 32 MiB
 
 type Result struct {
-	Title           string
-	Size            string // human string as scraped
-	SizeBytes       int64
-	Seeders         int
-	Leechers        int
-	SeedersUnknown  bool // missing/invalid source count; distinct from a reported zero
-	LeechersUnknown bool
-	Observations    []SwarmObservation
-	Magnet          string // empty when only a detail page is known
-	DetailURL       string // set by providers that resolve magnets lazily
-	Provider        string
-	Trusted         bool     // provider flagged this as a trusted/verified release
-	Category        string   // provider's category label when known (e.g. "Movies", "XXX")
-	AlsoOn          []string // other providers that listed this same infohash (see Merge)
+	Title            string
+	Size             string // human string as scraped
+	SizeBytes        int64
+	Seeders          int
+	Leechers         int
+	SeedersUnknown   bool // missing/invalid source count; distinct from a reported zero
+	LeechersUnknown  bool
+	Observations     []SwarmObservation
+	Magnet           string // empty when only a detail page is known
+	DetailURL        string // set by providers that resolve magnets lazily
+	Provider         string
+	Trusted          bool // provider flagged this as a trusted/verified release
+	CategoryConflict bool
+	Category         string   // provider's category label when known (e.g. "Movies", "XXX")
+	AlsoOn           []string // other providers that listed this same infohash (see Merge)
 }
 
 // SanitizeResult bounds and strips terminal control sequences from text that
