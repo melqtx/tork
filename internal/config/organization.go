@@ -10,6 +10,8 @@ import (
 	"unicode"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/melqtx/tork/internal/provider"
 )
 
 type OrganizationConfig struct {
@@ -68,11 +70,11 @@ func (c *Config) ResolveDownloadDestination(providerCategory string) (DownloadDe
 	if err != nil {
 		return DownloadDestination{}, fmt.Errorf("resolve download directory: %w", err)
 	}
-	destination := DownloadDestination{DownloadDir: base}
+	destination := DownloadDestination{Category: provider.NormalizeCategory(providerCategory), DownloadDir: base}
 	if !c.Organization.Enabled {
 		return destination, nil
 	}
-	return c.ResolveCategoryDestination(downloadCategory(providerCategory))
+	return c.ResolveCategoryDestination(destination.Category)
 }
 
 func (c *Config) PrepareDownloadDestination(destination DownloadDestination) error {
@@ -82,6 +84,9 @@ func (c *Config) PrepareDownloadDestination(destination DownloadDestination) err
 	base, err := filepath.Abs(c.DownloadDir)
 	if err != nil {
 		return fmt.Errorf("resolve download directory: %w", err)
+	}
+	if filepath.Clean(destination.DownloadDir) == base {
+		return nil
 	}
 	rel, err := filepath.Rel(base, destination.DownloadDir)
 	if err != nil {
@@ -100,42 +105,6 @@ func (c *Config) PrepareDownloadDestination(destination DownloadDestination) err
 		return fmt.Errorf("prepare category folder: %w", err)
 	}
 	return nil
-}
-
-func downloadCategory(raw string) string {
-	raw = strings.ToLower(strings.Join(strings.Fields(raw), " "))
-	raw = strings.ReplaceAll(raw, " - ", "/")
-	segments := strings.FieldsFunc(raw, func(r rune) bool {
-		return strings.ContainsRune(">/,|", r)
-	})
-	for _, segment := range segments {
-		switch strings.TrimSpace(segment) {
-		case "xxx", "nsfw", "adult", "porn":
-			return ""
-		}
-	}
-	// TV/Anime goes in Anime; Movies/HD goes in Movies.
-	for i := len(segments) - 1; i >= 0; i-- {
-		switch strings.TrimSpace(segments[i]) {
-		case "movie", "movies", "film", "films":
-			return "movies"
-		case "tv", "television", "tv shows", "tv show", "tv series":
-			return "tv"
-		case "anime":
-			return "anime"
-		case "music":
-			return "music"
-		case "game", "games":
-			return "games"
-		case "software", "app", "apps", "application", "applications":
-			return "software"
-		case "book", "books", "ebook", "ebooks", "e-book", "e-books", "audiobook", "audiobooks":
-			return "books"
-		case "linux", "linux iso", "linux isos":
-			return "linux"
-		}
-	}
-	return ""
 }
 
 func (c *Config) WriteOrganizationEnabled(enabled bool) error {

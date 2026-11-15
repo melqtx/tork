@@ -89,7 +89,13 @@ func Merge(keep, other Result) Result {
 	if strings.TrimSpace(out.Size) == "" {
 		out.Size = other.Size
 	}
-	if out.Category == "" {
+	left, right := NormalizeCategory(keep.Category), NormalizeCategory(other.Category)
+	out.CategoryConflict = keep.CategoryConflict || other.CategoryConflict || (left != "" && right != "" && left != right)
+	if out.CategoryConflict {
+		out.Category = ""
+	} else if left == "" && right != "" {
+		out.Category = other.Category
+	} else if out.Category == "" {
 		out.Category = other.Category
 	}
 	out.AlsoOn = mergedSources(keep, other)
