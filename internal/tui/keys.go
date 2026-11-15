@@ -160,6 +160,7 @@ func (a *App) screenKeys() []keyHint {
 			inCard("tab / shift+tab", "back"),
 			inCard("x", "remove"),
 			inCard("s", "seed on or off"),
+			onStrip("O", "organize downloads into folders"),
 			inCard("v", "verify completed data"),
 			inCard("m", "move to another folder"),
 			inCard("r", "relink to existing files"),
