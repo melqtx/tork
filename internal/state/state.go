@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"slices"
 	"time"
 )
@@ -69,20 +68,14 @@ func (s *State) Save(path string) error {
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".state-*.json")
-	if err != nil {
-		return err
+	pending := false
+	for _, entry := range s.Entries {
+		if entry.PendingMove != nil {
+			pending = true
+			break
+		}
 	}
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmp.Name())
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
+	return saveStateBytes(path, data, pending)
 }
 
 // Upsert adds the entry or replaces an existing one with the same magnet.
