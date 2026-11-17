@@ -7,6 +7,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/melqtx/tork/internal/config"
+	"github.com/melqtx/tork/internal/engine"
 )
 
 var allScreens = []screen{
@@ -131,5 +133,32 @@ func TestHelpCardOpensAndAnyKeyCloses(t *testing.T) {
 	a.search.input.SetValue("")
 	if _, _ = a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}}); !a.showHelp {
 		t.Fatal("? did not open the card from an empty home field")
+	}
+}
+
+func TestDownloadHintsFollowSelectedState(t *testing.T) {
+	for _, tc := range []struct {
+		state        engine.TorrentState
+		want, hidden string
+	}{
+		{engine.StatePaused, "resume", "p pause"},
+		{engine.StateDownloading, "pause", "enter open"},
+		{engine.StateDone, "enter open", "p pause"},
+		{engine.StateVerifying, "keys", "p pause"},
+		{engine.StateMissing, "keys", "enter open"},
+	} {
+		a := &App{screen: screenDownloads, cfg: &config.Config{}, downloads: newDownloadsModel()}
+		a.downloads.itemsReady = true
+		a.downloads.items = []downloadItem{{State: tc.state}}
+		strip := a.keyStrip(160)
+		if !strings.Contains(strip, tc.want) || strings.Contains(strip, tc.hidden) {
+			t.Errorf("%s hints = %q", tc.state, strip)
+		}
+		for _, enabled := range []bool{false, true} {
+			a.cfg.Organization.Enabled = enabled
+			if !strings.Contains(a.keyStrip(160), a.organizationLabel()) {
+				t.Fatal("folder toggle hides its current state")
+			}
+		}
 	}
 }
