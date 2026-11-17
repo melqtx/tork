@@ -1418,12 +1418,12 @@ func (a *App) downloadDetail(it downloadItem, width int) string {
 		info = append(info, "DHT on")
 	}
 	actions := downloadActionHint(it)
-	innerWidth := max(1, width-4)
+	innerWidth := max(1, width-6)
 	headerRight := stateBadge(it.State)
-	headerLeft := styleBrand.Render("selected") + styleFaint.Render("  ") + styleFg.Bold(true).Render(truncate(it.Name, max(1, innerWidth-lipgloss.Width(headerRight)-2)))
+	headerLeft := styleBrand.Render("selected") + styleFaint.Render("  ") + styleFg.Bold(true).Render(truncate(it.Name, max(1, innerWidth-lipgloss.Width("selected  ")-lipgloss.Width(headerRight)-2)))
 	lines := []string{
 		joinDownloadEnds(headerLeft, headerRight, innerWidth),
-		styleFaint.Render("save     ") + styleDim.Render(truncate(path, max(1, innerWidth-9))),
+		styleFaint.Render("save     ") + styleDim.Render(a.downloadDisplayPath(path, max(1, innerWidth-9))),
 		styleFaint.Render("info     ") + styleDim.Render(truncate(strings.Join(info, " · "), max(1, innerWidth-9))),
 		styleFaint.Render("actions  ") + styleDim.Render(truncate(actions, max(1, innerWidth-9))),
 	}
