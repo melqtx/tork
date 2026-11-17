@@ -270,8 +270,7 @@ func checkState(cfg *config.Config) Check {
 		c.Detail = "no downloads recorded yet"
 		return c
 	}
-	// state.Load is deliberately forgiving - it renames a corrupt file and
-	// returns an empty state. Doctor must not mutate, so read and parse here.
+	// Recovery writes files; diagnostics only inspect the primary state.
 	st, err := parseState(path)
 	if err != nil {
 		c.Status = StatusFail
@@ -394,18 +393,20 @@ func checkHistory(cfg *config.Config, store *Store) Check {
 	return c
 }
 
-// parseState reads the resume list without the forgiving fallbacks of
-// state.Load, so a corrupt file is reported instead of silently reset.
+// parseState inspects the primary state without recovery or writes.
 func parseState(path string) (*state.State, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	var st state.State
+	var st *state.State
 	if err := json.Unmarshal(data, &st); err != nil {
 		return nil, err
 	}
-	return &st, nil
+	if st == nil {
+		return nil, fmt.Errorf("state must be a JSON object")
+	}
+	return st, nil
 }
 
 func humanBytes(n int64) string {

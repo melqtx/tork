@@ -90,12 +90,11 @@ func TestLoadRecoversFromCorruptState(t *testing.T) {
 	if err := os.WriteFile(path, []byte("{not valid json"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Load(path) // must NOT error
-	if err != nil {
-		t.Fatalf("corrupt state should not fail startup: %v", err)
+	if _, err := Load(path); err == nil {
+		t.Fatal("damaged state without a backup must not start an empty queue")
 	}
-	if len(s.Entries) != 0 {
-		t.Errorf("expected empty state, got %d entries", len(s.Entries))
+	if data, err := os.ReadFile(path); err != nil || string(data) != "{not valid json" {
+		t.Fatalf("unrecoverable state was changed: %v", err)
 	}
 	if _, err := os.Stat(path + ".bak"); err != nil {
 		t.Errorf("corrupt state should be preserved as .bak: %v", err)

@@ -3,6 +3,7 @@ package state
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -39,27 +40,54 @@ type State struct {
 	Entries []Entry `json:"entries"`
 }
 
-// Load reads the state file. A missing, unreadable, or corrupt file yields an
-// empty state rather than an error - losing the resume list is recoverable,
-// failing to start is not. A corrupt file is preserved as .bak.
+// Load restores a last-good snapshot when the primary state is missing or damaged.
 func Load(path string) (*State, error) {
 	data, err := os.ReadFile(path)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "tork: could not read %s (%v); starting with an empty download list\n", path, err)
-		}
-		return &State{}, nil
+	missing := os.IsNotExist(err)
+	if err != nil && !missing {
+		return nil, fmt.Errorf("read state: %w", err)
 	}
-	var s State
-	if err := json.Unmarshal(data, &s); err != nil {
-		_ = os.Rename(path, path+".bak")
-		fmt.Fprintf(os.Stderr, "tork: %s was corrupt (%v); backed up to %s.bak\n", path, err, path)
-		return &State{}, nil
+	var s *State
+	if !missing {
+		s, err = decodeState(data)
+	}
+	if missing || err != nil {
+		backup, backupErr := os.ReadFile(path + ".lastgood")
+		if missing && os.IsNotExist(backupErr) {
+			return &State{}, nil
+		}
+		if !missing {
+			if preserveErr := writeStateFile(path+".bak", data); preserveErr != nil {
+				return nil, fmt.Errorf("preserve damaged state: %w", preserveErr)
+			}
+		}
+		if backupErr != nil {
+			return nil, fmt.Errorf("recover state from %s.lastgood: %w", path, errors.Join(err, backupErr))
+		}
+		s, err = decodeState(backup)
+		if err != nil {
+			return nil, fmt.Errorf("invalid last-good state: %w", err)
+		}
+		if err := writeStateFile(path, backup); err != nil {
+			return nil, fmt.Errorf("restore state: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "tork: restored download state from %s.lastgood\n", path)
 	}
 	for i := range s.Entries {
 		recoverMove(&s.Entries[i])
 	}
-	return &s, nil
+	return s, nil
+}
+
+func decodeState(data []byte) (*State, error) {
+	var s *State
+	if err := json.Unmarshal(data, &s); err != nil {
+		return nil, err
+	}
+	if s == nil {
+		return nil, errors.New("state must be a JSON object")
+	}
+	return s, nil
 }
 
 // Save writes atomically via temp file + rename.
