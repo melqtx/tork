@@ -5,6 +5,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/melqtx/tork/internal/engine"
 )
 
 // keyHint is one documented shortcut. `strip` marks the few that earn a place
@@ -153,16 +154,29 @@ func (a *App) screenKeys() []keyHint {
 		}
 
 	default:
+		open, pause := inCard("enter", "open saved file"), inCard("p", "pause / resume")
+		if it, ok := a.selectedDownload(a.downloadItems()); ok {
+			switch it.State {
+			case engine.StateDone:
+				open = onStrip("enter", "open")
+			case engine.StatePaused:
+				pause = onStrip("p", "resume")
+			case engine.StateSeeding:
+				open, pause = onStrip("enter", "open"), onStrip("p", "pause")
+			case engine.StateDownloading, engine.StateFetchingMeta, engine.StatePreviewing:
+				pause = onStrip("p", "pause")
+			}
+		}
 		keys := []keyHint{
 			onStrip("↑↓", "move"),
-			onStrip("enter", "open"),
-			onStrip("p", "pause"),
+			open,
+			pause,
 			onStrip("f", "category filter"),
 			onStrip("esc", "back"),
 			inCard("tab / shift+tab", "back"),
 			inCard("x", "remove"),
 			inCard("s", "seed on or off"),
-			onStrip("O", "organize downloads into folders"),
+			onStrip("O", a.organizationLabel()),
 			inCard("A", "organize existing downloads"),
 			inCard("v", "verify completed data"),
 			inCard("m", "move to another folder"),
