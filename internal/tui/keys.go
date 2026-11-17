@@ -178,6 +178,7 @@ func (a *App) screenKeys() []keyHint {
 			inCard("s", "seed on or off"),
 			onStrip("O", a.organizationLabel()),
 			inCard("A", "organize existing downloads"),
+			inCard("P / R", "pause / resume filtered downloads"),
 			inCard("v", "verify completed data"),
 			inCard("m", "move to another folder"),
 			inCard("c", "change category and move files"),
