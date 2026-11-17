@@ -80,6 +80,7 @@ func New(cfg *config.Config, eng *engine.Engine, agg *aggregator.Aggregator, st 
 		a.proxy.state = proxyBadgeUnverified
 	}
 	a.results.curated = true
+	a.restorePreferences()
 	a.refreshDownloadItems()
 	return a
 }

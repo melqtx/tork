@@ -24,7 +24,9 @@ func (a *App) startCategoryMove(it downloadItem, destination config.DownloadDest
 		return a.showError("wait for the pending download to finish queuing")
 	}
 	cfg := *a.cfg
-	saved := &state.State{Entries: slices.Clone(a.st.Entries)}
+	snapshot := *a.st
+	snapshot.Entries = slices.Clone(a.st.Entries)
+	saved := &snapshot
 	worker := &App{cfg: &cfg, eng: a.eng, st: saved, downloads: newDownloadsModel()}
 	a.downloads.moving = true
 	return func() tea.Msg {

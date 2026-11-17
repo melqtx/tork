@@ -128,6 +128,10 @@ In Downloads, **p** pauses or resumes, **v** verifies completed files, **m** mov
 them, and **r** relinks files already on disk. **y** copies the path, **Y** copies
 the magnet, **x** removes the saved download, and **d** also deletes its files.
 
+**P** pauses and **R** resumes eligible downloads in the current category filter.
+**Esc** stops the remaining items after the current one finishes. Search sort,
+category, the zero-seeder toggle, and the Downloads category filter survive restarts.
+
 <details>
 <summary>Advanced search filters</summary>
 
@@ -352,6 +356,11 @@ Start with `tork doctor`. It reads your setup and checks config, disk, state,
 metadata, and source reachability. It does not repair or rewrite files by default.
 Add `--record` to save a health report, `--engine` to test the torrent listener,
 or `--proxy-check` to check the proxy's exit route.
+
+State saves keep a `state.json.lastgood` recovery snapshot beside `state.json`.
+Startup restores it if the main file is missing or damaged, preserving damaged
+data in `state.json.bak`. If neither copy is usable, startup reports an error and
+keeps the files for recovery.
 
 | Problem | Try this |
 | --- | --- |

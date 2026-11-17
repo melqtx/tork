@@ -20,6 +20,7 @@ func TestCategoryMoveCommitsOnlyAfterBackgroundResult(t *testing.T) {
 	}
 	st := &state.State{Entries: []state.Entry{{Magnet: "saved", Name: "payload.txt", Paused: true,
 		DownloadDir: cfg.DownloadDir, DataPath: old, Seed: state.Bool(false)}}}
+	st.Preferences = json.RawMessage(`{"search_sort":"size"}`)
 	a := New(cfg, &engine.Engine{}, nil, st, nil)
 	destination, err := cfg.ResolveCategoryDestination("movies")
 	if err != nil {
@@ -51,6 +52,10 @@ func TestCategoryMoveCommitsOnlyAfterBackgroundResult(t *testing.T) {
 	if err != nil || recovered.Entries[0].Category != "movies" || recovered.Entries[0].PendingMove != nil {
 		t.Fatalf("restart between rename and UI commit failed: %+v, %v", recovered, err)
 	}
+	var preferences uiPreferences
+	if json.Unmarshal(recovered.Preferences, &preferences) != nil || preferences.SearchSort != "size" {
+		t.Fatal("move journal lost preferences")
+	}
 	a.Update(msg)
 	want := filepath.Join(destination.DownloadDir, "payload.txt")
 	if data, err := os.ReadFile(want); err != nil || string(data) != "preserve me" {
@@ -59,5 +64,8 @@ func TestCategoryMoveCommitsOnlyAfterBackgroundResult(t *testing.T) {
 	loaded, err := state.Load(cfg.StatePath())
 	if err != nil || loaded.Entries[0].PendingMove != nil || loaded.Entries[0].Category != "movies" || !loaded.Entries[0].Paused {
 		t.Fatalf("move did not commit: %+v, %v", loaded, err)
+	}
+	if json.Unmarshal(loaded.Preferences, &preferences) != nil || preferences.SearchSort != "size" {
+		t.Fatal("committed move lost preferences")
 	}
 }

@@ -256,7 +256,7 @@ func (a *App) updateResultsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if r.browser {
 			r.hideDead = !r.hideDead
 			r.refreshFilter()
-			return a, nil
+			return a, a.savePreferences()
 		}
 	case "r":
 		if r.browser {
@@ -264,7 +264,7 @@ func (a *App) updateResultsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			r.pickPrefs = pickPreferences{}
 			r.filterIn.SetValue("")
 			r.refreshFilter()
-			return a, nil
+			return a, a.savePreferences()
 		}
 	case "ctrl+f":
 		return a, a.openPickFilters()
@@ -275,7 +275,7 @@ func (a *App) updateResultsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "o":
 		r.sort = (r.sort + 1) % 3
 		r.resort()
-		return a, nil
+		return a, a.savePreferences()
 	case "v":
 		r.browser = false
 		if r.curated {
