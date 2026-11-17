@@ -101,6 +101,7 @@ func (a *App) updateBrowseNav(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		r.win.home()
 		r.selectionPinned = false
 		r.refreshFilter()
+		return a, a.savePreferences()
 	}
 	return a, nil
 }

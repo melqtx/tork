@@ -37,7 +37,8 @@ type Entry struct {
 }
 
 type State struct {
-	Entries []Entry `json:"entries"`
+	Entries     []Entry         `json:"entries"`
+	Preferences json.RawMessage `json:"preferences,omitempty"`
 }
 
 // Load restores a last-good snapshot when the primary state is missing or damaged.

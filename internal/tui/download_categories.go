@@ -37,6 +37,7 @@ func (a *App) updateDownloadCategoryFilter(key tea.KeyMsg) (tea.Model, tea.Cmd) 
 		a.downloads.win.home()
 		a.downloads.selectionPinned = false
 		a.refreshDownloadItems()
+		return a, a.savePreferences()
 	}
 	return a, nil
 }
