@@ -148,6 +148,7 @@ type downloadsModel struct {
 	categoryMenu       *categoryMenu
 	categoryMove       *downloadCategoryMove
 	organizationPlan   *organizationPlan
+	bulk               *bulkDownloads
 	moving             bool
 	savingOrganization bool
 	snaps              []engine.Snapshot
@@ -293,6 +294,10 @@ func (a *App) updateDownloads(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if it, ok := a.selectedDownload(items); ok {
 			return a, a.toggleSeed(it)
 		}
+	case "P":
+		return a, a.startBulkDownloads(true)
+	case "R":
+		return a, a.startBulkDownloads(false)
 	case "p":
 		if it, ok := a.selectedDownload(items); ok {
 			return a, a.togglePause(it)
@@ -704,15 +709,14 @@ func (a *App) itemFromEntry(e *state.Entry, idx int) downloadItem {
 	case e.Done && pathKnown && !pathExists:
 		st = engine.StateMissing
 		note = "files not found - relink or move before retrying"
+	case e.Paused:
+		st, note = engine.StatePaused, "paused"
 	case e.Done:
 		st = engine.StateDone
 		note = "saved in state"
 		if !pathKnown {
 			note += " - checking files"
 		}
-	case e.Paused:
-		st = engine.StatePaused
-		note = "paused"
 	}
 	return downloadItem{
 		Magnet: e.Magnet, Name: name, DownloadDir: e.DownloadDir, DataPath: e.DataPath,
@@ -1199,6 +1203,13 @@ func (a *App) viewDownloads() string {
 	title := a.downloadsContext(metrics)
 	if d.categoryFilter != nil {
 		title += " · " + a.downloadCategoryLabel(*d.categoryFilter)
+	}
+	if p := d.bulk; p != nil {
+		verb := "resuming"
+		if p.pause {
+			verb = "pausing"
+		}
+		help = fmt.Sprintf("%s %d/%d · esc stops remaining items", verb, p.next, len(p.items))
 	}
 	return a.chrome(title, b.String(), help)
 }

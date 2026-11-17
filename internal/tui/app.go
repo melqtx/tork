@@ -117,7 +117,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyMsg:
-		if a.downloads.moving {
+		if a.downloads.bulk != nil {
+			if msg.String() == "esc" {
+				a.downloads.bulk.cancelled = true
+			}
+			return a, nil
+		}
+		if a.downloads.moving || a.downloads.bulk != nil {
 			return a, nil
 		}
 		if msg.String() == "ctrl+c" {
@@ -216,6 +222,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.downloads.ticking = false
 		return a, tea.Batch(saveCmd, proxyCmd, pathCmd)
+
+	case bulkTransferMsg:
+		return a, a.onBulkTransfer(msg)
 
 	case categoryMovedMsg:
 		return a, a.onCategoryMoved(msg)
@@ -395,7 +404,7 @@ func (a *App) navigationLocked() bool {
 	return (a.screen == screenSources && (a.sources.editor != nil || a.sources.catalog != nil || a.sources.removing != "")) ||
 		(a.screen == screenResults && a.results.pickPanel) || a.screen == screenPreview || (a.screen == screenDownloads &&
 		(a.downloads.prompt.action != pathActionNone || a.downloads.confirmRemove != nil ||
-			a.downloads.categoryMenu != nil || a.downloads.categoryMove != nil || a.downloads.organizationPlan != nil))
+			a.downloads.categoryMenu != nil || a.downloads.categoryMove != nil || a.downloads.organizationPlan != nil || a.downloads.bulk != nil))
 }
 
 func (a *App) focusSearch() tea.Cmd {
@@ -488,7 +497,7 @@ func (a *App) helpKeyAvailable() bool {
 // immediately; progress-only churn (bytes ticking up) is written at most once
 // every 5s so a busy download doesn't hammer the disk from inside Update.
 func (a *App) syncCompletedToState() tea.Cmd {
-	if a.downloads.moving {
+	if a.downloads.moving || a.downloads.bulk != nil {
 		return nil
 	}
 	saveNow, progressed := false, false
@@ -552,7 +561,7 @@ func applySnapshotToEntry(e *state.Entry, s engine.Snapshot) (meta, progress boo
 }
 
 func (a *App) saveState() tea.Cmd {
-	if a.downloads.moving {
+	if a.downloads.moving || a.downloads.bulk != nil {
 		return nil
 	}
 	if err := a.st.Save(a.cfg.StatePath()); err != nil {
